@@ -61,6 +61,81 @@ Rodando a partir desta pasta (`aws_prm_tagging/`):
 python3 -m pip install -r requirements.txt
 ```
 
+## Configurar credenciais AWS
+
+O script nunca lê credenciais de um arquivo próprio do projeto — ele usa a
+cadeia de credenciais padrão do boto3/AWS CLI (ver
+["Onde rodar os comandos"](#onde-rodar-os-comandos) e
+[docs/arquitetura.md](docs/arquitetura.md#por-que-não-há-arquivo-de-variáveis-de-ambiente)
+para a justificativa). Isso significa configurar um perfil nomeado **uma
+vez**, fora do repositório, por qualquer um dos métodos abaixo.
+
+**Opção A — AWS CLI v2 instalado (mais simples):**
+
+```bash
+aws configure --profile meu-perfil
+```
+
+O comando pede, em ordem: `AWS Access Key ID`, `AWS Secret Access Key`,
+`Default region name` (ex.: `us-east-1`) e `Default output format` (ex.:
+`json`). Isso grava as credenciais em `~/.aws/credentials` e a configuração
+em `~/.aws/config`, sob a seção `[meu-perfil]`.
+
+**Opção B — editar os arquivos manualmente** (sem precisar do AWS CLI
+instalado):
+
+`~/.aws/credentials`:
+
+```ini
+[meu-perfil]
+aws_access_key_id = <SUA_ACCESS_KEY_ID>
+aws_secret_access_key = <SUA_SECRET_ACCESS_KEY>
+```
+
+`~/.aws/config`:
+
+```ini
+[profile meu-perfil]
+region = us-east-1
+output = json
+```
+
+**Opção C — role assumida a partir de um perfil base** (padrão recomendado
+para rodar contra uma conta de cliente — detalhado em
+[docs/producao.md](docs/producao.md#credenciais)):
+
+`~/.aws/config`:
+
+```ini
+[profile meu-perfil]
+role_arn = arn:aws:iam::<ACCOUNT_ID>:role/NomeDaRole
+source_profile = default
+region = us-east-1
+```
+
+O boto3 assume a role e renova as credenciais temporárias automaticamente —
+nenhuma mudança de código é necessária.
+
+**Verificar que o perfil funciona:**
+
+```bash
+aws sts get-caller-identity --profile meu-perfil
+```
+
+Deve retornar o `Account`, `UserId` e `Arn` correspondentes às credenciais
+configuradas. Se este comando falhar, `python3 -m aws_prm_tagging.main` com
+o mesmo `--profile` também vai falhar, no mesmo ponto (`sts:GetCallerIdentity`
+é a primeira chamada que o script faz).
+
+**Alternativa sem `--profile`**: se você já usa variáveis de ambiente
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+`AWS_PROFILE`) ou está rodando em um ambiente com IAM role anexada (EC2, ECS,
+Lambda), pode omitir `--profile` — o boto3 resolve a credencial pela cadeia
+padrão automaticamente.
+
+Permissões IAM mínimas necessárias (somente leitura) em
+[docs/producao.md](docs/producao.md#permissões-iam-necessárias-somente-leitura).
+
 ## Uso
 
 Rodando a partir da raiz do repositório (um nível acima desta pasta — ver
@@ -108,10 +183,3 @@ tag-proj/                                    raiz do repositório — rodar o CL
 
 Detalhes de cada módulo em [docs/arquitetura.md](docs/arquitetura.md).
 
-**Nota sobre duplicação:** `aws-prm-onboarding-guide.pdf` e
-`resource-tagging-included-services.csv` também aparecem uma segunda vez
-dentro de `aws_prm_tagging/` (cópias herdadas de uma reorganização anterior
-do projeto). O código nunca lê essas cópias de nível superior — a única
-usada em runtime é `aws_prm_tagging/data/resource-tagging-included-services.csv`,
-carregada via `importlib.resources` (ver [docs/arquitetura.md](docs/arquitetura.md)).
-As demais cópias são só material de referência.
