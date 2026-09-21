@@ -1,0 +1,162 @@
+{
+  "conta_id": "000000000000",
+  "executado_em": "2026-09-21T20:32:01Z",
+  "valor_tag_esperado": "pc:test123",
+  "resumo": {
+    "total_recursos": 10,
+    "por_status_tag": {
+      "sem_tag": 5,
+      "ok": 4,
+      "conflito": 1
+    },
+    "por_status_iac": {
+      "cloudformation": 1,
+      "terraform_heuristico": 0,
+      "desconhecido": 9
+    },
+    "por_servico": {
+      "Amazon EC2": 7,
+      "Amazon EKS": 2,
+      "Amazon S3": 1
+    }
+  },
+  "recursos": [
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-61ad6e59d7b0",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-024f768332f0",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-df5de72bdb3b",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-b1e3c7aaa0f1500f3",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "ok",
+      "valor_tag_encontrado": "pc:test123",
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-ffb332bb8de032499",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-4bd41f542186fbe21",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "conflito",
+      "valor_tag_encontrado": "pc:outrovalor",
+      "iac": {
+        "tipo": "cloudformation",
+        "stack_name": "minha-stack"
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-950bcf24ad5cc95c6",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:s3:::prm-test-bucket-ok",
+      "servico": "Amazon S3",
+      "regiao": "us-east-1",
+      "status_tag": "ok",
+      "valor_tag_encontrado": "pc:test123",
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:eks:us-east-1:000000000000:cluster/prm-test-cluster",
+      "servico": "Amazon EKS",
+      "regiao": "us-east-1",
+      "status_tag": "ok",
+      "valor_tag_encontrado": "pc:test123",
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:eks:us-east-1:000000000000:nodegroup/prm-test-cluster/prm-test-ng/f10b12a3-40b2-414e-aa45-2f18c301fe54",
+      "servico": "Amazon EKS",
+      "regiao": "us-east-1",
+      "status_tag": "ok",
+      "valor_tag_encontrado": "pc:test123",
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    }
+  ],
+  "arvore_ou": {
+    "roots": [
+      {
+        "id": "r-2fb1",
+        "nome": "Root",
+        "contas": [
+          {
+            "id": "000000000000",
+            "nome": "Org Management account"
+          }
+        ],
+        "ous_filhas": [
+          {
+            "id": "ou-0b479e0f-7568b22671c2",
+            "nome": "Producao",
+            "contas": [
+              {
+                "id": "444444444444",
+                "nome": "Cliente Teste"
+              }
+            ],
+            "ous_filhas": []
+          }
+        ]
+      }
+    ]
+  }
+}
