@@ -1,0 +1,87 @@
+Service Name,Product Service Code,Notes
+Amazon API Gateway,AmazonApiGateway,
+Amazon AppStream,AmazonAppStream,Excludes User Fees
+AWS AppSync,AWSAppSync,
+Amazon Athena,AmazonAthena,
+Aurora DSQL,AuroraDSQL,
+AWS Backup,AWSBackup,
+Amazon Bedrock,AmazonBedrock,Excludes spend from AWS Marketplace Private Offers
+Amazon Bedrock AgentCore,AmazonBedrockAgentCore,"Includes AgentCore RunTime, Browser Tool, Code Interpreter, Gateway, Identity, and Memory"
+AWS Certificate Manager,AWSCertificateManager,Includes AWS Certificate Manager Private CA
+Amazon Cloud Directory,AmazonCloudDirectory,
+AWS Cloud WAN,AWSCloudWAN,Excludes Core Network Edge Hours and data transfer
+Amazon CloudFront,AmazonCloudFront,Excludes data transfer costs and Lambda@Edge
+AWS CloudHSM,CloudHSM,
+Amazon CloudWatch,AmazonCloudWatch,Logs only
+AWS CodeBuild,CodeBuild,
+AWS CodePipeline,AWSCodePipeline,
+AWS CodeStar,AWSCodeStar,
+Amazon Cognito,AmazonCognito,Excludes Amazon Cognito add-ons
+Amazon Comprehend,comprehend,
+Amazon Connect,AmazonConnect,"Includes Full Connect Unlimited AI and A La Carte; excludes Cases, Entity Resolution, Legacy Pinpoint Engagement, Meetings SDK, ContactLens, Chat, Email, Lex, Q in Connect, Tasks, Voice, Customer Profiles, Outbound Campaigns Processing, Telephony"
+AWS Data Pipeline,datapipeline,
+AWS Database Migration Service,AWSDatabaseMigrationSvc,
+AWS DataSync,AWSDataSync,
+AWS Deadline Cloud,AWSDeadlineCloud,Excludes AWS data transfer charges and Bring-Your-Own-License third-party creative tool software license costs
+AWS Direct Connect,AWSDirectConnect,Excludes AWS Local Zones
+AWS Directory Service,AWSDirectoryService,
+Amazon DocumentDB (with MongoDB compatibility),AmazonDocDB,
+Amazon DynamoDB,AmazonDynamoDB,Excludes DAX
+Amazon EC2,AmazonEC2,"Includes Amazon EBS, EBS Snapshots, EC2 Mac, AWS Local Zones deployment; excludes Capacity Block for ML"
+Amazon ECR,AmazonECR,
+Amazon ECS,AmazonECS,Includes Fargate and AWS App Mesh
+Amazon EKS,AmazonEKS,Excludes Fargate; includes AWS App Mesh
+AWS Elastic Beanstalk,AWSElasticBeanstalk,
+AWS Elastic Disaster Recovery (DRS),AWSElasticDisasterRecovery,
+Amazon Elastic File System,AmazonEFS,
+Amazon ElastiCache,AmazonElastiCache,
+AWS Elemental MediaConvert,AWSElementalMediaConvert,
+AWS Elemental MediaLive,AWSElementalMediaLive,
+AWS Elemental MediaPackage,AWSElementalMediaPackage,
+Amazon EMR,ElasticMapReduce,Includes AWS Local Zones deployment
+Amazon FinSpace,AmazonFinSpace,Excludes any kdb Insights software license amount
+Amazon FSx,AmazonFSx,
+Amazon GameLift,AmazonGameLift,"Excludes GameLift Anywhere, FleetIQ, and FlexMatch when using either EC2 for GameLift or On-premises for GameLift"
+AWS Glue,AWSGlue,
+AWS HealthImaging,AmazonMedicalImaging,
+AWS HealthLake,AmazonHealthLake,Excludes FHIR data export and transformation
+AWS IoT Core,AWSIoT,Excludes Registry operations
+AWS IoT SiteWise,AWSIoTSiteWise,"Excludes Alarm, Query, Data Storage - Warm Storage, Edge - Data collection pack, Assistant - Monthly Enablement Fee, Assistant - API bundle price, Messaging - Bulk Import, Data Export - Bulk Import"
+Amazon Kendra,AmazonKendra,
+AWS Key Management Service,awskms,Excludes cross-account request costs
+Amazon Keyspaces (for Apache Cassandra),AmazonMCS,
+Amazon Kinesis Data Analytics,AmazonKinesisAnalytics,
+Amazon Kinesis Data Firehose,AmazonKinesisFirehose,
+Amazon Kinesis Data Streams,AmazonKinesis,
+Amazon Kinesis Video Streams,AmazonKinesisVideo,
+AWS Lambda,AWSLambda,
+Elastic Load Balancing,AWSELB,
+AWS Mainframe Modernization,AWSM2,Excludes 'M2 Custom' and Blu Age Transformation Center costs
+Amazon MemoryDB for Redis,AmazonMemoryDB,Excludes Snapshot Storage
+Amazon MQ,AmazonMQ,
+Amazon MSK,AmazonMSK,
+Amazon Neptune,AmazonNeptune,
+AWS Network Firewall,AWSNetworkFirewall,
+Amazon Omics,AmazonOmics,
+Amazon OpenSearch Service,AmazonES,Includes Amazon Elasticsearch Service; excludes OpenSearch Serverless and OpenSearch Ingestion
+AWS Payment Cryptography,PaymentCryptography,"Excludes following APIs under Requests usage: ListAliases, ListKeys, GetResourcePolicy, GetParametersForImport, GetParametersForExport, DeleteResourcePolicy, DeleteAlias, CreateKey, CreateAlias"
+Amazon QuickSight,AmazonQuickSight,"Excludes Region fee for Q, SPICE, unused charges on subscription packs, Pro user, Pro author, and administrator"
+Amazon Redshift,AmazonRedshift,Amazon Redshift Provisioned and Amazon Redshift Serverless
+Amazon Relational Database Service (RDS),AmazonRDS,"Includes all RDS engines, Amazon RDS Custom, AWS Local Zones deployment; excludes Db2 licensing fees"
+AWS Resilience Hub,AWSResilienceHub,
+Amazon Route 53,AmazonRoute53,"Excludes Amazon Route 53 Resolver, Traffic Flow, and CIDR block storage"
+Amazon S3,AmazonS3,Includes storage cost only and all storage tiers; excludes Requests
+Amazon S3 Glacier,AmazonGlacier,Excludes Glacier Deep Archive
+Amazon SageMaker AI,AmazonSageMaker,Excludes Amazon SageMaker AI training plans for training jobs or HyperPod clusters
+AWS Secrets Manager,AWSSecretsManager,
+AWS Security Hub,AWSSecurityHub,
+Amazon Simple Notification Service (SNS),AmazonSNS,
+Amazon Simple Queue Service (SQS),AWSQueueService,
+AWS Step Functions,AmazonStates,
+AWS Storage Gateway,AWSStorageGateway,
+AWS Systems Manager,AWSSystemsManager,OpsCenter only
+Amazon Timestream,AmazonTimestream,
+AWS Transfer Family,AWSTransfer,Excludes AWSDataTransfer
+AWS Transit Gateway,AmazonVPC,"Includes Transit Gateway VPN, VPC, Peering, DirectConnect, DX; excludes data transfer costs"
+Amazon VPC Lattice,AmazonVPC,
+Amazon WorkSpaces,AmazonWorkSpaces,Includes WorkSpaces Core; excludes third-party VDI management software license and third-party OS or software license on virtual desktop
