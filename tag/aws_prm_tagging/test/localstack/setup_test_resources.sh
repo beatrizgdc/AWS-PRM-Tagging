@@ -36,6 +36,12 @@ INSTANCE_CONFLITO=$(aws ec2 run-instances --image-id "$AMI_ID" --instance-type t
   --query 'Instances[0].InstanceId' --output text)
 echo "instancia conflito: $INSTANCE_CONFLITO"
 
+echo "== Criando instancia EC2 SEM aws-apn-id mas com indicio de Terraform (catch-all por valor, chave arbitraria) =="
+INSTANCE_TERRAFORM=$(aws ec2 run-instances --image-id "$AMI_ID" --instance-type t3.micro --count 1 \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=inst-terraform},{Key=Provisioner,Value=Terraform}]" \
+  --query 'Instances[0].InstanceId' --output text)
+echo "instancia terraform_heuristico: $INSTANCE_TERRAFORM"
+
 echo "== Criando bucket S3 com tag OK =="
 aws s3api create-bucket --bucket prm-test-bucket-ok >/dev/null
 aws s3api put-bucket-tagging --bucket prm-test-bucket-ok \
@@ -91,6 +97,7 @@ echo "== Recursos de teste criados com sucesso =="
 echo "instancia OK          : $INSTANCE_OK"
 echo "instancia sem tag      : $INSTANCE_SEM_TAG"
 echo "instancia conflito     : $INSTANCE_CONFLITO"
+echo "instancia terraform    : $INSTANCE_TERRAFORM"
 echo "bucket S3              : prm-test-bucket-ok"
 echo "OU                     : $OU_ID (Producao)"
 echo "conta filha            : $ACCOUNT_ID (Cliente Teste)"
