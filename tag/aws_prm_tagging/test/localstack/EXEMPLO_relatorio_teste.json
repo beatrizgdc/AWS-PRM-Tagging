@@ -1,21 +1,21 @@
 {
   "conta_id": "000000000000",
-  "executado_em": "2026-09-21T20:32:01Z",
+  "executado_em": "2026-09-22T17:04:32Z",
   "valor_tag_esperado": "pc:test123",
   "resumo": {
-    "total_recursos": 10,
+    "total_recursos": 11,
     "por_status_tag": {
-      "sem_tag": 5,
+      "sem_tag": 6,
       "ok": 4,
       "conflito": 1
     },
     "por_status_iac": {
       "cloudformation": 1,
-      "terraform_heuristico": 0,
+      "terraform_heuristico": 1,
       "desconhecido": 9
     },
     "por_servico": {
-      "Amazon EC2": 7,
+      "Amazon EC2": 8,
       "Amazon EKS": 2,
       "Amazon S3": 1
     }
@@ -25,6 +25,7 @@
       "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-61ad6e59d7b0",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
       "iac": {
@@ -36,6 +37,7 @@
       "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-024f768332f0",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
       "iac": {
@@ -47,6 +49,7 @@
       "arn": "arn:aws:ec2:us-east-1:000000000000:image/ami-df5de72bdb3b",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
       "iac": {
@@ -55,9 +58,10 @@
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-b1e3c7aaa0f1500f3",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-5f1bb2f5130499485",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
       "iac": {
@@ -66,9 +70,10 @@
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-ffb332bb8de032499",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-730791d74776b3f4d",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
       "iac": {
@@ -77,9 +82,10 @@
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-4bd41f542186fbe21",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-79b9e9b17b06c8c94",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "conflito",
       "valor_tag_encontrado": "pc:outrovalor",
       "iac": {
@@ -88,9 +94,22 @@
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-950bcf24ad5cc95c6",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-794e7a73f791a538d",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "iac": {
+        "tipo": "terraform_heuristico",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-bc3d7b374a9e8dc64",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
       "iac": {
@@ -102,6 +121,7 @@
       "arn": "arn:aws:s3:::prm-test-bucket-ok",
       "servico": "Amazon S3",
       "regiao": "us-east-1",
+      "tipo_recurso": null,
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
       "iac": {
@@ -113,6 +133,7 @@
       "arn": "arn:aws:eks:us-east-1:000000000000:cluster/prm-test-cluster",
       "servico": "Amazon EKS",
       "regiao": "us-east-1",
+      "tipo_recurso": "cluster",
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
       "iac": {
@@ -121,9 +142,10 @@
       }
     },
     {
-      "arn": "arn:aws:eks:us-east-1:000000000000:nodegroup/prm-test-cluster/prm-test-ng/f10b12a3-40b2-414e-aa45-2f18c301fe54",
+      "arn": "arn:aws:eks:us-east-1:000000000000:nodegroup/prm-test-cluster/prm-test-ng/1fa45d6a-0f67-412e-9c1e-982f79890d31",
       "servico": "Amazon EKS",
       "regiao": "us-east-1",
+      "tipo_recurso": "node_group",
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
       "iac": {
@@ -135,7 +157,7 @@
   "arvore_ou": {
     "roots": [
       {
-        "id": "r-2fb1",
+        "id": "r-efcb",
         "nome": "Root",
         "contas": [
           {
@@ -145,11 +167,11 @@
         ],
         "ous_filhas": [
           {
-            "id": "ou-0b479e0f-7568b22671c2",
+            "id": "ou-34fecdb5-9db1213ac788",
             "nome": "Producao",
             "contas": [
               {
-                "id": "444444444444",
+                "id": "666666666666",
                 "nome": "Cliente Teste"
               }
             ],

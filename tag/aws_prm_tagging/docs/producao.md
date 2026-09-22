@@ -118,6 +118,12 @@ omitida em contas-membro sem quebrar a execução.
 5. Tratar o JSON de saída como dado interno sensível: contém ARNs, estrutura
    de contas/OUs e status de tagging da conta do cliente. Não publicar nem
    anexar a tickets externos sem necessidade.
+6. Antes de reportar o número de `sem_tag` como definitivo para o cliente,
+   lembrar da limitação conhecida: `GetResources` não enxerga recursos que
+   nunca receberam tag nenhuma (nem `aws-apn-id`, nem qualquer outra) — o
+   `total_recursos`/`sem_tag` do relatório é um piso, não necessariamente o
+   universo completo. Detalhe em
+   [arquitetura.md](arquitetura.md#resource_discoverypy).
 
 ## Escala e tempo de execução
 

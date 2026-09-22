@@ -30,6 +30,14 @@ e classifica cada recurso quanto ao status da tag `aws-apn-id`
 partir da conta de gerenciamento de uma AWS Organization, também descobre a
 árvore de OUs. O resultado é um único arquivo JSON.
 
+> **Limitação conhecida:** a descoberta genérica usa
+> `resourcegroupstaggingapi:GetResources`, que **não retorna recursos que
+> nunca receberam tag nenhuma** (documentação oficial da AWS). Um recurso
+> sem absolutamente nenhuma tag, de nenhuma chave, fica invisível para este
+> relatório — só recursos que têm (ou já tiveram) alguma tag aparecem.
+> Detalhes e o porquê da decisão de não resolver isso agora em
+> [docs/arquitetura.md](docs/arquitetura.md#resource_discoverypy).
+
 Documentação completa:
 
 - [docs/arquitetura.md](docs/arquitetura.md) — como o projeto está estruturado, módulo por módulo, decisões de design e limitações conhecidas.

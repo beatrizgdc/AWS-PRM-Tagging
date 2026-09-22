@@ -143,10 +143,12 @@ def run(argv: list[str] | None = None) -> int:
         )
         tree = None
 
+    deduped_resources = report.dedupe_by_arn(all_resources)
+
     final_report = report.build_report(
         account_id=account_id,
         expected_tag_value=args.expected_tag_value,
-        resources=all_resources,
+        resources=deduped_resources,
         ou_tree=tree,
     )
 
@@ -155,7 +157,7 @@ def run(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Concluído. %d recursos mapeados em %d regiões. Relatório salvo em %s",
-        len(all_resources),
+        len(deduped_resources),
         total_regions,
         args.output,
     )

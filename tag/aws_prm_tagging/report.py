@@ -1,8 +1,36 @@
 """Monta o relatório final (JSON) a partir dos recursos e da árvore de OUs coletados."""
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+
+
+def dedupe_by_arn(resources: list[dict]) -> list[dict]:
+    """Remove entradas duplicadas pelo mesmo ARN, mantendo a última ocorrência.
+
+    Um mesmo recurso físico pode ser descoberto por mais de um caminho — ex.:
+    uma instância EC2 que é node de um cluster EKS é retornada tanto pelo
+    passo genérico (Resource Groups Tagging API, `servico="Amazon EC2"`)
+    quanto pela descoberta dedicada de EKS (`servico="Amazon EKS"`,
+    `tipo_recurso="node"`), já que o namespace "ec2" não está na lista de
+    exclusão do passo genérico. Mantemos a última ocorrência porque
+    `main.py` sempre roda a descoberta dedicada (EKS/Bedrock) depois da
+    genérica — a entrada dedicada é a mais específica e correta.
+    """
+    deduped: dict[str, dict] = {}
+    for resource in resources:
+        deduped[resource["arn"]] = resource
+    removed = len(resources) - len(deduped)
+    if removed:
+        logger.info(
+            "%d entrada(s) duplicada(s) por ARN removida(s) do relatório "
+            "(mesmo recurso descoberto por mais de um caminho)",
+            removed,
+        )
+    return list(deduped.values())
 
 
 def build_report(

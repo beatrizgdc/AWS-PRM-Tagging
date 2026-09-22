@@ -70,27 +70,64 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   mão) e classifica cada ARN retornado via `services.classify_arn`. ARNs que
   não pertencem a nenhum serviço do CSV, ou que pertencem a Bedrock/EKS
   (tratados à parte), são descartados.
+
+  > **Limitação conhecida e importante:** a documentação oficial da AWS é
+  > explícita — *"`GetResources` does not return untagged resources"*
+  > ([referência](https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html)).
+  > Ou seja: um recurso que **nunca** recebeu tag nenhuma, de nenhuma chave,
+  > é invisível para `discover_generic_resources` — não aparece no relatório
+  > como `sem_tag` nem de nenhuma outra forma. (Um recurso que já teve
+  > alguma tag no passado e hoje não tem nenhuma aparece normalmente, com
+  > `"Tags": []`.) A própria AWS recomenda o AWS Resource Explorer
+  > (`tag:none`) para achar esses casos, mas isso exige um índice já criado
+  > na conta — criar esse índice é uma escrita, o que quebraria a premissa
+  > de "100% somente-leitura" da Etapa 1 se feito por este script. Decisão
+  > tomada: por ora, essa lacuna fica documentada como limitação conhecida
+  > em vez de resolvida — não pega recursos que nunca foram tagueados nenhuma
+  > vez. Isso não foi pego pelo teste em LocalStack porque a emulação de lá
+  > não impõe essa mesma restrição (ver
+  > [test/localstack/README.md](../test/localstack/README.md)).
+
 - **`discover_bedrock_resources`** — `bedrock:ListInferenceProfiles` com
   `typeEquals=APPLICATION` (profiles de sistema/cross-region não suportam tag
   e são excluídos por construção, não por filtro posterior), depois
-  `bedrock:ListTagsForResource` por profile.
+  `bedrock:ListTagsForResource` por profile. `tipo_recurso` do resultado:
+  `application_inference_profile`.
 - **`discover_eks_resources`** — para cada cluster (`eks:ListClusters` +
-  `DescribeCluster`): tags do cluster; para cada node group
-  (`ListNodegroups` + `DescribeNodegroup`): tags do node group, e as
-  instâncias EC2 associadas via `autoscaling:DescribeAutoScalingGroups` (nodes
-  managed) e via as tags automáticas `eks:cluster-name` /
-  `kubernetes.io/cluster/<nome>` (nodes self-managed, heurística best-effort
-  documentada no código); para essas instâncias, os volumes EBS anexados
-  (`ec2:DescribeVolumes`); e os load balancers do cluster, identificados pelas
-  tags de convenção do AWS Load Balancer Controller
-  (`elbv2.k8s.aws/cluster`, `kubernetes.io/cluster/<nome>` — também
-  best-effort, não há uma API que amarre LB a cluster diretamente). Fargate on
-  EKS nunca aparece aqui porque não gera instâncias EC2.
+  `DescribeCluster`): tags do cluster (`tipo_recurso="cluster"`); para cada
+  node group (`ListNodegroups` + `DescribeNodegroup`): tags do node group
+  (`tipo_recurso="node_group"`), e as instâncias EC2 associadas via
+  `autoscaling:DescribeAutoScalingGroups` (nodes managed) e via as tags
+  automáticas `eks:cluster-name` / `kubernetes.io/cluster/<nome>` (nodes
+  self-managed, heurística best-effort documentada no código) —
+  `tipo_recurso="node"`; para essas instâncias, os volumes EBS anexados
+  (`ec2:DescribeVolumes`) — `tipo_recurso="ebs_volume"`; e os load balancers
+  do cluster, identificados pelas tags de convenção do AWS Load Balancer
+  Controller (`elbv2.k8s.aws/cluster`, `kubernetes.io/cluster/<nome>` —
+  também best-effort, não há uma API que amarre LB a cluster diretamente) —
+  `tipo_recurso="load_balancer"`. Fargate on EKS nunca aparece aqui porque
+  não gera instâncias EC2.
+
+  As instâncias EC2 e volumes EBS dos nodes **também** são descobertos pelo
+  passo genérico (o namespace `ec2` não está em `_DEDICATED_SERVICE_CODES`),
+  então o mesmo ARN pode aparecer duas vezes — uma com `servico="Amazon EC2"`
+  e `tipo_recurso=None` (via `discover_generic_resources`), outra com
+  `servico="Amazon EKS"` e `tipo_recurso="node"`/`"ebs_volume"` (via
+  `discover_eks_resources`). `main.py` chama `report.dedupe_by_arn` depois
+  de coletar tudo, que resolve isso mantendo a última ocorrência por ARN —
+  como a descoberta de EKS roda depois da genérica no loop de `main.py`, a
+  entrada mais específica (a do EKS) é a que sobrevive.
 
 Toda chamada de API está envolvida em `try/except ClientError` com log e
 `continue`/retorno parcial — uma falha pontual (ex.: `AccessDenied` em uma
 região, serviço não disponível em uma região) nunca aborta a execução do
 restante do script.
+
+Cada recurso do relatório tem um campo `tipo_recurso` (`str | None`) —
+`None` no passo genérico (onde `servico` já identifica o recurso sem
+ambiguidade) e um dos valores acima nos casos especiais de EKS/Bedrock, onde
+`servico` sozinho ("Amazon EKS", "Amazon Bedrock") não diferencia qual ARN é
+qual.
 
 ### `tag_status.py`
 
@@ -134,9 +171,13 @@ via `ListRoots` → `ListOrganizationalUnitsForParent` → `ListAccountsForParen
 
 ### `report.py`
 
-Agrega a lista de recursos em contadores (`por_status_tag`, `por_status_iac`,
-`por_servico`) e monta o JSON final no formato descrito no `README.md`
-original do estágio 1. Função pura, sem I/O.
+`dedupe_by_arn` remove entradas duplicadas pelo mesmo ARN antes de montar o
+relatório (ver nota sobre EKS em `resource_discovery.py` acima), mantendo a
+última ocorrência — `main.py` chama isso depois do loop de regiões, antes de
+`build_report`. `build_report` agrega a lista (já deduplicada) em contadores
+(`por_status_tag`, `por_status_iac`, `por_servico`) e monta o JSON final no
+formato descrito no `README.md` do estágio 1. Ambas são funções puras, sem
+I/O.
 
 ### `retry.py`
 
