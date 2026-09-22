@@ -18,6 +18,25 @@
 Nenhuma dessas funções tem efeito colateral sobre a conta AWS: todas usam
 exclusivamente operações `Describe*`/`List*`/`Get*`.
 
+## Núcleo compartilhado vs. entrypoint de estágio
+
+Todo módulo no nível raiz do pacote (`services.py`, `regions.py`,
+`resource_discovery.py`, `tag_status.py`, `iac_detection.py`, `decision.py`,
+`ou_tree.py`, `report.py`, `retry.py`) é **núcleo compartilhado**: pode ser
+importado por qualquer um dos 4 estágios sem saber qual estágio está
+chamando. `decision.py` (Etapa 2a) está aqui pelo mesmo motivo que
+`resource_discovery.py` está — a Etapa 3 (automação contínua) e a Etapa 4
+(varredura recorrente) também vão precisar classificar `taguear` /
+`pular_iac` / `ja_ok` / `conflito`, não só a Etapa 2.
+
+Só `main.py` é **entrypoint de estágio**: orquestra I/O específico de um
+estágio (hoje, CLI args + escrita de arquivo para a Etapa 1). Quando as
+Etapas 2-4 ganharem seus próprios entrypoints (handlers Lambda, ver
+[arquitetura-multicliente.md](arquitetura-multicliente.md)), eles seguem o
+mesmo padrão: importam os módulos do núcleo em vez de duplicar lógica, e são
+o único lugar com I/O que muda estado (a Etapa 1 e a Etapa 2a continuam
+100% sem escrita).
+
 ## Módulos
 
 ### `services.py`
@@ -192,6 +211,43 @@ relatório (ver nota sobre EKS em `resource_discovery.py` acima), mantendo a
 `total_tag_similar_encontrada` — ver `tag_status.py` acima) e monta o JSON
 final no formato descrito no `README.md` do estágio 1. Ambas são funções
 puras, sem I/O.
+
+### `decision.py`
+
+Etapa 2a — classifica cada recurso do relatório da Etapa 1 em `taguear` /
+`pular_iac` / `ja_ok` / `conflito` (regras de precedência completas no
+docstring do módulo). Puro: sem boto3, sem rede, sem leitura de arquivo —
+recebe o relatório da Etapa 1 já carregado como dict e devolve outro dict.
+
+Reaproveita `tag_status.get_tag_status`, mas **recalculado** a partir de
+`valor_tag_encontrado` (o valor bruto que a Etapa 1 já extraiu) contra o
+`expected_tag_value` recebido nesta chamada — nunca confia no `status_tag`
+já congelado do relatório da Etapa 1. Isso é proposital: a Etapa 1 roda uma
+vez por conta, não por sub-OU, mas sub-OUs diferentes podem ter
+contratos/product codes diferentes (ver
+[arquitetura-multicliente.md](arquitetura-multicliente.md)) — uma única
+saída da Etapa 1 pode alimentar várias chamadas da Etapa 2a, cada uma com o
+`expected_tag_value` da sub-OU correspondente.
+
+`iac.tipo == "desconhecido"` é tratado como "IaC não detectado" nesta etapa
+— só `cloudformation`/`terraform_heuristico` levam a `pular_iac` quando a
+tag está ausente (suposição confirmada; ver docstring do módulo).
+
+Filtra defensivamente por `tipo_recurso` os dois serviços com sub-recursos
+(EKS: `cluster`/`node_group`/`node`/`ebs_volume`/`load_balancer`; Bedrock:
+`application_inference_profile`). Na prática é um no-op contra a saída real
+da Etapa 1 — `resource_discovery.py` só produz esses tipos — mas protege
+contra um relatório sintético/malformado ou uma mudança futura na Etapa 1.
+Recursos fora desse escopo são excluídos do relatório de decisão (não
+aparecem em `recursos` nem em `erros`, só contados em
+`resumo.total_excluidos_fora_de_escopo`); recursos malformados (campos
+obrigatórios ausentes/com tipo errado) viram entradas em `erros` sem
+derrubar o processamento do restante do lote.
+
+`build_decision_report` monta o relatório de saída no mesmo estilo de
+`report.build_report` (mesmas chaves de topo, agregação via `Counter`,
+`por_servico` ordenado) — é o contrato de entrada da Etapa 2b (execução em
+dry-run, ainda não implementada).
 
 ### `retry.py`
 

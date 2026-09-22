@@ -1,19 +1,26 @@
-# Mapeamento de recursos AWS para o AWS Partner Revenue Measurement (PRM)
+# Mapeamento e decisão de tagueamento para o AWS Partner Revenue Measurement (PRM)
 
 Automação de tagging AWS para atender a exigência de Resource Tagging do
-programa AWS Partner Revenue Measurement (PRM). Este repositório cobre o
-**primeiro de quatro estágios** de uma automação maior:
+programa AWS Partner Revenue Measurement (PRM). Este repositório cobre os
+dois primeiros passos de uma automação de **quatro estágios**:
 
-1. **Mapeamento** (este repositório) — descoberta somente-leitura de recursos
-   e status da tag `aws-apn-id` por recurso.
-2. Tagueamento inicial (aplica a tag nos recursos identificados no estágio 1).
+1. **Mapeamento** (Etapa 1, neste repositório) — descoberta somente-leitura
+   de recursos e status da tag `aws-apn-id` por recurso.
+   - **Etapa 2a — decisão** (também neste repositório, `decision.py`):
+     classifica cada recurso do relatório da Etapa 1 em `taguear` /
+     `pular_iac` / `ja_ok` / `conflito`. Ainda 100% sem escrita — só decide,
+     não chama nenhuma API de tagueamento.
+2. Tagueamento inicial — Etapas 2b/2c (dry-run e execução real via API,
+   ainda não implementadas): aplicam a tag nos recursos que a Etapa 2a
+   classificou como `taguear`.
 3. Automação contínua para novos recursos.
 4. Varredura recorrente / auditoria.
 
-Os estágios 2 a 4 reaproveitam os módulos de descoberta escritos aqui
-(`aws_prm_tagging/`) e serão empacotados como Lambda dentro de uma stack
-CloudFormation, executando localmente em cada conta cliente (arquitetura sem
-acesso cross-account: cada conta roda sua própria automação).
+As Etapas 2b a 4 reaproveitam os módulos escritos aqui (`aws_prm_tagging/`,
+núcleo compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e
+serão empacotadas como Lambda dentro de uma stack CloudFormation, executando
+localmente em cada conta cliente (arquitetura sem acesso cross-account: cada
+conta roda sua própria automação).
 
 ## O que este script faz
 
@@ -178,32 +185,54 @@ hardcoded em nenhum módulo — tudo entra via `--expected-tag-value`/`--profile
 ou é descoberto em runtime pelas próprias chamadas de API (conta, regiões,
 árvore de OUs).
 
+## Testes
+
+Dois níveis, sem sobreposição:
+
+- **`test/unit/`** — pytest, 100% offline (sem AWS, sem credencial nenhuma).
+  Cobre hoje a Etapa 2a (`decision.py`), importando `aws_prm_tagging.decision`
+  como pacote — por isso, ao contrário do resto deste README, roda do
+  diretório **pai** desta pasta (mesma exigência de
+  ["Onde rodar os comandos"](#onde-rodar-os-comandos) para o CLI):
+
+  ```bash
+  python3 -m pip install -r aws_prm_tagging/requirements-dev.txt
+  python3 -m pytest aws_prm_tagging/test/unit/
+  ```
+
+- **`test/localstack/`** — ponta a ponta contra LocalStack (nenhuma conta AWS
+  real), cobre a Etapa 1. Detalhes em
+  [test/localstack/README.md](test/localstack/README.md).
+
 ## Estrutura
 
 ```
 aws_prm_tagging/                             raiz deste repositório (pacote Python — este README vive aqui)
-  aws-prm-onboarding-guide.pdf               guia oficial AWS PRM (referência)
-  resource-tagging-included-services.csv     CSV oficial fornecido pela AWS (referência)
+  reference/                                 material de referência (leitura humana, não lido pelo código)
+    aws-prm-onboarding-guide.pdf               guia oficial AWS PRM
+    resource-tagging-included-services.csv     CSV oficial fornecido pela AWS (cópia de leitura)
   data/                                      cópia do CSV usada em runtime (importlib.resources — fonte de verdade para o código)
   services.py                                carrega o CSV e classifica ARNs por serviço
   regions.py                                 descoberta de regiões comerciais ativas
   resource_discovery.py                      Resource Groups Tagging API + casos especiais (Bedrock, EKS)
   tag_status.py                              classificação sem_tag / ok / conflito
   iac_detection.py                           heurística de IaC
+  decision.py                                Etapa 2a — decisão de tagueamento (taguear/pular_iac/ja_ok/conflito)
   ou_tree.py                                 árvore de OUs da Organization
-  report.py                                  monta o relatório JSON final
+  report.py                                  monta o relatório JSON da Etapa 1
   retry.py                                   backoff exponencial para throttling
-  main.py                                    CLI (entrypoint)
-  requirements.txt
+  main.py                                    CLI (entrypoint da Etapa 1)
+  requirements.txt                           dependências de runtime (boto3)
+  requirements-dev.txt                       dependências de desenvolvimento (pytest)
   docs/                                      documentação de arquitetura, produção e rollout multi-cliente
-  test/localstack/                           teste de ponta a ponta contra LocalStack (sem AWS real)
+  test/
+    unit/                                    testes pytest (offline, sem AWS) — Etapa 2a
+    localstack/                              teste de ponta a ponta contra LocalStack (sem AWS real) — Etapa 1
 ```
 
 Detalhes de cada módulo em [docs/arquitetura.md](docs/arquitetura.md).
 
-**Nota sobre duplicação:** `aws-prm-onboarding-guide.pdf` e
-`resource-tagging-included-services.csv` aparecem tanto direto nesta pasta
-(referência de leitura) quanto dentro de `data/` (a segunda, só o CSV). O
-código nunca lê a cópia de nível superior — a única usada em runtime é
+**Sobre `reference/`:** o código nunca lê esses dois arquivos — são só
+material de leitura humana. A única cópia do CSV usada em runtime é
 `data/resource-tagging-included-services.csv`, carregada via
 `importlib.resources` (ver [docs/arquitetura.md](docs/arquitetura.md)).
