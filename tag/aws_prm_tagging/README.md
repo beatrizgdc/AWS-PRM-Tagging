@@ -70,16 +70,25 @@ cadeia de credenciais padrão do boto3/AWS CLI (ver
 para a justificativa). Isso significa configurar um perfil nomeado **uma
 vez**, fora do repositório, por qualquer um dos métodos abaixo.
 
+`<perfil>` abaixo é um placeholder — escolha um nome (ex.: `sandbox`,
+`cliente-x-readonly`) e use **esse mesmo nome literal**, sem os sinais `<`
+`>`, em todos os comandos desta seção e no `--profile` do comando em
+["Uso"](#uso) logo depois. Rodar os exemplos com `<perfil>` digitado ao pé
+da letra (ou copiando `meu-perfil` de uma versão antiga deste README) resulta
+em `ProfileNotFound: The config profile (...) could not be found` — o perfil
+precisa existir de fato em `~/.aws/config`/`~/.aws/credentials` antes do
+primeiro `python3 -m aws_prm_tagging.main`.
+
 **Opção A — AWS CLI v2 instalado (mais simples):**
 
 ```bash
-aws configure --profile meu-perfil
+aws configure --profile <perfil>
 ```
 
 O comando pede, em ordem: `AWS Access Key ID`, `AWS Secret Access Key`,
 `Default region name` (ex.: `us-east-1`) e `Default output format` (ex.:
 `json`). Isso grava as credenciais em `~/.aws/credentials` e a configuração
-em `~/.aws/config`, sob a seção `[meu-perfil]`.
+em `~/.aws/config`, sob a seção `[<perfil>]`.
 
 **Opção B — editar os arquivos manualmente** (sem precisar do AWS CLI
 instalado):
@@ -87,7 +96,7 @@ instalado):
 `~/.aws/credentials`:
 
 ```ini
-[meu-perfil]
+[<perfil>]
 aws_access_key_id = <SUA_ACCESS_KEY_ID>
 aws_secret_access_key = <SUA_SECRET_ACCESS_KEY>
 ```
@@ -95,7 +104,7 @@ aws_secret_access_key = <SUA_SECRET_ACCESS_KEY>
 `~/.aws/config`:
 
 ```ini
-[profile meu-perfil]
+[profile <perfil>]
 region = us-east-1
 output = json
 ```
@@ -107,7 +116,7 @@ para rodar contra uma conta de cliente — detalhado em
 `~/.aws/config`:
 
 ```ini
-[profile meu-perfil]
+[profile <perfil>]
 role_arn = arn:aws:iam::<ACCOUNT_ID>:role/NomeDaRole
 source_profile = default
 region = us-east-1
@@ -119,7 +128,7 @@ nenhuma mudança de código é necessária.
 **Verificar que o perfil funciona:**
 
 ```bash
-aws sts get-caller-identity --profile meu-perfil
+aws sts get-caller-identity --profile <perfil>
 ```
 
 Deve retornar o `Account`, `UserId` e `Arn` correspondentes às credenciais
@@ -138,13 +147,16 @@ Permissões IAM mínimas necessárias (somente leitura) em
 
 ## Uso
 
-Rodando a partir da raiz do repositório (um nível acima desta pasta — ver
-"Onde rodar os comandos"):
+Pré-requisito: o perfil `<perfil>` já criado e verificado na seção
+["Configurar credenciais AWS"](#configurar-credenciais-aws) acima —
+substitua pelo nome real do seu perfil no comando abaixo. Rodando a partir
+da raiz do repositório (um nível acima desta pasta — ver "Onde rodar os
+comandos"):
 
 ```bash
 python3 -m aws_prm_tagging.main \
   --expected-tag-value pc:xxxxxxxxxxxxxxxxxxxxxxxxx \
-  --profile meu-perfil \
+  --profile <perfil> \
   --output relatorio.json
 ```
 
@@ -182,4 +194,3 @@ tag-proj/                                    raiz do repositório — rodar o CL
 ```
 
 Detalhes de cada módulo em [docs/arquitetura.md](docs/arquitetura.md).
-
