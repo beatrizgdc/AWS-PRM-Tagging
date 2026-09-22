@@ -200,6 +200,11 @@ Dois níveis, sem sobreposição:
   python3 -m pytest aws_prm_tagging/test/unit/
   ```
 
+  Um arquivo por área de responsabilidade (não um arquivo único crescendo
+  sem limite) e fixtures compartilhadas em `conftest.py` — convenção
+  detalhada em [test/unit/README.md](test/unit/README.md), inclusive para
+  quem for adicionar testes de um módulo novo nas próximas etapas.
+
 - **`test/localstack/`** — ponta a ponta contra LocalStack (nenhuma conta AWS
   real), cobre a Etapa 1. Detalhes em
   [test/localstack/README.md](test/localstack/README.md).
