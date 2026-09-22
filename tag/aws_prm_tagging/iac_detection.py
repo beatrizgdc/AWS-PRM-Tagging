@@ -31,5 +31,18 @@ def detect_iac(tags: dict[str, str]) -> dict[str, str | None]:
     for key in _MANAGED_BY_KEYS:
         if key in tags and str(tags[key]).strip().lower() == "terraform":
             return {"tipo": IAC_TERRAFORM_HEURISTICO, "stack_name": None}
+            
+# Catch-all: além dos nomes de chave conhecidos acima, qualquer tag cujo
+# VALOR seja literalmente "terraform" também conta como indício — orgs
+# usam nomes de chave arbitrários (IaC, Provisioner, CreatedBy, source
+# etc.) para essa mesma convenção. Risco de falso positivo é
+# desprezível; o custo de um falso negativo aqui é maior (uma etapa
+# seguinte poderia taguear via API um recurso na verdade gerenciado por
+# Terraform), então a heurística erra deliberadamente para o lado de
+# detectar demais, não de menos.
 
-    return {"tipo": IAC_DESCONHECIDO, "stack_name": None}
+for value in tags.values():
+    if isinstance(value, str) and value.strip().lower() == "terraform":
+        return {"tipo": IAC_TERRAFORM_HEURISTICO, "stack_name": None}
+        
+return {"tipo": IAC_DESCONHECIDO, "stack_name": None}
