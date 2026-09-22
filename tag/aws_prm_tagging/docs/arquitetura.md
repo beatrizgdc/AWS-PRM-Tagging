@@ -105,11 +105,22 @@ das APIs) e `[{"key":..,"value":..}]` (Bedrock) para `dict`.
 ### `iac_detection.py`
 
 - Presença da tag `aws:cloudformation:stack-name` → `cloudformation` (cobre
-  também CDK, que gera stacks CloudFormation por trás).
-- Convenções de tag comuns de Terraform (`Terraform=true`,
-  `managed-by=terraform`) → `terraform_heuristico`. Terraform não tem nenhum
-  sinal nativo confiável — isso é heurística declarada, nunca tratada como
-  certeza.
+  também CDK, que gera stacks CloudFormation por trás). Checado primeiro —
+  tem precedência sobre qualquer sinal de Terraform no mesmo recurso.
+- Convenções de tag comuns de Terraform → `terraform_heuristico`. Terraform
+  não tem nenhum sinal nativo confiável (ao contrário do CloudFormation) —
+  isso é heurística declarada, nunca tratada como certeza. Dois níveis de
+  checagem: (1) nomes de chave conhecidos (`terraform=true`,
+  `managed-by=terraform` e variantes de capitalização); (2) catch-all —
+  qualquer tag cujo **valor** seja literalmente `terraform` (case-insensitive),
+  independente do nome da chave, já que orgs usam nomes arbitrários (`IaC`,
+  `Provisioner`, `CreatedBy`, `source` etc.) para a mesma convenção. A
+  heurística erra deliberadamente para o lado de detectar demais: um falso
+  positivo aqui só custa uma tag que deixa de ser aplicada automaticamente
+  (fica para revisão manual); um falso negativo poderia levar uma etapa
+  futura de escrita a taguear via API um recurso na verdade gerenciado por
+  Terraform, causando drift no próximo `terraform apply` — o cenário que a
+  AWS explicitamente orienta a evitar.
 - Ausência de qualquer sinal → `desconhecido`. Nunca se assume "não é IaC".
 
 ### `ou_tree.py`
