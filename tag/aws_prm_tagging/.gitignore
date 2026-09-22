@@ -1,0 +1,16 @@
+# Bytecode e cache do Python
+__pycache__/
+*.pyc
+
+# Ambientes virtuais
+.venv/
+venv/
+
+# Relatorios gerados pela execucao do script (main.py e
+# test/localstack/run_test.sh) — contem ARNs, contas e estrutura de OU
+# reais, nunca devem ser versionados
+relatorio*.json
+prm_mapping_report.json
+
+# SO / editor
+.DS_Store
