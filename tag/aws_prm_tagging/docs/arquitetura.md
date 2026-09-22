@@ -136,6 +136,19 @@ chave `aws-apn-id` (a AWS exige a chave exatamente em minúsculas; uma
 variante com capitalização diferente não é reconhecida para atribuição e é
 tratada como `sem_tag`). Retorna `(status, valor_encontrado)`.
 
+`find_similar_tag_keys(tags, target_key="aws-apn-id")` — não é um conceito
+do guia oficial da AWS (que só define a chave exata exigida); é uma checagem
+defensiva própria, pensada para a Etapa 2a/2b: identifica chaves com a mesma
+grafia de `aws-apn-id` mas capitalização diferente (ex.: `AWS-APN-ID`,
+`Aws-Apn-Id`) — provavelmente erro de digitação humano — para que quem for
+agir sobre o relatório não taguei em cima de uma tag "quase certa" sem
+revisar antes. Definição deliberadamente restrita a diferença de case; não
+normaliza separador (`aws_apn_id`) nem espaço, que seriam uma convenção de
+nome diferente. Alimenta dois campos no relatório de cada recurso:
+`tag_similar_encontrada` (bool) e `tag_similar_chaves` (lista das chaves
+encontradas, vazia quando `false`) — e o agregado
+`resumo.total_tag_similar_encontrada` em `report.py`.
+
 `tags_list_to_dict` converte o formato `[{"Key":..,"Value":..}]` (a maioria
 das APIs) e `[{"key":..,"value":..}]` (Bedrock) para `dict`.
 
@@ -175,9 +188,10 @@ via `ListRoots` → `ListOrganizationalUnitsForParent` → `ListAccountsForParen
 relatório (ver nota sobre EKS em `resource_discovery.py` acima), mantendo a
 última ocorrência — `main.py` chama isso depois do loop de regiões, antes de
 `build_report`. `build_report` agrega a lista (já deduplicada) em contadores
-(`por_status_tag`, `por_status_iac`, `por_servico`) e monta o JSON final no
-formato descrito no `README.md` do estágio 1. Ambas são funções puras, sem
-I/O.
+(`por_status_tag`, `por_status_iac`, `por_servico`,
+`total_tag_similar_encontrada` — ver `tag_status.py` acima) e monta o JSON
+final no formato descrito no `README.md` do estágio 1. Ambas são funções
+puras, sem I/O.
 
 ### `retry.py`
 

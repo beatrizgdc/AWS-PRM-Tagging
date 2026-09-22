@@ -28,6 +28,32 @@ def get_tag_status(
     return STATUS_CONFLITO, found_value
 
 
+def find_similar_tag_keys(tags: dict[str, str], target_key: str = TAG_KEY) -> list[str]:
+    """Retorna as chaves de `tags` que têm a mesma grafia de `target_key`
+    ignorando maiúsculas/minúsculas, mas que não são idênticas a ela
+    (ex.: `AWS-APN-ID`, `Aws-Apn-Id` para `target_key="aws-apn-id"`).
+
+    Não é um conceito do guia oficial da AWS — a AWS só define que a chave
+    tem que ser exatamente `aws-apn-id` minúsculo (o que `get_tag_status`
+    já trata: qualquer variante de case é `sem_tag` para fins de atribuição
+    de receita). Esta função existe para um propósito diferente e defensivo,
+    de fora do escopo do guia: expor pra quem for revisar/agir sobre o
+    relatório que existe uma tag "quase certa" no recurso, provavelmente um
+    erro de digitação humano — sinal útil para não taguear em cima de uma
+    tag parecida sem revisar antes, e para a etapa de auditoria detectar
+    esse tipo de erro recorrente.
+
+    Definição deliberadamente restrita a diferença de case (mesma grafia,
+    mesmos separadores) — não normaliza `_`/espaço/ausência de separador,
+    que seriam uma convenção de nome diferente, não um erro de case.
+    """
+    return [
+        key
+        for key in tags
+        if key != target_key and key.lower() == target_key.lower()
+    ]
+
+
 def tags_list_to_dict(tag_list: list[dict]) -> dict[str, str]:
     """Converte a lista [{'Key':..,'Value':..}, ...] (formato comum da maioria
     das APIs AWS) em dict. Também aceita o formato [{'key':..,'value':..}]

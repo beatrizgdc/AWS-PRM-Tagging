@@ -42,6 +42,12 @@ INSTANCE_TERRAFORM=$(aws ec2 run-instances --image-id "$AMI_ID" --instance-type 
   --query 'Instances[0].InstanceId' --output text)
 echo "instancia terraform_heuristico: $INSTANCE_TERRAFORM"
 
+echo "== Criando instancia EC2 com tag SIMILAR (case diferente de aws-apn-id) =="
+INSTANCE_TAG_SIMILAR=$(aws ec2 run-instances --image-id "$AMI_ID" --instance-type t3.micro --count 1 \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=inst-tag-similar},{Key=AWS-APN-ID,Value=$EXPECTED_TAG_VALUE}]" \
+  --query 'Instances[0].InstanceId' --output text)
+echo "instancia tag similar: $INSTANCE_TAG_SIMILAR"
+
 echo "== Criando bucket S3 com tag OK =="
 aws s3api create-bucket --bucket prm-test-bucket-ok >/dev/null
 aws s3api put-bucket-tagging --bucket prm-test-bucket-ok \
@@ -98,6 +104,7 @@ echo "instancia OK          : $INSTANCE_OK"
 echo "instancia sem tag      : $INSTANCE_SEM_TAG"
 echo "instancia conflito     : $INSTANCE_CONFLITO"
 echo "instancia terraform    : $INSTANCE_TERRAFORM"
+echo "instancia tag similar   : $INSTANCE_TAG_SIMILAR"
 echo "bucket S3              : prm-test-bucket-ok"
 echo "OU                     : $OU_ID (Producao)"
 echo "conta filha            : $ACCOUNT_ID (Cliente Teste)"

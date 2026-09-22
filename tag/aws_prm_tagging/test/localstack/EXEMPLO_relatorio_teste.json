@@ -1,24 +1,25 @@
 {
   "conta_id": "000000000000",
-  "executado_em": "2026-09-22T17:04:32Z",
+  "executado_em": "2026-09-22T17:55:44Z",
   "valor_tag_esperado": "pc:test123",
   "resumo": {
-    "total_recursos": 11,
+    "total_recursos": 12,
     "por_status_tag": {
-      "sem_tag": 6,
+      "sem_tag": 7,
       "ok": 4,
       "conflito": 1
     },
     "por_status_iac": {
       "cloudformation": 1,
       "terraform_heuristico": 1,
-      "desconhecido": 9
+      "desconhecido": 10
     },
     "por_servico": {
-      "Amazon EC2": 8,
+      "Amazon EC2": 9,
       "Amazon EKS": 2,
       "Amazon S3": 1
-    }
+    },
+    "total_tag_similar_encontrada": 1
   },
   "recursos": [
     {
@@ -28,6 +29,8 @@
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
@@ -40,6 +43,8 @@
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
@@ -52,66 +57,94 @@
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-5f1bb2f5130499485",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-6b5474ee8dbb69f2a",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
       "tipo_recurso": null,
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-730791d74776b3f4d",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-e3603f96c824bcd8b",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-79b9e9b17b06c8c94",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-f71cf17f41bc3d6db",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
       "tipo_recurso": null,
       "status_tag": "conflito",
       "valor_tag_encontrado": "pc:outrovalor",
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "cloudformation",
         "stack_name": "minha-stack"
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-794e7a73f791a538d",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-e59fadd7ddbbae2d2",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "terraform_heuristico",
         "stack_name": null
       }
     },
     {
-      "arn": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-bc3d7b374a9e8dc64",
+      "arn": "arn:aws:ec2:us-east-1:000000000000:instance/i-3c5361bfd74ac82c6",
       "servico": "Amazon EC2",
       "regiao": "us-east-1",
       "tipo_recurso": null,
       "status_tag": "sem_tag",
       "valor_tag_encontrado": null,
+      "tag_similar_encontrada": true,
+      "tag_similar_chaves": [
+        "AWS-APN-ID"
+      ],
+      "iac": {
+        "tipo": "desconhecido",
+        "stack_name": null
+      }
+    },
+    {
+      "arn": "arn:aws:ec2:us-east-1:000000000000:security-group/sg-710471617479a75b2",
+      "servico": "Amazon EC2",
+      "regiao": "us-east-1",
+      "tipo_recurso": null,
+      "status_tag": "sem_tag",
+      "valor_tag_encontrado": null,
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
@@ -124,6 +157,8 @@
       "tipo_recurso": null,
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
@@ -136,18 +171,22 @@
       "tipo_recurso": "cluster",
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
       }
     },
     {
-      "arn": "arn:aws:eks:us-east-1:000000000000:nodegroup/prm-test-cluster/prm-test-ng/1fa45d6a-0f67-412e-9c1e-982f79890d31",
+      "arn": "arn:aws:eks:us-east-1:000000000000:nodegroup/prm-test-cluster/prm-test-ng/d20c4890-b131-4887-b227-341f9dc1fcfb",
       "servico": "Amazon EKS",
       "regiao": "us-east-1",
       "tipo_recurso": "node_group",
       "status_tag": "ok",
       "valor_tag_encontrado": "pc:test123",
+      "tag_similar_encontrada": false,
+      "tag_similar_chaves": [],
       "iac": {
         "tipo": "desconhecido",
         "stack_name": null
@@ -157,7 +196,7 @@
   "arvore_ou": {
     "roots": [
       {
-        "id": "r-efcb",
+        "id": "r-4e7b",
         "nome": "Root",
         "contas": [
           {
@@ -167,11 +206,11 @@
         ],
         "ous_filhas": [
           {
-            "id": "ou-34fecdb5-9db1213ac788",
+            "id": "ou-38d8c253-fffaf90a5153",
             "nome": "Producao",
             "contas": [
               {
-                "id": "666666666666",
+                "id": "111111111111",
                 "nome": "Cliente Teste"
               }
             ],

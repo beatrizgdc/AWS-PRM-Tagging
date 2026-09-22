@@ -26,7 +26,7 @@ from botocore.exceptions import ClientError
 
 from .iac_detection import detect_iac
 from .services import Service, classify_arn
-from .tag_status import get_tag_status, tags_list_to_dict
+from .tag_status import find_similar_tag_keys, get_tag_status, tags_list_to_dict
 from .retry import with_backoff
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ def _build_resource(
 ) -> dict:
     status_tag, valor_encontrado = get_tag_status(tags, expected_tag_value)
     iac = detect_iac(tags)
+    tag_similar_chaves = find_similar_tag_keys(tags)
     return {
         "arn": arn,
         "servico": servico,
@@ -63,6 +64,8 @@ def _build_resource(
         "tipo_recurso": tipo_recurso,
         "status_tag": status_tag,
         "valor_tag_encontrado": valor_encontrado,
+        "tag_similar_encontrada": bool(tag_similar_chaves),
+        "tag_similar_chaves": tag_similar_chaves,
         "iac": iac,
     }
 

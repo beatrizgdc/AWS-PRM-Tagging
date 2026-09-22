@@ -42,6 +42,7 @@ def build_report(
     status_tag_counts = Counter(r["status_tag"] for r in resources)
     status_iac_counts = Counter(r["iac"]["tipo"] for r in resources)
     service_counts = Counter(r["servico"] for r in resources)
+    total_tag_similar = sum(1 for r in resources if r.get("tag_similar_encontrada"))
 
     return {
         "conta_id": account_id,
@@ -60,6 +61,7 @@ def build_report(
                 "desconhecido": status_iac_counts.get("desconhecido", 0),
             },
             "por_servico": dict(sorted(service_counts.items())),
+            "total_tag_similar_encontrada": total_tag_similar,
         },
         "recursos": resources,
         "arvore_ou": ou_tree,
