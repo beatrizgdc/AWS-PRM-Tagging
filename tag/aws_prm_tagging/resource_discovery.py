@@ -32,6 +32,14 @@ from .retry import with_backoff
 logger = logging.getLogger(__name__)
 
 # Serviços cobertos por lógica dedicada — nunca reclassificados no passo genérico.
+#
+# Defesa em profundidade: hoje "eks" e "bedrock" (plano, não AgentCore) nem
+# existem em `services._NAMESPACE_TO_CODE`, então `classify_arn` já devolve
+# `None` pra esses namespaces antes de qualquer coisa chegar aqui — este set
+# não é o que efetivamente exclui EKS/Bedrock da descoberta genérica agora.
+# Ele existe para continuar protegendo contra duplicata caso alguém adicione
+# "eks"/"bedrock" a `_NAMESPACE_TO_CODE` no futuro (ex.: pra cobrir um tipo de
+# recurso desses serviços que não seja tratado por resource_discovery.py).
 _DEDICATED_SERVICE_CODES = {"AmazonBedrock", "AmazonEKS"}
 
 # Valores possíveis para o campo "tipo_recurso" — só preenchido para os

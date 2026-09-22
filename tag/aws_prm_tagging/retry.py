@@ -61,6 +61,7 @@ def with_backoff(
                     if attempt >= max_attempts:
                         raise
                     delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                    delay += random.uniform(0, delay * 0.1)
                     logger.warning(
                         "Erro de conexão em %s (tentativa %d/%d), aguardando %.1fs",
                         func.__name__,

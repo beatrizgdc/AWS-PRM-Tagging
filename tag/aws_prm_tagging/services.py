@@ -99,7 +99,9 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "directconnect": "AWSDirectConnect",
     "ds": "AWSDirectoryService",
     "dynamodb": "AmazonDynamoDB",
-    "dax": "AmazonDAX",
+    # "dax" fica de fora de propósito: o CSV não tem nenhum "Product Service
+    # Code" para DAX — a própria linha de DynamoDB traz a nota "Excludes DAX",
+    # ou seja, a AWS exclui DAX da elegibilidade do PRM explicitamente.
     # ec2: desambiguado em classify_arn (AmazonEC2 vs AmazonVPC).
     "ecr": "AmazonECR",
     "ecs": "AmazonECS",
