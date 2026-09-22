@@ -26,6 +26,7 @@ de teste do LocalStack (`000000000000`), região `us-east-1`:
 | Instância EC2 "inst-ok" | `pc:test123` (igual ao esperado) | `status_tag = ok` |
 | Instância EC2 "inst-sem-tag" | ausente | `status_tag = sem_tag` |
 | Instância EC2 "inst-conflito" | `pc:outrovalor` + `aws:cloudformation:stack-name=minha-stack` | `status_tag = conflito`, `iac.tipo = cloudformation` |
+| Instância EC2 "inst-terraform" | ausente + `Provisioner=Terraform` | `status_tag = sem_tag`, `iac.tipo = terraform_heuristico` (exercita o catch-all por valor, chave arbitrária) |
 | Bucket S3 `prm-test-bucket-ok` | `pc:test123` | `status_tag = ok` |
 | Cluster EKS `prm-test-cluster` | `pc:test123` | `status_tag = ok`, `servico = Amazon EKS` |
 | Node group EKS `prm-test-ng` | `pc:test123` | `status_tag = ok`, `servico = Amazon EKS` |
@@ -102,19 +103,19 @@ O bloco `resumo` do relatório gerado deve conter:
 
 ```json
 {
-  "total_recursos": 10,
+  "total_recursos": 11,
   "por_status_tag": {
-    "sem_tag": 5,
+    "sem_tag": 6,
     "ok": 4,
     "conflito": 1
   },
   "por_status_iac": {
     "cloudformation": 1,
-    "terraform_heuristico": 0,
+    "terraform_heuristico": 1,
     "desconhecido": 9
   },
   "por_servico": {
-    "Amazon EC2": 7,
+    "Amazon EC2": 8,
     "Amazon EKS": 2,
     "Amazon S3": 1
   }
@@ -123,13 +124,13 @@ O bloco `resumo` do relatório gerado deve conter:
 
 Notas sobre os números:
 
-- `total_recursos = 10` inclui os 3 recursos listados na tabela de cenário
+- `total_recursos = 11` inclui os 4 recursos listados na tabela de cenário
   mais recursos "de fundo" que o próprio LocalStack expõe (ex.: AMIs padrão
   visíveis via `ec2:DescribeInstances`/Resource Groups Tagging API, e o
   security group padrão criado junto com a VPC do cluster EKS) — variações
   pequenas nesse número entre execuções não indicam regressão, desde que os
-  3 status de tag (`ok`/`sem_tag`/`conflito`) e os 2 recursos EKS
-  (`cluster` + `nodegroup`) apareçam.
+  3 status de tag (`ok`/`sem_tag`/`conflito`), o `terraform_heuristico = 1`
+  e os 2 recursos EKS (`cluster` + `nodegroup`) apareçam.
 - `arvore_ou` não deve ser `null`: deve conter um root com uma OU "Producao"
   contendo a conta "Cliente Teste".
 - O log da execução deve conter uma linha `ERROR` por região mencionando

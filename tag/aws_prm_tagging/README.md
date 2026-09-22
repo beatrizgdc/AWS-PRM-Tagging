@@ -40,13 +40,13 @@ Documentação completa:
 ## Onde rodar os comandos
 
 Este arquivo, `requirements.txt`, `docs/` e `test/` vivem dentro da própria
-pasta do pacote Python (`aws_prm_tagging/`). Isso não afeta instalar
-dependências ou navegar a documentação (comandos abaixo já assumem que você
-está dentro desta pasta), mas **executar o CLI exige rodar de um nível
-acima**: `python3 -m aws_prm_tagging.main` só resolve o módulo
-`aws_prm_tagging.main` se o diretório de trabalho for o **pai** desta pasta
-(ou seja, a raiz do repositório, que contém `aws_prm_tagging/` como
-subdiretório).
+pasta do pacote Python (`aws_prm_tagging/` — a raiz deste repositório). Isso
+não afeta instalar dependências ou navegar a documentação (comandos abaixo
+já assumem que você está dentro desta pasta), mas **executar o CLI exige
+rodar de um nível acima**: `python3 -m aws_prm_tagging.main` só resolve o
+módulo `aws_prm_tagging.main` se o diretório de trabalho for o **diretório
+que contém `aws_prm_tagging/`** (o pai direto desta pasta, qualquer que seja
+o nome dele em quem clonou o repositório).
 
 ## Requisitos
 
@@ -150,8 +150,7 @@ Permissões IAM mínimas necessárias (somente leitura) em
 Pré-requisito: o perfil `<perfil>` já criado e verificado na seção
 ["Configurar credenciais AWS"](#configurar-credenciais-aws) acima —
 substitua pelo nome real do seu perfil no comando abaixo. Rodando a partir
-da raiz do repositório (um nível acima desta pasta — ver "Onde rodar os
-comandos"):
+do diretório pai desta pasta (ver "Onde rodar os comandos"):
 
 ```bash
 python3 -m aws_prm_tagging.main \
@@ -174,23 +173,29 @@ ou é descoberto em runtime pelas próprias chamadas de API (conta, regiões,
 ## Estrutura
 
 ```
-tag-proj/                                    raiz do repositório — rodar o CLI a partir daqui
-  aws-prm-onboarding-guide.pdf               guia oficial AWS PRM
-  resource-tagging-included-services.csv     CSV oficial fornecido pela AWS
-  aws_prm_tagging/                           pacote Python (este README vive aqui)
-    data/                                    cópia do CSV usada em runtime (importlib.resources — fonte de verdade para o código)
-    services.py                              carrega o CSV e classifica ARNs por serviço
-    regions.py                               descoberta de regiões comerciais ativas
-    resource_discovery.py                    Resource Groups Tagging API + casos especiais (Bedrock, EKS)
-    tag_status.py                            classificação sem_tag / ok / conflito
-    iac_detection.py                         heurística de IaC
-    ou_tree.py                               árvore de OUs da Organization
-    report.py                                monta o relatório JSON final
-    retry.py                                 backoff exponencial para throttling
-    main.py                                  CLI (entrypoint)
-    requirements.txt
-    docs/                                    documentação de arquitetura, produção e rollout multi-cliente
-    test/localstack/                         teste de ponta a ponta contra LocalStack (sem AWS real)
+aws_prm_tagging/                             raiz deste repositório (pacote Python — este README vive aqui)
+  aws-prm-onboarding-guide.pdf               guia oficial AWS PRM (referência)
+  resource-tagging-included-services.csv     CSV oficial fornecido pela AWS (referência)
+  data/                                      cópia do CSV usada em runtime (importlib.resources — fonte de verdade para o código)
+  services.py                                carrega o CSV e classifica ARNs por serviço
+  regions.py                                 descoberta de regiões comerciais ativas
+  resource_discovery.py                      Resource Groups Tagging API + casos especiais (Bedrock, EKS)
+  tag_status.py                              classificação sem_tag / ok / conflito
+  iac_detection.py                           heurística de IaC
+  ou_tree.py                                 árvore de OUs da Organization
+  report.py                                  monta o relatório JSON final
+  retry.py                                   backoff exponencial para throttling
+  main.py                                    CLI (entrypoint)
+  requirements.txt
+  docs/                                      documentação de arquitetura, produção e rollout multi-cliente
+  test/localstack/                           teste de ponta a ponta contra LocalStack (sem AWS real)
 ```
 
 Detalhes de cada módulo em [docs/arquitetura.md](docs/arquitetura.md).
+
+**Nota sobre duplicação:** `aws-prm-onboarding-guide.pdf` e
+`resource-tagging-included-services.csv` aparecem tanto direto nesta pasta
+(referência de leitura) quanto dentro de `data/` (a segunda, só o CSV). O
+código nunca lê a cópia de nível superior — a única usada em runtime é
+`data/resource-tagging-included-services.csv`, carregada via
+`importlib.resources` (ver [docs/arquitetura.md](docs/arquitetura.md)).
