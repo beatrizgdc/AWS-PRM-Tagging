@@ -77,12 +77,15 @@ def test_tag_presente_valor_diferente_com_iac_ainda_conflito(recurso_factory):
     assert resultado["iac"]["stack_name"] == "stack-x"
 
 
-def test_chave_case_diferente_tratada_como_ausente_com_flag(recurso_factory):
+def test_chave_case_diferente_vira_revisar_tag_similar(recurso_factory):
     """Uma tag com grafia parecida mas case diferente (ex.: `AWS-APN-ID`) não
     conta como a tag `aws-apn-id` (comparação de key é case-sensitive) — cai
-    na regra de "tag ausente" normalmente, mas o relatório carrega o flag
-    `tag_similar_encontrada`/`tag_similar_chaves` (herdados do relatório da
-    Etapa 1, via `tag_status.find_similar_tag_keys`) para revisão humana."""
+    na regra de "tag ausente", mas NUNCA vira `taguear` diretamente: taguear
+    via API por cima criaria uma chave quase-duplicada em vez de corrigir o
+    provável erro de digitação. Vira `revisar_tag_similar`, carregando o
+    flag `tag_similar_encontrada`/`tag_similar_chaves` (herdados do
+    relatório da Etapa 1, via `tag_status.find_similar_tag_keys`) para
+    revisão humana."""
     recurso = recurso_factory(
         status_tag="sem_tag",
         iac_tipo="desconhecido",
@@ -90,6 +93,23 @@ def test_chave_case_diferente_tratada_como_ausente_com_flag(recurso_factory):
         tag_similar_chaves=["AWS-APN-ID"],
     )
     resultado = decision.classify_resource(recurso, EXPECTED)
-    assert resultado["decisao"] == decision.DECISAO_TAGUEAR
+    assert resultado["decisao"] == decision.DECISAO_REVISAR_TAG_SIMILAR
     assert resultado["tag_similar_encontrada"] is True
     assert resultado["tag_similar_chaves"] == ["AWS-APN-ID"]
+
+
+def test_tag_similar_com_iac_detectado_ainda_pula_iac(recurso_factory):
+    """IaC detectado tem precedência sobre tag similar (mesmo espírito da
+    precedência de conflito): se o recurso já não seria tagueado via API de
+    qualquer forma, o risco de criar uma chave quase-duplicada não existe —
+    o flag de tag similar continua visível no relatório, só não muda a
+    decisão para `revisar_tag_similar`."""
+    recurso = recurso_factory(
+        status_tag="sem_tag",
+        iac_tipo="cloudformation",
+        tag_similar_encontrada=True,
+        tag_similar_chaves=["Aws-Apn-Id"],
+    )
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
+    assert resultado["tag_similar_encontrada"] is True

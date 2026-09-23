@@ -56,6 +56,11 @@ partir da conta de gerenciamento de uma AWS Organization, também descobre a
 > Detalhes e o porquê da decisão de não resolver isso agora em
 > [docs/arquitetura.md](docs/arquitetura.md#resource_discoverypy).
 
+Falhas de descoberta (ex.: `AccessDenied` numa região) entram no relatório
+como `falhas_descoberta`, não só no log — sem isso, "0 recursos" e "a
+descoberta falhou aqui" seriam indistinguíveis no único artefato que a
+Etapa 4/dashboard consome.
+
 Documentação completa:
 
 - [docs/arquitetura.md](docs/arquitetura.md) — como o projeto está estruturado, módulo por módulo, decisões de design e limitações conhecidas.
@@ -191,7 +196,7 @@ python3 -m aws_prm_tagging.main map \
 
 | Parâmetro | Obrigatório | Descrição |
 |---|---|---|
-| `--expected-tag-value` | sim | Valor esperado da tag `aws-apn-id` (formato `pc:<product-code>`). Nunca hardcoded — varia por cliente/conta/OU. |
+| `--expected-tag-value` | sim | Valor esperado da tag `aws-apn-id` (formato `pc:<product-code>`, validado — `ra-...` e qualquer outro formato são recusados). Nunca hardcoded — varia por cliente/conta/OU. |
 | `--profile` | não | Perfil de credenciais AWS configurado localmente. Se omitido, usa a cadeia padrão do boto3 (variáveis de ambiente, perfil `default`, IAM role). |
 | `--output` | não | Caminho do arquivo JSON de saída (default: `prm_mapping_report.json`). |
 
@@ -238,7 +243,7 @@ python3 -m aws_prm_tagging.main apply \
 | `--input` | sim | Relatório JSON da Etapa 2a (saída de `decide`). |
 | `--profile` | não | Igual à Etapa 1 — usado para as chamadas de leitura de revalidação e (com `--live`) as chamadas de escrita. |
 | `--output` | não | Caminho do arquivo JSON de saída (default: `prm_apply_report.json`). |
-| `--no-revalidate` | não | Desliga a revalidação do estado atual de cada recurso antes de agir sobre ele (ver [docs/arquitetura.md](docs/arquitetura.md#tag_executionpy)). |
+| `--no-revalidate` | não | Desliga a revalidação do estado atual de cada recurso antes de agir sobre ele (ver [docs/arquitetura.md](docs/arquitetura.md#tag_executionpy)). **Recusado junto de `--live`** — em execução real, a revalidação é a única proteção contra sobrescrever um conflito. |
 | `--live` | não | Executa de verdade (Etapa 2c) em vez de dry-run (Etapa 2b, default) — escreve a tag nos recursos `taguear`. |
 | `--max-decision-age-hours` | não | Recusa agir se a descoberta (Etapa 1) por trás do relatório de decisão for mais velha que este limite, em horas (default: sem checagem). |
 

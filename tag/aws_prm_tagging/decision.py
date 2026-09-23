@@ -10,11 +10,18 @@ disco é responsabilidade do chamador (o mesmo padrão que `report.py` já usa:
 Cada recurso do relatório da Etapa 1 é classificado em exatamente uma
 categoria:
 
-- `taguear`   — tag ausente e recurso não gerenciado por IaC. Candidato a
-  tagueamento via API nas Etapas 2b/2c.
+- `taguear`   — tag ausente, recurso não gerenciado por IaC, e nenhuma tag
+  de grafia parecida encontrada. Candidato a tagueamento via API nas
+  Etapas 2b/2c.
 - `pular_iac` — recurso gerenciado por IaC (heurística da Etapa 1),
   independente de ter ou não a tag hoje. Nunca tagueado via API/CLI/Console
   — só identificado e sinalizado para tagueamento pelo próprio IaC.
+- `revisar_tag_similar` — tag `aws-apn-id` ausente, mas encontrada uma tag
+  com grafia parecida (ex.: `AWS-APN-ID`, case diferente —
+  `tag_status.find_similar_tag_keys`), quase certamente um erro de
+  digitação humano. Nunca tagueado via API automaticamente: aplicar
+  `aws-apn-id` por cima criaria uma segunda chave quase-duplicada em vez de
+  corrigir o erro original — precisa de revisão humana antes.
 - `ja_ok`     — tag já presente com o valor esperado (comparação exata,
   case-sensitive, herdada de `tag_status.get_tag_status`). Nada a fazer.
 - `conflito`  — tag presente com um valor diferente do esperado. Nunca
@@ -25,11 +32,17 @@ Precedência (aplicada nesta ordem):
 
 1. Tag ausente:
    a. IaC detectado (`cloudformation` ou `terraform_heuristico`) -> `pular_iac`.
-   b. Caso contrário (incluindo `iac.tipo == "desconhecido"`) -> `taguear`.
+      Tem precedência sobre o item seguinte: se o recurso já não seria
+      tagueado via API de qualquer forma, o risco de criar uma chave
+      quase-duplicada não existe — o alerta de tag similar continua visível
+      no relatório, só não muda a decisão.
+   b. Tag de grafia parecida encontrada -> `revisar_tag_similar`.
+   c. Caso contrário (incluindo `iac.tipo == "desconhecido"`) -> `taguear`.
 2. Tag presente:
    a. Valor bate com o esperado -> `ja_ok`.
    b. Valor diferente -> `conflito` (aqui o IaC é só metadado informativo no
-      relatório — nunca muda a decisão).
+      relatório — nunca muda a decisão; tag similar também não se aplica,
+      já existe uma `aws-apn-id` de fato).
 
 **Importante:** "tag ausente"/"valor bate com o esperado" acima NÃO são lidos
 do `status_tag` já calculado pela Etapa 1 — são recalculados aqui via
@@ -77,10 +90,17 @@ from .tag_status import TAG_KEY, STATUS_CONFLITO, STATUS_OK, STATUS_SEM_TAG, get
 
 DECISAO_TAGUEAR = "taguear"
 DECISAO_PULAR_IAC = "pular_iac"
+DECISAO_REVISAR_TAG_SIMILAR = "revisar_tag_similar"
 DECISAO_JA_OK = "ja_ok"
 DECISAO_CONFLITO = "conflito"
 
-_TODAS_AS_DECISOES = (DECISAO_TAGUEAR, DECISAO_PULAR_IAC, DECISAO_JA_OK, DECISAO_CONFLITO)
+_TODAS_AS_DECISOES = (
+    DECISAO_TAGUEAR,
+    DECISAO_PULAR_IAC,
+    DECISAO_REVISAR_TAG_SIMILAR,
+    DECISAO_JA_OK,
+    DECISAO_CONFLITO,
+)
 _TODOS_OS_STATUS_IAC = (IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO, IAC_DESCONHECIDO)
 _IAC_DETECTADO = (IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO)
 
@@ -129,7 +149,12 @@ def _validar_recurso(resource: Any) -> str | None:
     return None
 
 
-def _decidir(valor_tag_atual: str | None, expected_tag_value: str, iac_tipo: str) -> tuple[str, str]:
+def _decidir(
+    valor_tag_atual: str | None,
+    expected_tag_value: str,
+    iac_tipo: str,
+    tag_similar_encontrada: bool,
+) -> tuple[str, str]:
     """Aplica a regra de precedência (ver docstring do módulo) e devolve
     `(decisao, motivo)`.
 
@@ -146,6 +171,14 @@ def _decidir(valor_tag_atual: str | None, expected_tag_value: str, iac_tipo: str
                 DECISAO_PULAR_IAC,
                 f"tag aws-apn-id ausente; recurso gerenciado por IaC ({iac_tipo}) "
                 "— taguear via IaC, não via API/CLI/Console",
+            )
+        if tag_similar_encontrada:
+            return (
+                DECISAO_REVISAR_TAG_SIMILAR,
+                "tag aws-apn-id ausente, mas encontrada uma tag de grafia parecida "
+                "(case diferente) — provável erro de digitação; precisa de revisão "
+                "humana antes de taguear via API, para não criar uma chave "
+                "quase-duplicada por engano",
             )
         return (
             DECISAO_TAGUEAR,
@@ -191,7 +224,8 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
 
     iac = resource["iac"]
     valor_tag_atual = resource.get("valor_tag_encontrado")
-    decisao, motivo = _decidir(valor_tag_atual, expected_tag_value, iac["tipo"])
+    tag_similar_encontrada = bool(resource.get("tag_similar_encontrada", False))
+    decisao, motivo = _decidir(valor_tag_atual, expected_tag_value, iac["tipo"], tag_similar_encontrada)
 
     return {
         "arn": resource["arn"],
@@ -201,7 +235,7 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
         "valor_tag_atual": valor_tag_atual,
         "decisao": decisao,
         "motivo": motivo,
-        "tag_similar_encontrada": bool(resource.get("tag_similar_encontrada", False)),
+        "tag_similar_encontrada": tag_similar_encontrada,
         "tag_similar_chaves": list(resource.get("tag_similar_chaves", [])),
         "iac": {
             "tipo": iac["tipo"],

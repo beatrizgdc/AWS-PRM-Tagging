@@ -28,6 +28,7 @@ def test_lote_vazio_relatorio_valido_sem_erro(relatorio_etapa1_factory):
     assert relatorio["resumo"]["por_decisao"] == {
         decision.DECISAO_TAGUEAR: 0,
         decision.DECISAO_PULAR_IAC: 0,
+        decision.DECISAO_REVISAR_TAG_SIMILAR: 0,
         decision.DECISAO_JA_OK: 0,
         decision.DECISAO_CONFLITO: 0,
     }
@@ -81,6 +82,7 @@ def test_resumo_agregado_por_decisao_servico_e_iac(recurso_factory, relatorio_et
     assert resumo["por_decisao"] == {
         decision.DECISAO_TAGUEAR: 1,
         decision.DECISAO_PULAR_IAC: 1,
+        decision.DECISAO_REVISAR_TAG_SIMILAR: 0,
         decision.DECISAO_JA_OK: 1,
         decision.DECISAO_CONFLITO: 1,
     }

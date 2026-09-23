@@ -127,10 +127,13 @@ def test_revalidacao_prossegue_para_recurso_ainda_sem_tag(fake_session_factory):
     assert spy.arns_chamados == [arn]
 
 
-def test_falha_na_revalidacao_nao_bloqueia_tentativa_de_tagueamento(fake_session_factory):
+def test_falha_na_revalidacao_bloqueia_a_tentativa_de_tagueamento(fake_session_factory):
     """Se a leitura de revalidação falhar (ex.: `AccessDenied` na permissão
-    de leitura), o recurso não fica travado — a tentativa principal segue
-    normalmente, só sem o benefício da revalidação para este recurso."""
+    de leitura), o recurso NUNCA prossegue para a tentativa de escrita —
+    nem em dry-run, nem em live. Sem saber o estado atual do recurso, a
+    resposta segura é não arriscar sobrescrever um conflito que a leitura
+    falhou em enxergar (ver docstring do módulo — corrigido depois de uma
+    versão anterior que deixava a tentativa prosseguir)."""
     arn = "arn:aws:s3:::bucket-sem-permissao-leitura"
     session = fake_session_factory({"resourcegroupstaggingapi": _FakeTaggingClient(erro=True)})
     spy = _SpyExecutor()
@@ -139,8 +142,10 @@ def test_falha_na_revalidacao_nao_bloqueia_tentativa_de_tagueamento(fake_session
         _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
     )
 
-    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
-    assert spy.arns_chamados == [arn]
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_REVALIDACAO_FALHOU
+    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_FALHOU
+    assert resultado["recursos"][0]["detalhe_erro"]["codigo"] == "AccessDeniedException"
+    assert spy.arns_chamados == []
 
 
 def test_revalidacao_generica_detecta_conflito_e_nunca_tenta_escrever(fake_session_factory):
@@ -274,19 +279,21 @@ def test_formato_do_relatorio_de_saida():
     assert resultado["conta_id"] == "000000000000"
     assert resultado["valor_tag_esperado"] == TAG_VALUE
     assert resultado["resumo"]["total_recursos"] == 1
-    assert resultado["resumo"]["por_categoria_final"][tag_execution.CATEGORIA_TAGUEADO_SUCESSO] == 1
+    assert resultado["resumo"]["por_categoria_final"][tag_execution.CATEGORIA_SIMULADO_SUCESSO] == 1
+    assert resultado["resumo"]["por_categoria_final"][tag_execution.CATEGORIA_TAGUEADO_SUCESSO] == 0
     assert resultado["resumo"]["por_resultado"] == {tag_execution.RESULTADO_SIMULADO_OK: 1}
     assert resultado["resumo"]["por_estrategia_api"] == {tag_execution.ApiStrategy.GENERICO.value: 1}
-    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_TAGUEADO_SUCESSO
+    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_SIMULADO_SUCESSO
     assert resultado["recursos"][0]["origem"] == "execucao"
     assert "executado_em" in resultado
 
 
-def test_modo_live_aparece_no_relatorio_quando_dry_run_false():
+def test_modo_live_aparece_no_relatorio_quando_dry_run_false(fake_session_factory):
     relatorio = _relatorio_um_recurso_generico("arn:aws:s3:::bucket-live")
+    session = fake_session_factory({"resourcegroupstaggingapi": _FakeTaggingClient({})})
     spy = _SpyExecutor()
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False, executor=spy
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False, executor=spy
     )
     assert resultado["modo"] == "live"
 
@@ -333,10 +340,13 @@ def test_relatorio_final_mescla_recursos_pular_iac_ja_ok_e_conflito_da_etapa_2a(
     assert resultado["resumo"]["por_estrategia_api"] == {}
     assert resultado["resumo"]["por_categoria_final"] == {
         tag_execution.CATEGORIA_TAGUEADO_SUCESSO: 0,
+        tag_execution.CATEGORIA_SIMULADO_SUCESSO: 0,
         tag_execution.CATEGORIA_FALHOU: 0,
         tag_execution.CATEGORIA_PULADO_IAC: 1,
+        tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR: 0,
         tag_execution.CATEGORIA_CONFLITO: 1,
         tag_execution.CATEGORIA_JA_OK: 1,
+        tag_execution.CATEGORIA_ERRO_CLASSIFICACAO: 0,
     }
 
 
@@ -355,7 +365,8 @@ def test_relatorio_final_mescla_taguear_com_as_outras_categorias(relatorio_decis
 
     assert resultado["resumo"]["total_recursos"] == 4
     por_arn = {r["arn"]: r for r in resultado["recursos"]}
-    assert por_arn["arn:taguear"]["categoria_final"] == tag_execution.CATEGORIA_TAGUEADO_SUCESSO
+    # dry-run (default) -> categoria simulada, nunca a de sucesso real.
+    assert por_arn["arn:taguear"]["categoria_final"] == tag_execution.CATEGORIA_SIMULADO_SUCESSO
     assert por_arn["arn:taguear"]["origem"] == "execucao"
     assert por_arn["arn:taguear"]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
 
@@ -386,14 +397,20 @@ def test_relatorio_de_decisao_totalmente_vazio_produz_relatorio_vazio(relatorio_
 
 
 class _FakeTagResourcesClient:
-    """Stub de `resourcegroupstaggingapi.tag_resources` — `falhas` simula
-    `FailedResourcesMap` (falha parcial dentro de um lote "bem sucedido" no
-    nível HTTP); `erro` simula a chamada inteira falhando."""
+    """Stub de `resourcegroupstaggingapi` — cobre tanto a escrita
+    (`tag_resources`, `falhas` simula `FailedResourcesMap`, `erro` simula a
+    chamada inteira falhando) quanto a leitura de revalidação
+    (`get_resources`, sempre "nada encontrado" — os testes de
+    `LiveExecutor` focam no comportamento da escrita, então a revalidação
+    aqui sempre deixa o recurso pendente, nunca interfere)."""
 
     def __init__(self, falhas: dict[str, dict] | None = None, erro: bool = False):
         self._falhas = falhas or {}
         self._erro = erro
         self.chamadas: list[tuple[list[str], dict]] = []
+
+    def get_resources(self, **kwargs):
+        return {"ResourceTagMappingList": []}
 
     def tag_resources(self, ResourceARNList, Tags):
         self.chamadas.append((list(ResourceARNList), dict(Tags)))
@@ -403,9 +420,16 @@ class _FakeTagResourcesClient:
 
 
 class _FakeEksWriteClient:
+    """Cobre tanto a escrita (`tag_resource`) quanto a leitura de
+    revalidação (`list_tags_for_resource`, sempre "sem tags") — mesmo
+    espírito de `_FakeTagResourcesClient` acima."""
+
     def __init__(self, erro_codigo: str | None = None):
         self._erro_codigo = erro_codigo
         self.chamadas: list[tuple[str, dict]] = []
+
+    def list_tags_for_resource(self, resourceArn):
+        return {"tags": {}}
 
     def tag_resource(self, resourceArn, tags):
         self.chamadas.append((resourceArn, dict(tags)))
@@ -419,7 +443,7 @@ def test_live_executor_generico_sucesso(fake_session_factory):
     relatorio = _relatorio_um_recurso_generico("arn:aws:s3:::bucket-live-sucesso")
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     assert resultado["modo"] == "live"
@@ -443,7 +467,7 @@ def test_live_executor_generico_falha_parcial_de_lote(fake_session_factory, rela
     )
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     por_arn = {r["arn"]: r for r in resultado["recursos"]}
@@ -464,7 +488,7 @@ def test_live_executor_generico_chamada_inteira_falha_marca_todo_o_lote(fake_ses
     )
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     for r in resultado["recursos"]:
@@ -484,7 +508,7 @@ def test_live_executor_falha_num_lote_nao_impede_o_proximo_lote(fake_session_fac
     )
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     assert len(client.chamadas) == 2
@@ -499,7 +523,7 @@ def test_live_executor_dedicado_eks_sucesso(fake_session_factory, relatorio_deci
     )
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_TAGUEADO_SUCESSO
@@ -516,7 +540,7 @@ def test_live_executor_dedicado_recurso_nao_encontrado(fake_session_factory, rel
     )
 
     resultado = tag_execution.run_tagging_execution(
-        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, dry_run=False
     )
 
     assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_RECURSO_NAO_ENCONTRADO
@@ -527,6 +551,49 @@ def test_live_executor_dedicado_recurso_nao_encontrado(fake_session_factory, rel
 # ---------------------------------------------------------------------------
 # Idade máxima do relatório de decisão
 # ---------------------------------------------------------------------------
+
+
+def test_live_sem_revalidacao_e_recusado(fake_session_factory):
+    """`dry_run=False` (live) nunca aceita `revalidate=False` — a proteção
+    inteira contra sobrescrever um conflito depende da revalidação estar
+    ligada. Em dry-run, a combinação continua permitida (nenhuma escrita
+    real está em jogo)."""
+    relatorio = _relatorio_um_recurso_generico("arn:aws:s3:::bucket-live-sem-revalidacao")
+    try:
+        tag_execution.run_tagging_execution(
+            relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False, dry_run=False
+        )
+        assert False, "deveria ter levantado RevalidacaoObrigatoriaError"
+    except tag_execution.RevalidacaoObrigatoriaError:
+        pass
+
+
+def test_relatorio_final_inclui_recisao_tag_similar_da_etapa_2a(relatorio_decisao_factory, decisao_factory):
+    relatorio = relatorio_decisao_factory(
+        [decisao_factory(arn="arn:tag-similar", decisao="revisar_tag_similar")]
+    )
+    resultado = tag_execution.run_tagging_execution(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False)
+    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR
+    assert resultado["recursos"][0]["origem"] == "decisao"
+
+
+def test_relatorio_final_inclui_erros_de_classificacao_da_etapa_2a(relatorio_decisao_factory):
+    """Antes, `decision_report["erros"]` (recursos malformados que a Etapa
+    2a nem chegou a classificar) simplesmente sumiam do relatório desta
+    etapa — a Etapa 4 nunca via essas falhas. Agora entram como
+    `erro_classificacao`."""
+    relatorio = relatorio_decisao_factory([])
+    relatorio["erros"] = [{"arn": "arn:malformado", "servico": "Amazon S3", "erro": "campo 'regiao' ausente"}]
+
+    resultado = tag_execution.run_tagging_execution(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False)
+
+    assert resultado["resumo"]["total_recursos"] == 1
+    entrada = resultado["recursos"][0]
+    assert entrada["arn"] == "arn:malformado"
+    assert entrada["categoria_final"] == tag_execution.CATEGORIA_ERRO_CLASSIFICACAO
+    assert entrada["origem"] == "decisao"
+    assert entrada["detalhe_erro"]["mensagem"] == "campo 'regiao' ausente"
+    assert resultado["resumo"]["por_categoria_final"][tag_execution.CATEGORIA_ERRO_CLASSIFICACAO] == 1
 
 
 def test_idade_maxima_nao_verificada_quando_parametro_omitido():

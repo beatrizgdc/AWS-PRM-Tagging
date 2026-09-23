@@ -217,12 +217,31 @@ relatório (ver nota sobre EKS em `resource_discovery.py` acima), mantendo a
 final no formato descrito no `README.md` do estágio 1. Ambas são funções
 puras, sem I/O.
 
+Recebe também `falhas_descoberta` (opcional, de `main.py`) — uma entrada
+`{"regiao", "etapa", "erro"}` por combinação região/etapa
+(genérico/bedrock/eks) em que a descoberta levantou uma exceção não
+tratada. Existe para que "0 recursos" e "a descoberta falhou nessa região"
+nunca fiquem indistinguíveis no único artefato que a Etapa 4/dashboard
+consome — antes, uma falha de descoberta só ia para o log da execução, que
+nunca chega no push para o dashboard central.
+
 ### `decision.py`
 
 Etapa 2a — classifica cada recurso do relatório da Etapa 1 em `taguear` /
-`pular_iac` / `ja_ok` / `conflito` (regras de precedência completas no
-docstring do módulo). Puro: sem boto3, sem rede, sem leitura de arquivo —
-recebe o relatório da Etapa 1 já carregado como dict e devolve outro dict.
+`pular_iac` / `revisar_tag_similar` / `ja_ok` / `conflito` (regras de
+precedência completas no docstring do módulo). Puro: sem boto3, sem rede,
+sem leitura de arquivo — recebe o relatório da Etapa 1 já carregado como
+dict e devolve outro dict.
+
+`revisar_tag_similar`: tag `aws-apn-id` ausente, mas `tag_similar_encontrada`
+(ver `tag_status.py` acima) é verdadeiro — uma tag de grafia parecida (ex.:
+`AWS-APN-ID`) quase certamente é erro de digitação. Nunca vira `taguear`
+diretamente: aplicar `aws-apn-id` por cima via API criaria uma segunda
+chave quase-duplicada no recurso em vez de corrigir o erro original — fica
+para revisão humana. Só é verificado quando a tag está mesmo ausente e o
+recurso não é `pular_iac` (IaC detectado tem precedência: se o recurso já
+não seria tagueado via API de qualquer forma, o risco de duplicata não
+existe).
 
 Reaproveita `tag_status.get_tag_status`, mas **recalculado** a partir de
 `valor_tag_encontrado` (o valor bruto que a Etapa 1 já extraiu) contra o
@@ -273,7 +292,8 @@ chamada** — `select_taggable()` é o único ponto de entrada aceito pelo
 resto do módulo. Ela converte cada recurso em um `TaggableResource`, um
 tipo que **não tem campo `decisao`**. Toda função downstream recebe
 `TaggableResource`, nunca o dict bruto da Etapa 2a — não existe caminho de
-código que aceite `pular_iac`/`ja_ok`/`conflito` como parâmetro.
+código que aceite `pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito`
+como parâmetro.
 
 **Roteamento de API** (`route_strategy`), confirmado contra a documentação
 oficial de cada API (não só a página-índice de "supported services", que é
@@ -294,14 +314,21 @@ estratégia dedicada.
 **Revalidação, idempotência e IaC** (aplica-se aos dois modos — a
 revalidação existe independente de dry-run/live): antes de agir sobre cada
 recurso, o orquestrador relê o estado atual dele na AWS (`revalidate=True`
-por padrão, `--no-revalidate` desliga) e reaplica a MESMA regra de
-precedência de `decision.py` — não só compara o valor da tag. Três
-desfechos, nesta ordem, nenhum gera chamada de escrita:
+por padrão, `--no-revalidate` desliga — mas **nunca aceito junto de
+`dry_run=False`**, ver `RevalidacaoObrigatoriaError` abaixo) e reaplica a
+MESMA regra de precedência de `decision.py` — não só compara o valor da
+tag. Quatro desfechos, nesta ordem, nenhum gera chamada de escrita:
 
-1. Valor já bate com o esperado → `"ja_tagueado"`.
-2. Valor presente e diferente do esperado → `"conflito_na_revalidacao"` —
+1. **A leitura de revalidação FALHOU** (ex.: `AccessDenied`, throttling
+   esgotado) → `"revalidacao_falhou"`. Tem precedência sobre tudo — sem
+   saber o estado atual do recurso, a resposta segura é não arriscar
+   sobrescrever um conflito que a leitura falhou em enxergar. (Uma versão
+   anterior deixava a tentativa prosseguir nesse caso — corrigido: em modo
+   live isso significava tentar `tag:TagResources`/etc. às cegas.)
+2. Valor já bate com o esperado → `"ja_tagueado"`.
+3. Valor presente e diferente do esperado → `"conflito_na_revalidacao"` —
    nunca sobrescreve um conflito só porque ele apareceu depois da Etapa 2a.
-3. Tag ausente e IaC detectado (só quando a tag está mesmo ausente — IaC
+4. Tag ausente e IaC detectado (só quando a tag está mesmo ausente — IaC
    nunca tem precedência sobre um conflito) → `"iac_detectado_na_revalidacao"`
    — cobre o recurso que passou a ser gerenciado por IaC entre a Etapa 1/2a
    e esta execução.
@@ -316,9 +343,12 @@ filtro para o caminho genérico (varredura por região, parando assim que os
 ARNs pedidos são encontrados), e `eks:ListTagsForResource` /
 `bedrock:ListTagsForResource` / `elasticloadbalancing:DescribeTags` para os
 dedicados — mesmos clients já usados por `resource_discovery.py` na Etapa
-1, e já devolvem o conjunto completo sem custo extra. Falha na leitura de
-revalidação (ex.: `AccessDenied`) não bloqueia a tentativa principal — só
-perde o benefício da revalidação para aquele recurso.
+1, e já devolvem o conjunto completo sem custo extra.
+
+`RevalidacaoObrigatoriaError`: `run_tagging_execution` recusa
+`dry_run=False` junto de `revalidate=False` — em live, a proteção do item
+1 acima só existe se a revalidação estiver ligada; desligar as duas coisas
+juntas removeria a única salvaguarda contra sobrescrever um conflito.
 
 **Idade máxima do relatório de decisão** (`max_decision_age_hours`,
 opcional): recusa agir (`DecisionReportDesatualizadoError`) se a descoberta
@@ -340,14 +370,20 @@ viram falha, os demais do mesmo lote viram sucesso. Uma falha (de lote ou
 de recurso individual) nunca aborta o resto da execução — o próximo
 lote/recurso é tentado normalmente.
 
-**Relatório final** (`build_execution_report`): cobre as 5 categorias que
-fazem sentido para dashboard/leitura humana —
-`tagueado_sucesso`/`falhou`/`pulado_iac`/`conflito`/`ja_ok` —, mesclando os
-recursos `taguear` (resultado desta execução — inclui os pulados na
-revalidação, dobrados na categoria correspondente) com os
-`pular_iac`/`ja_ok`/`conflito` que a Etapa 2a já decidiu direto, sem nunca
-passar por este módulo. Campo `origem` (`"decisao"` / `"revalidacao"` /
-`"execucao"`) preserva em qual momento a classificação foi feita — a Etapa
+**Relatório final** (`build_execution_report`): cobre as categorias que
+fazem sentido para dashboard/leitura humana — `tagueado_sucesso` (só live)
+e `simulado_sucesso` (só dry-run — as duas NUNCA se misturam na mesma
+contagem, mesmo que `categoria_final` de ambas apareça no relatório) /
+`falhou` / `pulado_iac` / `revisar_tag_similar` / `conflito` / `ja_ok` /
+`erro_classificacao` —, mesclando três grupos: os recursos `taguear`
+(resultado desta execução — inclui os pulados na revalidação, dobrados na
+categoria correspondente); os `pular_iac`/`revisar_tag_similar`/`ja_ok`/
+`conflito` que a Etapa 2a já decidiu direto, sem nunca passar por este
+módulo; e os `erros` de classificação da Etapa 2a (recursos malformados
+que nem chegaram a ser classificados — antes ficavam presos só em
+`decision_report["erros"]` e nunca apareciam no relatório desta etapa).
+Campo `origem` (`"decisao"` / `"revalidacao"` / `"execucao"`) preserva em
+qual momento a classificação foi feita — a Etapa
 4 usa isso, por exemplo, para diferenciar um conflito visto já na
 descoberta original de um conflito que só apareceu no momento da escrita
 (possível tag de outro parceiro AWS aplicada nesse meio-tempo). Mesmo
@@ -387,6 +423,8 @@ arquivo de um é a entrada em arquivo do próximo), não por um orquestrador
 
 - `map` — Etapa 1. Comportamento idêntico ao script original de estágio
   único (mesmos argumentos `--expected-tag-value`/`--profile`/`--output`).
+  Falhas de descoberta por região/etapa são coletadas e passadas para
+  `report.build_report(..., falhas_descoberta=...)` — nunca só logadas.
 - `decide` — Etapa 2a. Lê `--input` (saída de `map`), escreve o relatório de
   decisão. Não usa boto3.
 - `apply` — Etapas 2b (default) e 2c (`--live`). Lê `--input` (saída de
@@ -398,7 +436,15 @@ arquivo de um é a entrada em arquivo do próximo), não por um orquestrador
   `--no-revalidate` desliga a revalidação; `--live` troca `dry_run=True`
   (default, Etapa 2b) por `dry_run=False` (Etapa 2c — escreve de verdade);
   `--max-decision-age-hours` liga a checagem de idade do relatório de
-  decisão (seção `tag_execution.py` acima).
+  decisão (seção `tag_execution.py` acima). `--live` combinado com
+  `--no-revalidate` é recusado antes de qualquer chamada AWS (mesma
+  garantia reforçada dentro de `tag_execution.py` via
+  `RevalidacaoObrigatoriaError`, para quem chamar a função direto sem
+  passar pelo CLI).
+
+`--expected-tag-value` (`map`/`decide`) é validado contra
+`^pc:[A-Za-z0-9]+$` — erro de verdade, não só aviso, já que o formato está
+fechado para este projeto (nunca `ra-...`).
 
 ## Por que não há arquivo de variáveis de ambiente
 

@@ -1,11 +1,13 @@
 # Testes unitários
 
 Pytest, 100% offline — sem rede real, sem credencial, sem nenhuma conta AWS
-real. Cobre `decision.py` (Etapa 2a, 100% sem boto3) e `tag_execution.py`
+real. Cobre `decision.py` (Etapa 2a, 100% sem boto3), `tag_execution.py`
 (Etapas 2b e 2c — usa boto3, mas os testes passam sessões/clients falsos em
-vez de rede real; ver `fake_session_factory` em `conftest.py`). Ver
+vez de rede real; ver `fake_session_factory` em `conftest.py`), `report.py`
+(Etapa 1, 100% sem boto3) e a validação pura de `main.py`
+(`_validate_expected_tag_value`). Ver
 [test/localstack/README.md](../localstack/README.md) para o teste e2e da
-Etapa 1, que precisa de boto3 + LocalStack de verdade.
+Etapa 1 completa, que precisa de boto3 + LocalStack de verdade.
 
 Rodar (do diretório que contém `aws_prm_tagging/` — ver ["Onde rodar os
 comandos"](../../README.md#onde-rodar-os-comandos) no README raiz):
@@ -39,11 +41,27 @@ Para `tag_execution.py` (Etapas 2b e 2c):
 - `test_tag_execution_lotes.py` — agrupamento em lotes de até 20 ARNs no
   caminho genérico, sem misturar região, e confirmação de que os caminhos
   dedicados (EKS/Bedrock/ELB) nunca são agrupados.
-- `test_tag_execution_execucao.py` — revalidação de 3 vias (já tagueado /
-  conflito / IaC detectado, cada um sem chamar o executor), idempotência
-  entre reexecuções, dry-run nunca chamando boto3 de escrita, `LiveExecutor`
-  (sucesso, falha parcial de lote, classificação de erro), idade máxima do
-  relatório de decisão, e o merge do relatório final (5 categorias).
+- `test_tag_execution_execucao.py` — revalidação de 4 vias (falha de
+  leitura / já tagueado / conflito / IaC detectado, cada uma sem chamar o
+  executor — falha de leitura tem precedência sobre as outras três),
+  `--live` recusando `revalidate=False` (`RevalidacaoObrigatoriaError`),
+  idempotência entre reexecuções, dry-run nunca chamando boto3 de escrita,
+  `LiveExecutor` (sucesso, falha parcial de lote, classificação de erro),
+  idade máxima do relatório de decisão, e o merge do relatório final
+  (incluindo `revisar_tag_similar` e os `erros` de classificação da
+  Etapa 2a).
+
+Para `report.py` (Etapa 1):
+
+- `test_report_falhas_descoberta.py` — `falhas_descoberta`/
+  `total_falhas_descoberta` distinguindo "0 recursos" de "a descoberta
+  falhou aqui" no relatório.
+
+Para `main.py`:
+
+- `test_main_validacao.py` — `_validate_expected_tag_value` (formato
+  `pc:<product-code>` fechado, `ra-...` e qualquer outro formato
+  recusados).
 
 Ao adicionar um módulo novo (Etapa 3 em diante), crie um novo grupo de
 arquivos `test_<módulo>_<área>.py` seguindo o mesmo padrão, em vez de

@@ -38,7 +38,15 @@ def build_report(
     expected_tag_value: str,
     resources: list[dict],
     ou_tree: dict | None,
+    falhas_descoberta: list[dict] | None = None,
 ) -> dict:
+    """`falhas_descoberta`: lista de `{"regiao", "etapa", "erro"}` — uma
+    entrada por combinação região/etapa (genérico/bedrock/eks) em que a
+    descoberta levantou uma exceção não tratada (ver `main.py`). Existe
+    para que "0 recursos" e "a descoberta falhou nessa região" nunca sejam
+    indistinguíveis no único artefato que a Etapa 4/dashboard consome — o
+    log da execução não chega lá, só este JSON."""
+    falhas_descoberta = falhas_descoberta or []
     status_tag_counts = Counter(r["status_tag"] for r in resources)
     status_iac_counts = Counter(r["iac"]["tipo"] for r in resources)
     service_counts = Counter(r["servico"] for r in resources)
@@ -62,7 +70,9 @@ def build_report(
             },
             "por_servico": dict(sorted(service_counts.items())),
             "total_tag_similar_encontrada": total_tag_similar,
+            "total_falhas_descoberta": len(falhas_descoberta),
         },
         "recursos": resources,
         "arvore_ou": ou_tree,
+        "falhas_descoberta": falhas_descoberta,
     }

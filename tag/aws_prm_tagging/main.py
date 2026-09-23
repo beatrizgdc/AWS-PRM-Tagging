@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 
 import boto3
@@ -31,6 +32,11 @@ from .retry import with_backoff
 
 logger = logging.getLogger("aws_prm_tagging")
 
+# Formato já confirmado e fechado para este projeto: "pc:<product-code>",
+# só letras/números depois do prefixo. Não é um formato genérico de tag da
+# AWS — é a decisão de escopo específica deste projeto (nunca "ra-...").
+_EXPECTED_TAG_VALUE_PATTERN = re.compile(r"^pc:[A-Za-z0-9]+$")
+
 
 @with_backoff()
 def _get_account_id(session: boto3.Session) -> str:
@@ -38,14 +44,19 @@ def _get_account_id(session: boto3.Session) -> str:
     return sts.get_caller_identity()["Account"]
 
 
-def _validate_expected_tag_value(value: str) -> None:
-    if not value.startswith("pc:"):
-        logger.warning(
-            "--expected-tag-value '%s' não começa com 'pc:' (formato padrão para "
-            "product code). Se for um Revenue Attribution ID, o formato esperado "
-            "é 'ra-<13 caracteres>' — confirme com o guia antes de prosseguir.",
+def _validate_expected_tag_value(value: str) -> bool:
+    """Erro de verdade (não só aviso) — o formato já está fechado para este
+    projeto, então um valor fora do padrão quase certamente é engano de
+    quem digitou o comando, não uma variação válida a aceitar."""
+    if not _EXPECTED_TAG_VALUE_PATTERN.match(value):
+        logger.error(
+            "--expected-tag-value '%s' inválido — o formato deste projeto é "
+            "'pc:<product-code>' (ex.: pc:xxxxxxxxxxxxxxxxxxxxxxxxx), só "
+            "letras/números depois de 'pc:'.",
             value,
         )
+        return False
+    return True
 
 
 def _load_json(path: str) -> dict:
@@ -64,7 +75,8 @@ def _write_json(path: str, data: dict) -> None:
 
 
 def _run_map(args: argparse.Namespace) -> int:
-    _validate_expected_tag_value(args.expected_tag_value)
+    if not _validate_expected_tag_value(args.expected_tag_value):
+        return 1
 
     session = boto3.Session(profile_name=args.profile)
 
@@ -89,6 +101,7 @@ def _run_map(args: argparse.Namespace) -> int:
     logger.info("%d serviços elegíveis carregados do CSV oficial", len(service_list))
 
     all_resources: list[dict] = []
+    falhas_descoberta: list[dict] = []
     total_regions = len(active_regions)
     for idx, region in enumerate(active_regions, start=1):
         logger.info("Processando região %s (%d/%d)", region, idx, total_regions)
@@ -99,12 +112,13 @@ def _run_map(args: argparse.Namespace) -> int:
                     session, region, service_list, args.expected_tag_value
                 )
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Falha inesperada na descoberta genérica em %s — pulando esta etapa "
                 "nesta região e continuando",
                 region,
             )
+            falhas_descoberta.append({"regiao": region, "etapa": "generico", "erro": str(exc)})
 
         try:
             all_resources.extend(
@@ -112,12 +126,13 @@ def _run_map(args: argparse.Namespace) -> int:
                     session, region, service_list, args.expected_tag_value
                 )
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Falha inesperada na descoberta de Bedrock em %s — pulando esta etapa "
                 "nesta região e continuando",
                 region,
             )
+            falhas_descoberta.append({"regiao": region, "etapa": "bedrock", "erro": str(exc)})
 
         try:
             all_resources.extend(
@@ -125,12 +140,13 @@ def _run_map(args: argparse.Namespace) -> int:
                     session, region, account_id, args.expected_tag_value
                 )
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Falha inesperada na descoberta de EKS em %s — pulando esta etapa "
                 "nesta região e continuando",
                 region,
             )
+            falhas_descoberta.append({"regiao": region, "etapa": "eks", "erro": str(exc)})
 
         logger.info(
             "Região %s concluída. Total acumulado de recursos: %d", region, len(all_resources)
@@ -151,9 +167,17 @@ def _run_map(args: argparse.Namespace) -> int:
         expected_tag_value=args.expected_tag_value,
         resources=deduped_resources,
         ou_tree=tree,
+        falhas_descoberta=falhas_descoberta,
     )
 
     _write_json(args.output, final_report)
+
+    if falhas_descoberta:
+        logger.warning(
+            "%d falha(s) de descoberta registrada(s) no relatório (falhas_descoberta) — "
+            "o total de recursos abaixo pode estar incompleto para as regiões/etapas afetadas.",
+            len(falhas_descoberta),
+        )
 
     logger.info(
         "Concluído. %d recursos mapeados em %d regiões. Relatório salvo em %s",
@@ -170,7 +194,8 @@ def _run_map(args: argparse.Namespace) -> int:
 
 
 def _run_decide(args: argparse.Namespace) -> int:
-    _validate_expected_tag_value(args.expected_tag_value)
+    if not _validate_expected_tag_value(args.expected_tag_value):
+        return 1
 
     try:
         etapa1_report = _load_json(args.input)
@@ -200,6 +225,14 @@ def _run_decide(args: argparse.Namespace) -> int:
 
 
 def _run_apply(args: argparse.Namespace) -> int:
+    if args.live and args.no_revalidate:
+        logger.error(
+            "--live não pode ser combinado com --no-revalidate: executar de verdade "
+            "sem revalidar o estado atual de cada recurso arrisca sobrescrever um "
+            "conflito que tenha aparecido depois da Etapa 2a. Rode sem --no-revalidate."
+        )
+        return 1
+
     try:
         decision_report = _load_json(args.input)
     except (OSError, json.JSONDecodeError):
@@ -226,7 +259,7 @@ def _run_apply(args: argparse.Namespace) -> int:
             revalidate=not args.no_revalidate,
             max_decision_age_hours=args.max_decision_age_hours,
         )
-    except tag_execution.DecisionReportDesatualizadoError as exc:
+    except (tag_execution.DecisionReportDesatualizadoError, tag_execution.RevalidacaoObrigatoriaError) as exc:
         logger.error("%s", exc)
         return 1
 
