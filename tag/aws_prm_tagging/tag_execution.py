@@ -48,48 +48,73 @@ Confirmado na documentação oficial da AWS (API references, não a página-
 
 ## Revalidação e idempotência
 
-Toda execução (dry-run ou, futuramente, live) revalida o estado atual da
-tag imediatamente antes de agir sobre cada recurso — controlável via
+Toda execução (dry-run ou, futuramente, live) revalida o estado atual do
+recurso imediatamente antes de agir sobre ele — controlável via
 `revalidate=False` em `run_stage2b`, default `True`. Dois motivos:
 
-1. Condição de corrida: o recurso pode ter sido deletado, ou tido a tag
-   alterada por outra automação, entre a execução da Etapa 1/2a e a
-   execução desta etapa.
-2. Idempotência entre execuções: se a Etapa 2c já tiver tagueado um
-   recurso numa execução anterior (ou outra automação já tiver aplicado a
-   tag), rodar de novo sobre o mesmo relatório de decisão não deve gerar
-   uma nova chamada de escrita para esse recurso — ele é reportado como
-   `"ja_tagueado"` e pulado. Isso é o que torna a Etapa 2c idempotente por
-   construção: o estado atual da tag na AWS *é* a fonte da verdade de
-   "já foi feito ou não", sem precisar de nenhum arquivo de progresso
-   separado. Combinado com o fato de que todas as APIs de tagging usadas
-   aqui são operações de conjunto (aplicar o mesmo valor duas vezes é
-   no-op, não erro), reexecuções repetidas do mesmo relatório de decisão
-   nunca duplicam nem conflitam uma ação já feita.
+1. Condição de corrida: o recurso pode ter sido deletado, tido a tag
+   alterada, ou passado a ser gerenciado por IaC, entre a execução da
+   Etapa 1/2a e a execução desta etapa.
+2. Idempotência entre execuções: se uma execução anterior já tiver
+   tagueado um recurso (ou outra automação já tiver aplicado a tag), rodar
+   de novo sobre o mesmo relatório de decisão não deve gerar uma nova
+   chamada de escrita para esse recurso. Isso é o que torna reexecuções
+   idempotentes por construção: o estado atual do recurso na AWS *é* a
+   fonte da verdade de "já foi feito ou não", sem precisar de nenhum
+   arquivo de progresso separado.
 
-A leitura de revalidação usa, por estratégia:
+**A revalidação reaplica a MESMA regra de precedência de `decision.py`**
+(`_classificar_estado_revalidado`, usada tanto pelo caminho genérico quanto
+pelos dedicados) — não só confere se a tag já está com o valor esperado.
+Três desfechos possíveis, nesta ordem (idêntica à de `decision._decidir`):
 
-- Genérico: uma varredura por região via `tag:GetResources` com
-  `TagFilters=[{"Key": "aws-apn-id"}]`, cobrindo TODOS os recursos
-  genéricos da região revalidados de uma vez (muito mais barato que 1
-  leitura por ARN). Um ARN que não aparece no resultado significa "sem a
-  tag aws-apn-id hoje" — o que inclui tanto "nunca teve a tag" quanto (raro)
+1. Valor atual == valor esperado → `"ja_tagueado"`. Nenhuma chamada de
+   escrita.
+2. Valor atual presente e DIFERENTE do esperado → `"conflito_na_revalidacao"`.
+   Nenhuma chamada de escrita — um valor conflitante nunca é sobrescrito
+   automaticamente, apareça ele já na Etapa 2a ou só no momento da escrita.
+   IaC é irrelevante aqui (mesma regra de `decision.py`: um conflito nunca
+   vira "pular IaC" só porque o recurso também é gerenciado por IaC).
+3. Tag ausente E IaC detectado (só verificado quando a tag está mesmo
+   ausente — ver item 2) → `"iac_detectado_na_revalidacao"`. Nenhuma
+   chamada de escrita — cobre o recurso que passou a ser gerenciado por
+   IaC depois da Etapa 1/2a e antes desta execução.
+4. Nenhum dos três → segue para a tentativa de escrita normal.
+
+(Uma versão anterior deste módulo só verificava o item 1, tratando "sem
+tag" e "tag com valor diferente" da mesma forma — o que faria uma execução
+real tentar sobrescrever um valor conflitante encontrado só no momento da
+escrita. Corrigido: a checagem agora é sempre de 3 vias, nunca só 2.)
+
+A leitura de revalidação busca o conjunto COMPLETO de tags de cada
+recurso (não só a `aws-apn-id`) — precisa disso para o item 3 acima —, por
+estratégia:
+
+- Genérico: uma varredura por região via `tag:GetResources` sem
+  `TagFilters` (a versão anterior filtrava por `TagFilters=[{"Key":
+  "aws-apn-id"}]`, mas isso escondia qualquer outra tag do resultado,
+  inclusive as de IaC), parando assim que todos os ARNs pedidos já foram
+  encontrados. Um ARN que não aparece na varredura significa "sem tag
+  nenhuma hoje" — o que inclui tanto "nunca teve tag" quanto (raro)
   "recurso foi deletado"; qualquer um dos dois casos é seguro seguir para a
-  tentativa de tagueamento (se deletado, a chamada real na Etapa 2c falha
-  de forma limpa e é reportada, sem dano).
+  tentativa de tagueamento (se deletado, a chamada real falha de forma
+  limpa e é reportada, sem dano).
 - EKS (cluster/node group): `eks:ListTagsForResource`, 1 ARN por chamada
-  (mesma limitação da escrita).
+  (mesma limitação da escrita) — já devolve o conjunto completo de tags,
+  sem custo extra para checar IaC.
 - Bedrock: `bedrock:ListTagsForResource`, 1 ARN por chamada — já usado do
-  mesmo jeito em `resource_discovery.discover_bedrock_resources`.
+  mesmo jeito em `resource_discovery.discover_bedrock_resources`, também
+  já completo.
 - ELB: `elasticloadbalancing:DescribeTags`, até 20 ARNs por chamada (só a
   leitura aceita lote; a escrita não — ver acima). Mesmo client já usado em
-  `resource_discovery.discover_eks_resources`.
+  `resource_discovery.discover_eks_resources`, também já completo.
 
 Se a leitura de revalidação falhar (ex.: `AccessDenied` na permissão de
 leitura), o recurso não é bloqueado: fica registrado que a revalidação
-falhou, e a tentativa de tagueamento (real ou simulada) prossegue
-normalmente — falhar a leitura de revalidação não deveria impedir de
-tentar a ação principal.
+falhou (estado `None`, distinto de um `_RevalidatedState` com
+`valor_atual=None`), e a tentativa de tagueamento (real ou simulada)
+prossegue normalmente — falhar a leitura de revalidação não deveria
+impedir de tentar a ação principal.
 """
 from __future__ import annotations
 
@@ -104,6 +129,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from .decision import DECISAO_TAGUEAR
+from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO, detect_iac
 from .retry import with_backoff
 from .tag_status import TAG_KEY, tags_list_to_dict
 
@@ -136,6 +162,11 @@ ESTRATEGIAS_SEM_BATCH_DE_ESCRITA = frozenset(
 _SERVICO_EKS = "Amazon EKS"
 _SERVICO_BEDROCK = "Amazon Bedrock"
 
+# Mesma regra de precedência de `decision.py`: só entra aqui quando a TAG
+# está ausente (verificado antes, na chamada) — IaC nunca tem precedência
+# sobre um valor de tag já presente (conflito), só sobre a ausência dela.
+_IAC_DETECTADO = frozenset({IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO})
+
 # (servico, tipo_recurso) -> estratégia dedicada. Qualquer combinação fora
 # desta tabela (inclui tipo_recurso=None, o caso comum) usa o caminho
 # genérico — inclui de propósito os nodes/volumes EBS do EKS, que não
@@ -149,8 +180,22 @@ _ESTRATEGIA_DEDICADA: dict[tuple[str, str], ApiStrategy] = {
 
 RESULTADO_SIMULADO_OK = "simulado_ok"
 RESULTADO_JA_TAGUEADO = "ja_tagueado"
+RESULTADO_CONFLITO_NA_REVALIDACAO = "conflito_na_revalidacao"
+RESULTADO_IAC_DETECTADO_NA_REVALIDACAO = "iac_detectado_na_revalidacao"
 RESULTADO_ERRO_PERMISSAO = "erro_permissao"
 RESULTADO_ERRO = "erro"
+
+
+@dataclass(frozen=True)
+class _RevalidatedState:
+    """Estado atual de um recurso, apurado imediatamente antes de agir sobre
+    ele — a MESMA checagem de precedência de `decision.py` (valor presente
+    sempre decide antes de olhar IaC; IaC só importa quando a tag está
+    ausente), reaplicada no momento da escrita, não só no momento da
+    decisão original da Etapa 2a. Ver `_classificar_estado_revalidado`."""
+
+    valor_atual: str | None
+    iac_tipo: str
 
 
 @dataclass(frozen=True)
@@ -202,8 +247,8 @@ def _chunk(items: list, size: int) -> list[list]:
 
 
 @with_backoff()
-def _get_resources_by_tag_key_page(client, tag_key: str, pagination_token: str | None) -> dict:
-    kwargs: dict = {"TagFilters": [{"Key": tag_key}], "ResourcesPerPage": 100}
+def _get_resources_page(client, pagination_token: str | None) -> dict:
+    kwargs: dict = {"ResourcesPerPage": 100}
     if pagination_token:
         kwargs["PaginationToken"] = pagination_token
     return client.get_resources(**kwargs)
@@ -211,24 +256,31 @@ def _get_resources_by_tag_key_page(client, tag_key: str, pagination_token: str |
 
 def _revalidate_generic(
     session: boto3.Session, regiao: str, arns: set[str], tag_key: str
-) -> dict[str, str | None]:
-    """Uma varredura via `tag:GetResources` cobre todos os ARNs genéricos
-    revalidados nesta região de uma vez. Devolve `{arn: valor_atual}` —
-    `None` para um ARN não encontrado na varredura (sem a tag hoje, ou
-    deletado; ver docstring do módulo)."""
+) -> dict[str, _RevalidatedState]:
+    """Varredura via `tag:GetResources` cobre todos os ARNs genéricos
+    revalidados nesta região de uma vez. Deliberadamente SEM `TagFilters`
+    (ao contrário de uma versão anterior deste módulo): revalidar exige o
+    conjunto COMPLETO de tags de cada recurso, não só a `aws-apn-id` — é o
+    que permite reconfirmar o status de IaC no momento da escrita, não só
+    o valor da tag-alvo (ver docstring do módulo). Para de paginar assim
+    que todos os ARNs pedidos já foram encontrados, para não pagar o custo
+    de uma varredura completa da região quando o alvo aparece cedo."""
     client = session.client("resourcegroupstaggingapi", region_name=regiao)
-    encontrados: dict[str, str] = {}
+    encontrados: dict[str, _RevalidatedState] = {}
+    pendentes = set(arns)
     token = None
     try:
-        while True:
-            resp = _get_resources_by_tag_key_page(client, tag_key, token)
+        while pendentes:
+            resp = _get_resources_page(client, token)
             for mapping in resp.get("ResourceTagMappingList", []):
                 arn = mapping["ResourceARN"]
-                if arn not in arns:
+                if arn not in pendentes:
                     continue
                 tags = tags_list_to_dict(mapping.get("Tags", []))
-                if tag_key in tags:
-                    encontrados[arn] = tags[tag_key]
+                encontrados[arn] = _RevalidatedState(
+                    valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"]
+                )
+                pendentes.discard(arn)
             token = resp.get("PaginationToken")
             if not token:
                 break
@@ -240,7 +292,9 @@ def _revalidate_generic(
             len(arns),
         )
         return {}
-    return {arn: encontrados.get(arn) for arn in arns}
+    for arn in arns:
+        encontrados.setdefault(arn, _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO))
+    return encontrados
 
 
 @with_backoff()
@@ -260,7 +314,11 @@ def _elb_describe_tags(client, arns: list[str]) -> dict:
 
 def _revalidate_eks_or_bedrock(
     session: boto3.Session, service_name: str, regiao: str, resource: TaggableResource, tag_key: str
-) -> str | None:
+) -> _RevalidatedState | None:
+    """`None` significa "não foi possível revalidar" (erro de leitura) — não
+    confundir com um `_RevalidatedState` cujo `valor_atual` é `None` (que
+    significa "revalidado com sucesso, tag ausente"). O chamador trata os
+    dois casos de forma diferente (ver `_processar_dedicados`)."""
     client = session.client(service_name, region_name=regiao)
     try:
         if service_name == "eks":
@@ -269,7 +327,7 @@ def _revalidate_eks_or_bedrock(
         else:
             resp = _bedrock_list_tags(client, resource.arn)
             tags = tags_list_to_dict(resp.get("tags", []))
-        return tags.get(tag_key)
+        return _RevalidatedState(valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"])
     except ClientError:
         logger.exception("Falha ao revalidar tags de %s (%s) — prosseguindo sem revalidação", resource.arn, service_name)
         return None
@@ -277,9 +335,11 @@ def _revalidate_eks_or_bedrock(
 
 def _revalidate_elb(
     session: boto3.Session, regiao: str, resources: list[TaggableResource], tag_key: str
-) -> dict[str, str | None]:
+) -> dict[str, _RevalidatedState]:
     client = session.client("elbv2", region_name=regiao)
-    resultado: dict[str, str | None] = {r.arn: None for r in resources}
+    resultado: dict[str, _RevalidatedState] = {
+        r.arn: _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO) for r in resources
+    }
     for lote in _chunk([r.arn for r in resources], 20):  # describe_tags aceita até 20 ARNs
         try:
             resp = _elb_describe_tags(client, lote)
@@ -288,7 +348,9 @@ def _revalidate_elb(
             continue
         for desc in resp.get("TagDescriptions", []):
             tags = tags_list_to_dict(desc.get("Tags", []))
-            resultado[desc["ResourceArn"]] = tags.get(tag_key)
+            resultado[desc["ResourceArn"]] = _RevalidatedState(
+                valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"]
+            )
     return resultado
 
 
@@ -367,6 +429,23 @@ class DryRunExecutor:
 # ---------------------------------------------------------------------------
 
 
+def _classificar_estado_revalidado(estado: _RevalidatedState, tag_value: str) -> str | None:
+    """Aplica ao estado revalidado a MESMA regra de precedência de
+    `decision._decidir` (ver docstring de `decision.py`): valor de tag
+    presente sempre decide antes de olhar IaC — um conflito nunca vira
+    `pular_iac` só porque o recurso também é gerenciado por IaC; IaC só
+    importa quando a tag está ausente. Devolve o resultado já decidido
+    (nenhum dos três nunca gera tentativa de escrita), ou `None` se o
+    recurso segue pendente de uma tentativa de escrita real."""
+    if estado.valor_atual == tag_value:
+        return RESULTADO_JA_TAGUEADO
+    if estado.valor_atual is not None:
+        return RESULTADO_CONFLITO_NA_REVALIDACAO
+    if estado.iac_tipo in _IAC_DETECTADO:
+        return RESULTADO_IAC_DETECTADO_NA_REVALIDACAO
+    return None
+
+
 def _resultado_entry(resource: TaggableResource, estrategia: ApiStrategy, resultado: str) -> dict:
     return {
         "arn": resource.arn,
@@ -397,10 +476,14 @@ def _processar_genericos(
             if revalidate
             else {}
         )
-        pendentes = [r for r in recursos_regiao if estado_atual.get(r.arn) != tag_value]
+        pendentes: list[TaggableResource] = []
         for r in recursos_regiao:
-            if estado_atual.get(r.arn) == tag_value:
-                resultados.append(_resultado_entry(r, ApiStrategy.GENERICO, RESULTADO_JA_TAGUEADO))
+            estado = estado_atual.get(r.arn)
+            resultado_decidido = _classificar_estado_revalidado(estado, tag_value) if estado is not None else None
+            if resultado_decidido is not None:
+                resultados.append(_resultado_entry(r, ApiStrategy.GENERICO, resultado_decidido))
+            else:
+                pendentes.append(r)
 
         for lote in _chunk(pendentes, _TAMANHO_MAX_LOTE_GENERICO):
             arns = [r.arn for r in lote]
@@ -414,7 +497,7 @@ def _processar_genericos(
 
 def _revalidate_dedicado(
     session: boto3.Session, estrategia: ApiStrategy, resources: list[TaggableResource], tag_key: str
-) -> dict[str, str | None]:
+) -> dict[str, _RevalidatedState | None]:
     if estrategia in (ApiStrategy.EKS_CLUSTER, ApiStrategy.EKS_NODE_GROUP):
         return {
             r.arn: _revalidate_eks_or_bedrock(session, "eks", r.regiao, r, tag_key) for r in resources
@@ -426,7 +509,7 @@ def _revalidate_dedicado(
         }
     # ELB_LOAD_BALANCER — agrupa a LEITURA por região em lotes de 20 (a
     # escrita continua 1-a-1; só describe_tags aceita lote).
-    resultado: dict[str, str | None] = {}
+    resultado: dict[str, _RevalidatedState] = {}
     por_regiao: dict[str, list[TaggableResource]] = {}
     for r in resources:
         por_regiao.setdefault(r.regiao, []).append(r)
@@ -449,8 +532,10 @@ def _processar_dedicados(
             _revalidate_dedicado(session, estrategia, recursos, tag_key) if revalidate else {}
         )
         for r in recursos:
-            if estado_atual.get(r.arn) == tag_value:
-                resultados.append(_resultado_entry(r, estrategia, RESULTADO_JA_TAGUEADO))
+            estado = estado_atual.get(r.arn)
+            resultado_decidido = _classificar_estado_revalidado(estado, tag_value) if estado is not None else None
+            if resultado_decidido is not None:
+                resultados.append(_resultado_entry(r, estrategia, resultado_decidido))
                 continue
             resultado = executor.tag_single(session, estrategia, r, tag_key, tag_value)
             resultados.append(_resultado_entry(r, estrategia, resultado))

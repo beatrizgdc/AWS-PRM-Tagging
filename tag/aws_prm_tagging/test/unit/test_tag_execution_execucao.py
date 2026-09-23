@@ -16,12 +16,30 @@ from aws_prm_tagging import tag_execution
 TAG_VALUE = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
 
 
+# Tag de convenção que `iac_detection.py` reconhece como sinal de
+# CloudFormation/CDK (`_CFN_STACK_NAME_TAG`, privada naquele módulo) — usada
+# aqui só para simular, nos fakes, um recurso gerenciado por IaC.
+_TAG_CLOUDFORMATION = "aws:cloudformation:stack-name"
+
+
 class _FakeTaggingClient:
     """Stub de `resourcegroupstaggingapi` — só `get_resources`, usado na
-    revalidação do caminho genérico."""
+    revalidação do caminho genérico. `tagged` é o atalho comum (só o valor
+    da aws-apn-id); `tags_completos` permite simular o conjunto completo de
+    tags de um recurso (ex.: para os cenários de IaC/conflito detectados só
+    na revalidação) — os dois podem ser combinados."""
 
-    def __init__(self, tagged: dict[str, str] | None = None, erro: bool = False):
-        self._tagged = tagged or {}
+    def __init__(
+        self,
+        tagged: dict[str, str] | None = None,
+        tags_completos: dict[str, dict[str, str]] | None = None,
+        erro: bool = False,
+    ):
+        self._tags_por_arn: dict[str, dict[str, str]] = {
+            arn: dict(tags) for arn, tags in (tags_completos or {}).items()
+        }
+        for arn, valor in (tagged or {}).items():
+            self._tags_por_arn.setdefault(arn, {})[tag_execution.TAG_KEY] = valor
         self._erro = erro
 
     def get_resources(self, **kwargs):
@@ -29,19 +47,22 @@ class _FakeTaggingClient:
             raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "sem permissão"}}, "GetResources")
         return {
             "ResourceTagMappingList": [
-                {"ResourceARN": arn, "Tags": [{"Key": tag_execution.TAG_KEY, "Value": valor}]}
-                for arn, valor in self._tagged.items()
+                {"ResourceARN": arn, "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]}
+                for arn, tags in self._tags_por_arn.items()
             ]
         }
 
 
 class _FakeEksClient:
-    def __init__(self, tagged: dict[str, str] | None = None):
-        self._tagged = tagged or {}
+    def __init__(self, tagged: dict[str, str] | None = None, tags_completos: dict[str, dict[str, str]] | None = None):
+        self._tags_por_arn: dict[str, dict[str, str]] = {
+            arn: dict(tags) for arn, tags in (tags_completos or {}).items()
+        }
+        for arn, valor in (tagged or {}).items():
+            self._tags_por_arn.setdefault(arn, {})[tag_execution.TAG_KEY] = valor
 
     def list_tags_for_resource(self, resourceArn):
-        valor = self._tagged.get(resourceArn)
-        return {"tags": {tag_execution.TAG_KEY: valor} if valor else {}}
+        return {"tags": self._tags_por_arn.get(resourceArn, {})}
 
 
 class _SpyExecutor:
@@ -120,6 +141,87 @@ def test_falha_na_revalidacao_nao_bloqueia_tentativa_de_tagueamento(fake_session
 
     assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
     assert spy.arns_chamados == [arn]
+
+
+def test_revalidacao_generica_detecta_conflito_e_nunca_tenta_escrever(fake_session_factory):
+    """Regressão do bug corrigido: antes, a revalidação só checava se o
+    valor batia com o esperado — um valor DIFERENTE encontrado na
+    revalidação caía no mesmo balaio de "sem tag" e disparava uma tentativa
+    de escrita, que teria sobrescrito um conflito automaticamente (proibido
+    pela regra de negócio). Agora precisa virar `conflito_na_revalidacao`
+    e nunca chamar o executor."""
+    arn = "arn:aws:s3:::bucket-conflito-surgiu-depois"
+    session = fake_session_factory(
+        {"resourcegroupstaggingapi": _FakeTaggingClient(tagged={arn: "pc:outro-parceiro"})}
+    )
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_stage2b(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
+    assert spy.arns_chamados == []
+
+
+def test_revalidacao_generica_detecta_iac_e_nunca_tenta_escrever(fake_session_factory):
+    """Recurso sem a tag aws-apn-id, mas que passou a ter a tag de
+    convenção do CloudFormation entre a Etapa 1/2a e esta execução — a
+    revalidação precisa pegar isso (não só a Etapa 1 original) e nunca
+    tentar taguear via API um recurso gerenciado por IaC."""
+    arn = "arn:aws:s3:::bucket-virou-iac-depois"
+    session = fake_session_factory(
+        {"resourcegroupstaggingapi": _FakeTaggingClient(tags_completos={arn: {_TAG_CLOUDFORMATION: "minha-stack"}})}
+    )
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_stage2b(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_IAC_DETECTADO_NA_REVALIDACAO
+    assert spy.arns_chamados == []
+
+
+def test_revalidacao_generica_conflito_tem_precedencia_sobre_iac(fake_session_factory):
+    """Mesma regra de precedência de `decision.py`: quando a tag está
+    PRESENTE com valor diferente, IaC é só metadado — nunca muda o
+    resultado para `pulado_iac`. Só entra como IaC quando a tag está
+    ausente."""
+    arn = "arn:aws:s3:::bucket-conflito-e-iac"
+    session = fake_session_factory(
+        {
+            "resourcegroupstaggingapi": _FakeTaggingClient(
+                tags_completos={arn: {tag_execution.TAG_KEY: "pc:outro-parceiro", _TAG_CLOUDFORMATION: "minha-stack"}}
+            )
+        }
+    )
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_stage2b(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
+    assert spy.arns_chamados == []
+
+
+def test_revalidacao_dedicada_eks_detecta_conflito_e_nunca_tenta_escrever(
+    fake_session_factory, decisao_factory, relatorio_decisao_factory
+):
+    arn = "arn:eks:cluster-conflito-surgiu-depois"
+    session = fake_session_factory({"eks": _FakeEksClient(tagged={arn: "pc:outro-parceiro"})})
+    spy = _SpyExecutor()
+    relatorio = relatorio_decisao_factory(
+        [decisao_factory(arn=arn, servico="Amazon EKS", tipo_recurso="cluster")]
+    )
+
+    resultado = tag_execution.run_stage2b(
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
+    assert spy.arns_chamados == []
 
 
 def test_revalidacao_dedicada_eks_pula_recurso_ja_tagueado(fake_session_factory, decisao_factory, relatorio_decisao_factory):
