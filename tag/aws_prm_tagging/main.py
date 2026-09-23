@@ -6,10 +6,10 @@ Três subcomandos, um por estágio implementado até agora:
 - `decide` — Etapa 2a: classifica o relatório da Etapa 1 em
   `taguear`/`pular_iac`/`ja_ok`/`conflito`. Também somente-leitura (função
   pura, sem chamada de API nenhuma).
-- `apply`  — Etapa 2b: simula (dry-run) o tagueamento dos recursos
-  `taguear` do relatório da Etapa 2a. Só faz chamadas de LEITURA na conta
-  (revalidação do estado atual da tag, salvo com `--no-revalidate`) — nunca
-  escreve. A execução real (Etapa 2c) ainda não existe; ver
+- `apply`  — Etapas 2b (default, dry-run) e 2c (`--live`, escrita real) do
+  tagueamento dos recursos `taguear` do relatório da Etapa 2a. Em dry-run,
+  só faz chamadas de LEITURA na conta (revalidação do estado atual de cada
+  recurso, salvo com `--no-revalidate`) — nunca escreve. Ver
   `docs/arquitetura.md#tag_executionpy`.
 
 Cada subcomando lê a saída em disco do estágio anterior e escreve a sua
@@ -195,18 +195,11 @@ def _run_decide(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# apply — Etapa 2b (dry-run)
+# apply — Etapa 2b (dry-run, default) e Etapa 2c (--live)
 # ---------------------------------------------------------------------------
 
 
 def _run_apply(args: argparse.Namespace) -> int:
-    if args.live:
-        logger.error(
-            "Execução real (Etapa 2c) ainda não foi implementada — esta versão do "
-            "CLI só suporta o modo dry-run da Etapa 2b. Remova --live."
-        )
-        return 1
-
     try:
         decision_report = _load_json(args.input)
     except (OSError, json.JSONDecodeError):
@@ -224,20 +217,27 @@ def _run_apply(args: argparse.Namespace) -> int:
 
     session = boto3.Session(profile_name=args.profile)
 
-    stage2b_report = tag_execution.run_stage2b(
-        decision_report,
-        session=session,
-        expected_tag_value=expected_tag_value,
-        revalidate=not args.no_revalidate,
-    )
-    _write_json(args.output, stage2b_report)
+    try:
+        execution_report = tag_execution.run_tagging_execution(
+            decision_report,
+            session=session,
+            expected_tag_value=expected_tag_value,
+            dry_run=not args.live,
+            revalidate=not args.no_revalidate,
+            max_decision_age_hours=args.max_decision_age_hours,
+        )
+    except tag_execution.DecisionReportDesatualizadoError as exc:
+        logger.error("%s", exc)
+        return 1
 
-    resumo = stage2b_report["resumo"]
+    _write_json(args.output, execution_report)
+
+    resumo = execution_report["resumo"]
     logger.info(
-        "Concluído (dry-run). %d recurso(s) processado(s). Por resultado: %s. "
-        "Relatório salvo em %s",
-        resumo["total_recursos_processados"],
-        resumo["por_resultado"],
+        "Concluído (%s). %d recurso(s) no relatório. Por categoria: %s. Relatório salvo em %s",
+        execution_report["modo"],
+        resumo["total_recursos"],
+        resumo["por_categoria_final"],
         args.output,
     )
     return 0
@@ -281,7 +281,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     apply_parser = subparsers.add_parser(
         "apply",
-        help="Etapa 2b: simula (dry-run) o tagueamento do relatório da Etapa 2a. Nunca escreve na conta.",
+        help="Etapa 2b (dry-run, default) ou 2c (--live) do tagueamento do relatório da Etapa 2a.",
     )
     apply_parser.add_argument("--input", required=True, help="Relatório JSON da Etapa 2a (saída de 'decide')")
     apply_parser.add_argument("--profile", default=None, help="Perfil de credenciais AWS local")
@@ -289,13 +289,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     apply_parser.add_argument(
         "--no-revalidate",
         action="store_true",
-        help="Desliga a revalidação do estado atual da tag antes de simular cada recurso "
+        help="Desliga a revalidação do estado atual de cada recurso antes de agir sobre ele "
         "(por padrão, revalida — ver docs/arquitetura.md#tag_executionpy)",
     )
     apply_parser.add_argument(
         "--live",
         action="store_true",
-        help="Execução real em vez de dry-run — Etapa 2c, ainda não implementada.",
+        help="Execução real (Etapa 2c) — escreve a tag de verdade na conta. Por padrão roda em "
+        "dry-run (Etapa 2b), sem escrever nada.",
+    )
+    apply_parser.add_argument(
+        "--max-decision-age-hours",
+        type=float,
+        default=None,
+        help="Recusa agir se a descoberta (Etapa 1) que embasa o relatório de decisão for mais "
+        "velha que este limite, em horas (default: sem checagem)",
     )
     apply_parser.set_defaults(func=_run_apply)
 

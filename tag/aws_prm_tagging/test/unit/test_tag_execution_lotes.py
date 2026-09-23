@@ -1,4 +1,4 @@
-"""Agrupamento em lotes (Etapa 2b) — `tag_execution.run_stage2b`.
+"""Agrupamento em lotes (Etapas 2b/2c) — `tag_execution.run_tagging_execution`.
 
 Cobre que o caminho genérico agrupa por região em lotes de até 20 ARNs
 (limite documentado de `tag:TagResources`), que regiões diferentes nunca são
@@ -21,8 +21,8 @@ TAG_VALUE = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
 
 class _SpyExecutor:
     """Registra cada chamada em vez de logar/executar — permite inspecionar
-    exatamente como `run_stage2b` agrupou os recursos, sem depender de
-    parsing de log."""
+    exatamente como `run_tagging_execution` agrupou os recursos, sem
+    depender de parsing de log."""
 
     def __init__(self):
         self.chamadas_lote: list[tuple[str, list[str]]] = []
@@ -30,11 +30,11 @@ class _SpyExecutor:
 
     def tag_generic_batch(self, session, regiao, arns, tag_key, tag_value):
         self.chamadas_lote.append((regiao, list(arns)))
-        return {arn: tag_execution.RESULTADO_SIMULADO_OK for arn in arns}
+        return {arn: tag_execution.ResourceOutcome(resultado=tag_execution.RESULTADO_SIMULADO_OK) for arn in arns}
 
     def tag_single(self, session, estrategia, resource, tag_key, tag_value):
         self.chamadas_single.append((estrategia, resource.arn))
-        return tag_execution.RESULTADO_SIMULADO_OK
+        return tag_execution.ResourceOutcome(resultado=tag_execution.RESULTADO_SIMULADO_OK)
 
 
 def _relatorio_generico(quantidade: int, regiao: str = "us-east-1") -> dict:
@@ -55,7 +55,7 @@ def _relatorio_generico(quantidade: int, regiao: str = "us-east-1") -> dict:
 
 def test_lote_generico_25_arns_vira_dois_lotes_20_mais_5():
     spy = _SpyExecutor()
-    tag_execution.run_stage2b(
+    tag_execution.run_tagging_execution(
         _relatorio_generico(25), session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy
     )
     tamanhos = sorted(len(arns) for _, arns in spy.chamadas_lote)
@@ -64,7 +64,7 @@ def test_lote_generico_25_arns_vira_dois_lotes_20_mais_5():
 
 def test_lote_generico_exatamente_20_arns_vira_um_unico_lote():
     spy = _SpyExecutor()
-    tag_execution.run_stage2b(
+    tag_execution.run_tagging_execution(
         _relatorio_generico(20), session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy
     )
     assert len(spy.chamadas_lote) == 1
@@ -80,7 +80,7 @@ def test_regioes_diferentes_nunca_misturadas_no_mesmo_lote():
         ],
     }
     spy = _SpyExecutor()
-    tag_execution.run_stage2b(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy)
+    tag_execution.run_tagging_execution(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy)
 
     regioes_por_lote = {regiao for regiao, _ in spy.chamadas_lote}
     assert regioes_por_lote == {"us-east-1", "sa-east-1"}
@@ -98,7 +98,7 @@ def test_recursos_dedicados_nunca_agrupados_um_por_chamada(decisao_factory, rela
         decisao_factory(arn="arn:profile-1", servico="Amazon Bedrock", tipo_recurso="application_inference_profile"),
     ]
     spy = _SpyExecutor()
-    tag_execution.run_stage2b(
+    tag_execution.run_tagging_execution(
         relatorio_decisao_factory(recursos), session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy
     )
 

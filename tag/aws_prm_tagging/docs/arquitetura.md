@@ -35,11 +35,12 @@ subcomandos, um por estágio implementado (`map`, `decide`, `apply` — ver
 daquele estágio (CLI args + leitura/escrita de arquivo). Quando as Etapas
 3-4 ganharem seus próprios entrypoints (handlers Lambda, ver
 [arquitetura-multicliente.md](arquitetura-multicliente.md)), eles seguem o
-mesmo padrão: importam os módulos do núcleo em vez de duplicar lógica. Só
-`apply` (Etapa 2b) faz alguma chamada de API na conta do cliente além de
-leitura pura — e mesmo assim só chamadas de **leitura** (revalidação); a
-Etapa 2b em si nunca escreve (ver `tag_execution.py` abaixo). A primeira
-escrita de fato só existe na Etapa 2c, ainda não implementada.
+mesmo padrão: importam os módulos do núcleo em vez de duplicar lógica.
+`apply` cobre tanto a Etapa 2b (`--live` omitido, default — só leitura na
+conta, para revalidação) quanto a Etapa 2c (`--live` — primeira escrita de
+fato em toda a automação); é a mesma função (`tag_execution.run_tagging_execution`)
+nos dois casos, só trocando qual `Executor` está por baixo (ver
+`tag_execution.py` abaixo).
 
 ## Módulos
 
@@ -250,18 +251,22 @@ derrubar o processamento do restante do lote.
 
 `build_decision_report` monta o relatório de saída no mesmo estilo de
 `report.build_report` (mesmas chaves de topo, agregação via `Counter`,
-`por_servico` ordenado) — é o contrato de entrada da Etapa 2b, coberta a
-seguir.
+`por_servico` ordenado) — é o contrato de entrada da Etapa 2b/2c, coberta a
+seguir. Propaga `descoberta_executada_em` a partir de
+`etapa1_report["executado_em"]` (quando a descoberta rodou, distinto do
+`executado_em` desta própria função, que sempre reflete "agora") — é o que
+`tag_execution.run_tagging_execution` usa para a checagem opcional de idade
+máxima do relatório antes de agir (`max_decision_age_hours`).
 
 ### `tag_execution.py`
 
-Etapa 2b (dry-run) e base para a Etapa 2c (execução real, ainda não
-implementada) — consome `decision.build_decision_report` (Etapa 2a) e
-decide, para cada recurso `taguear`, qual API chamar e com qual
-agrupamento. Ao contrário dos módulos anteriores, **não** é 100%
-sem-efeito: faz chamadas de leitura reais na conta (revalidação, ver
-abaixo) — mas nunca de escrita nesta etapa. Docstring completo do módulo
-cobre o raciocínio em detalhe; resumo:
+Etapas 2b (dry-run) e 2c (execução real) — a MESMA função,
+`run_tagging_execution(..., dry_run: bool)`, atende as duas (`dry_run=True`
+é o default/Etapa 2b). Consome `decision.build_decision_report` (Etapa 2a)
+e decide, para cada recurso `taguear`, qual API chamar e com qual
+agrupamento; em `dry_run=False` (Etapa 2c) chama essas APIs de verdade — é
+a primeira escrita de fato em toda a automação. Docstring completo do
+módulo cobre o raciocínio em detalhe; resumo:
 
 **Garantia estrutural (não por convenção) de que só `"taguear"` gera uma
 chamada** — `select_taggable()` é o único ponto de entrada aceito pelo
@@ -286,38 +291,76 @@ instância/volume EC2 comuns por baixo do capô, sem necessidade de API
 dedicada — só cluster, node group e load balancer entram na tabela de
 estratégia dedicada.
 
-**Revalidação e idempotência**: antes de agir sobre cada recurso (real ou
-simulado), o orquestrador relê o estado atual da tag na AWS
-(`revalidate=True` por padrão, `--no-revalidate` desliga). Se a tag já
-estiver com o valor esperado — porque uma execução anterior já aplicou, ou
-outra automação aplicou por fora —, o recurso é reportado como
-`"ja_tagueado"` e nenhuma chamada de escrita é feita. É isso que torna
-reexecuções do mesmo relatório de decisão idempotentes por construção, sem
-nenhum arquivo de progresso: o estado da tag na AWS *é* a fonte da verdade
-de "já foi feito ou não" — combinado com o fato de que toda API de tagging
+**Revalidação, idempotência e IaC** (aplica-se aos dois modos — a
+revalidação existe independente de dry-run/live): antes de agir sobre cada
+recurso, o orquestrador relê o estado atual dele na AWS (`revalidate=True`
+por padrão, `--no-revalidate` desliga) e reaplica a MESMA regra de
+precedência de `decision.py` — não só compara o valor da tag. Três
+desfechos, nesta ordem, nenhum gera chamada de escrita:
+
+1. Valor já bate com o esperado → `"ja_tagueado"`.
+2. Valor presente e diferente do esperado → `"conflito_na_revalidacao"` —
+   nunca sobrescreve um conflito só porque ele apareceu depois da Etapa 2a.
+3. Tag ausente e IaC detectado (só quando a tag está mesmo ausente — IaC
+   nunca tem precedência sobre um conflito) → `"iac_detectado_na_revalidacao"`
+   — cobre o recurso que passou a ser gerenciado por IaC entre a Etapa 1/2a
+   e esta execução.
+
+Isso é o que torna reexecuções idempotentes por construção, sem nenhum
+arquivo de progresso: o estado do recurso na AWS *é* a fonte da verdade de
+"já foi feito ou não" — combinado com o fato de que toda API de tagging
 usada aqui é uma operação de conjunto (aplicar o mesmo valor duas vezes é
-no-op). A leitura de revalidação usa `tag:GetResources` com
-`TagFilters=[{"Key": "aws-apn-id"}]` (uma varredura por região cobre todos
-os recursos genéricos de uma vez) para o caminho genérico, e
-`eks:ListTagsForResource` / `bedrock:ListTagsForResource` /
-`elasticloadbalancing:DescribeTags` para os caminhos dedicados — mesmos
-clients já usados por `resource_discovery.py` na Etapa 1. Falha na leitura
-de revalidação (ex.: `AccessDenied`) não bloqueia a tentativa principal —
-só perde o benefício da revalidação para aquele recurso.
+no-op). A leitura de revalidação busca o conjunto COMPLETO de tags (não só
+a `aws-apn-id`, senão não daria para checar IaC): `tag:GetResources` sem
+filtro para o caminho genérico (varredura por região, parando assim que os
+ARNs pedidos são encontrados), e `eks:ListTagsForResource` /
+`bedrock:ListTagsForResource` / `elasticloadbalancing:DescribeTags` para os
+dedicados — mesmos clients já usados por `resource_discovery.py` na Etapa
+1, e já devolvem o conjunto completo sem custo extra. Falha na leitura de
+revalidação (ex.: `AccessDenied`) não bloqueia a tentativa principal — só
+perde o benefício da revalidação para aquele recurso.
 
-**`Executor`**: único ponto de decisão entre "logar o que seria feito" e
-"fazer de verdade". `DryRunExecutor` (único que existe até a Etapa 2c) nunca
-chama uma API de escrita — só loga, no mesmo formato estruturado que vira o
-relatório de saída. Todo o roteamento/agrupamento/revalidação acima é
-comum às duas etapas; a Etapa 2c só precisa adicionar um `LiveExecutor` que
-implementa o mesmo `Protocol` chamando boto3 de verdade (incluindo o
-parsing de `FailedResourcesMap` para falha parcial de lote, que o dry-run
-não precisa simular — sempre assume sucesso, já que não há chamada real).
+**Idade máxima do relatório de decisão** (`max_decision_age_hours`,
+opcional): recusa agir (`DecisionReportDesatualizadoError`) se a descoberta
+subjacente (`decision_report["descoberta_executada_em"]`, propagado por
+`decision.build_decision_report` a partir do `executado_em` da Etapa 1) for
+mais velha que o limite. Ortogonal à revalidação: revalidação cobre "esse
+recurso mudou"; idade do relatório cobre "esse universo de recursos pode
+estar amplamente desatualizado".
 
-**Formato do relatório de saída**: mesmo estilo de `report.py`/`decision.py`
-(`conta_id`, `executado_em`, `valor_tag_esperado`, `resumo` agregado via
-`Counter`, lista `recursos` com `resultado` por item) — base direta para a
-Etapa 2c e para o dashboard.
+**`Executor`**: único ponto de decisão entre "logar o que seria feito"
+(`DryRunExecutor`, Etapa 2b) e "fazer de verdade" (`LiveExecutor`, Etapa
+2c) — mesmo `Protocol`, nunca chamado diretamente pelo resto do módulo.
+`LiveExecutor` chama a API nativa de cada estratégia (tabela acima),
+decorada com `retry.with_backoff()`, e classifica cada falha em 3
+categorias (`RESULTADO_ERRO_PERMISSAO`, `RESULTADO_RECURSO_NAO_ENCONTRADO`,
+`RESULTADO_ERRO` genérico) — inclusive falha PARCIAL de um lote
+(`FailedResourcesMap`, que pode vir num HTTP 200): só os ARNs listados ali
+viram falha, os demais do mesmo lote viram sucesso. Uma falha (de lote ou
+de recurso individual) nunca aborta o resto da execução — o próximo
+lote/recurso é tentado normalmente.
+
+**Relatório final** (`build_execution_report`): cobre as 5 categorias que
+fazem sentido para dashboard/leitura humana —
+`tagueado_sucesso`/`falhou`/`pulado_iac`/`conflito`/`ja_ok` —, mesclando os
+recursos `taguear` (resultado desta execução — inclui os pulados na
+revalidação, dobrados na categoria correspondente) com os
+`pular_iac`/`ja_ok`/`conflito` que a Etapa 2a já decidiu direto, sem nunca
+passar por este módulo. Campo `origem` (`"decisao"` / `"revalidacao"` /
+`"execucao"`) preserva em qual momento a classificação foi feita — a Etapa
+4 usa isso, por exemplo, para diferenciar um conflito visto já na
+descoberta original de um conflito que só apareceu no momento da escrita
+(possível tag de outro parceiro AWS aplicada nesse meio-tempo). Mesmo
+estilo de `report.py`/`decision.py` no resto (`conta_id`, `executado_em`,
+`valor_tag_esperado`, `resumo` agregado via `Counter`).
+
+**`execucao_inicial`** (parâmetro opcional, `False` por padrão): sinal de
+observabilidade repassado ao relatório de saída, nunca usado para bloquear
+a execução. Pensado para o Lambda futuro marcar a primeira execução de uma
+conta — disparada pelo Custom Resource no `RequestType=Create` da stack,
+que já é por natureza só a primeira vez — para facilitar revisão humana
+posterior sem exigir aprovação prévia (que quebraria a automação
+hands-off).
 
 ### `retry.py`
 
@@ -346,15 +389,16 @@ arquivo de um é a entrada em arquivo do próximo), não por um orquestrador
   único (mesmos argumentos `--expected-tag-value`/`--profile`/`--output`).
 - `decide` — Etapa 2a. Lê `--input` (saída de `map`), escreve o relatório de
   decisão. Não usa boto3.
-- `apply` — Etapa 2b. Lê `--input` (saída de `decide`) e reaproveita
-  `valor_tag_esperado` de dentro desse relatório para a chamada a
-  `tag_execution.run_stage2b` — de propósito, **não** aceita um
-  `--expected-tag-value` próprio: aplicar um valor diferente do que foi
-  usado para classificar os recursos como `taguear` seria inconsistente
-  com a própria decisão que está sendo executada. `--no-revalidate`
-  desliga a revalidação (seção `tag_execution.py` acima); `--live` existe
-  só para dar um erro explícito ("Etapa 2c ainda não implementada") em vez
-  de a flag ser silenciosamente ignorada.
+- `apply` — Etapas 2b (default) e 2c (`--live`). Lê `--input` (saída de
+  `decide`) e reaproveita `valor_tag_esperado` de dentro desse relatório
+  para a chamada a `tag_execution.run_tagging_execution` — de propósito,
+  **não** aceita um `--expected-tag-value` próprio: aplicar um valor
+  diferente do que foi usado para classificar os recursos como `taguear`
+  seria inconsistente com a própria decisão que está sendo executada.
+  `--no-revalidate` desliga a revalidação; `--live` troca `dry_run=True`
+  (default, Etapa 2b) por `dry_run=False` (Etapa 2c — escreve de verdade);
+  `--max-decision-age-hours` liga a checagem de idade do relatório de
+  decisão (seção `tag_execution.py` acima).
 
 ## Por que não há arquivo de variáveis de ambiente
 

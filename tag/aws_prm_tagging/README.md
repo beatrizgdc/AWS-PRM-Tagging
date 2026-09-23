@@ -1,4 +1,4 @@
-# Mapeamento, decisão e dry-run de tagueamento para o AWS Partner Revenue Measurement (PRM)
+# Mapeamento, decisão e tagueamento para o AWS Partner Revenue Measurement (PRM)
 
 Automação de tagging AWS para atender a exigência de Resource Tagging do
 programa AWS Partner Revenue Measurement (PRM). Este repositório cobre os
@@ -9,16 +9,22 @@ três primeiros passos de uma automação de **quatro estágios**:
 2. **Decisão** (Etapa 2a, `decide`) — classifica cada recurso do relatório
    da Etapa 1 em `taguear` / `pular_iac` / `ja_ok` / `conflito`. Sem
    escrita — só decide, não chama nenhuma API de tagueamento.
-3. **Tagueamento — dry-run** (Etapa 2b, `apply`) — simula, recurso a
-   recurso, a chamada de API que taguearia cada recurso `taguear` da Etapa
-   2a. Só faz chamadas de **leitura** na conta (revalidação do estado atual
-   da tag; desligável com `--no-revalidate`) — nunca escreve. A execução
-   real (Etapa 2c) reaproveita a mesma lógica de roteamento/agrupamento,
-   trocando só o executor — ainda não implementada.
+3. **Tagueamento** (`apply`) — dois modos da mesma lógica
+   (`tag_execution.run_tagging_execution`):
+   - **Etapa 2b, dry-run (default)** — simula, recurso a recurso, a chamada
+     de API que taguearia cada recurso `taguear` da Etapa 2a. Só faz
+     chamadas de **leitura** na conta (revalidação do estado atual de cada
+     recurso; desligável com `--no-revalidate`) — nunca escreve.
+   - **Etapa 2c, execução real (`--live`)** — a mesma lógica de
+     roteamento/agrupamento/revalidação, chamando as APIs de escrita de
+     verdade. **Ainda não validada contra a conta sandbox nem com a lista
+     completa de permissões IAM nativas por serviço** — ver
+     [docs/producao.md](docs/producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)
+     antes de usar `--live` contra qualquer conta real.
 4. Automação contínua para novos recursos (Etapa 3) e varredura recorrente
    / auditoria (Etapa 4) — fora do escopo deste repositório por ora.
 
-As Etapas 2c a 4 reaproveitam os módulos escritos aqui (`aws_prm_tagging/`,
+As Etapas 3-4 reaproveitam os módulos escritos aqui (`aws_prm_tagging/`,
 núcleo compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e
 serão empacotadas como Lambda dentro de uma stack CloudFormation, executando
 localmente em cada conta cliente (arquitetura sem acesso cross-account: cada
@@ -28,10 +34,10 @@ conta roda sua própria automação).
 
 Três subcomandos — `map` (Etapa 1) é 100% somente-leitura; `decide` (Etapa
 2a) não toca em AWS nenhuma, só reclassifica um relatório já em disco;
-`apply` (Etapa 2b) só faz chamadas de **leitura** (revalidação) — nenhum
-dos três cria, modifica ou remove um recurso ou tag na conta. Roda
-localmente contra uma única conta AWS por vez, usando um perfil de
-credenciais já configurado.
+`apply` sem `--live` (Etapa 2b) só faz chamadas de **leitura** (revalidação)
+— com `--live` (Etapa 2c), passa a escrever de verdade a tag nos recursos
+`taguear`, e só nesses. Roda localmente contra uma única conta AWS por vez,
+usando um perfil de credenciais já configurado.
 
 Para cada região comercial ativa da conta, enumera os recursos dos serviços
 elegíveis ao PRM (lista oficial em
@@ -211,13 +217,30 @@ python3 -m aws_prm_tagging.main apply \
   --output resultado_dry_run.json
 ```
 
+**Etapa 2c — execução real** (mesmo comando, só com `--live`):
+
+```bash
+python3 -m aws_prm_tagging.main apply \
+  --input decisao.json \
+  --profile <perfil> \
+  --live \
+  --output resultado_execucao.json
+```
+
+> ⚠️ Antes de rodar `--live` contra uma conta real, ver as permissões IAM de
+> escrita e as ressalvas em
+> [docs/producao.md](docs/producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)
+> — a lista de permissões nativas por serviço ainda não foi validada uma a
+> uma, e não há substituto para testar primeiro na conta sandbox.
+
 | Parâmetro | Obrigatório | Descrição |
 |---|---|---|
 | `--input` | sim | Relatório JSON da Etapa 2a (saída de `decide`). |
-| `--profile` | não | Igual à Etapa 1 — usado só para as chamadas de leitura de revalidação. |
+| `--profile` | não | Igual à Etapa 1 — usado para as chamadas de leitura de revalidação e (com `--live`) as chamadas de escrita. |
 | `--output` | não | Caminho do arquivo JSON de saída (default: `prm_apply_report.json`). |
-| `--no-revalidate` | não | Desliga a revalidação do estado atual da tag antes de simular cada recurso (ver [docs/arquitetura.md](docs/arquitetura.md#tag_executionpy)). |
-| `--live` | não | Reservado para a Etapa 2c (execução real) — ainda não implementada; hoje só retorna erro explicando isso. |
+| `--no-revalidate` | não | Desliga a revalidação do estado atual de cada recurso antes de agir sobre ele (ver [docs/arquitetura.md](docs/arquitetura.md#tag_executionpy)). |
+| `--live` | não | Executa de verdade (Etapa 2c) em vez de dry-run (Etapa 2b, default) — escreve a tag nos recursos `taguear`. |
+| `--max-decision-age-hours` | não | Recusa agir se a descoberta (Etapa 1) por trás do relatório de decisão for mais velha que este limite, em horas (default: sem checagem). |
 
 Nenhuma credencial, código de produto, ID de conta ou nome de cliente é
 hardcoded em nenhum módulo — tudo entra via `--expected-tag-value`/`--profile`
@@ -229,12 +252,12 @@ ou é descoberto em runtime pelas próprias chamadas de API (conta, regiões,
 Dois níveis, sem sobreposição:
 
 - **`test/unit/`** — pytest, 100% offline (sem AWS, sem credencial nenhuma;
-  os testes de `tag_execution.py`/Etapa 2b usam sessões/clients boto3 falsos
-  em vez de rede real). Cobre hoje a Etapa 2a (`decision.py`) e a Etapa 2b
-  (`tag_execution.py`), importando `aws_prm_tagging` como pacote — por isso,
-  ao contrário do resto deste README, roda do diretório **pai** desta pasta
-  (mesma exigência de ["Onde rodar os comandos"](#onde-rodar-os-comandos)
-  para o CLI):
+  os testes de `tag_execution.py`/Etapas 2b/2c usam sessões/clients boto3
+  falsos em vez de rede real). Cobre hoje a Etapa 2a (`decision.py`) e as
+  Etapas 2b/2c (`tag_execution.py`, incluindo `LiveExecutor`), importando
+  `aws_prm_tagging` como pacote — por isso, ao contrário do resto deste
+  README, roda do diretório **pai** desta pasta (mesma exigência de
+  ["Onde rodar os comandos"](#onde-rodar-os-comandos) para o CLI):
 
   ```bash
   python3 -m pip install -r aws_prm_tagging/requirements-dev.txt
@@ -264,7 +287,7 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   tag_status.py                              classificação sem_tag / ok / conflito
   iac_detection.py                           heurística de IaC
   decision.py                                Etapa 2a — decisão de tagueamento (taguear/pular_iac/ja_ok/conflito)
-  tag_execution.py                           Etapa 2b (dry-run) + base para a Etapa 2c — roteamento de API, batching, revalidação
+  tag_execution.py                           Etapas 2b (dry-run) e 2c (execução real) — roteamento de API, batching, revalidação
   ou_tree.py                                 árvore de OUs da Organization
   report.py                                  monta o relatório JSON da Etapa 1
   retry.py                                   backoff exponencial para throttling
@@ -273,7 +296,7 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   requirements-dev.txt                       dependências de desenvolvimento (pytest)
   docs/                                      documentação de arquitetura, produção e rollout multi-cliente
   test/
-    unit/                                    testes pytest (offline, sem AWS) — Etapas 2a e 2b
+    unit/                                    testes pytest (offline, sem AWS) — Etapas 2a, 2b e 2c
     localstack/                              teste de ponta a ponta contra LocalStack (sem AWS real) — Etapa 1
 ```
 

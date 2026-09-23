@@ -216,9 +216,16 @@ def build_decision_report(etapa1_report: dict, expected_tag_value: str) -> dict:
     carregado da Etapa 1 (`report.build_report`). Função pura — mesmo input
     sempre produz o mesmo output, sem I/O.
 
-    Este é o contrato de entrada da Etapa 2b (execução em dry-run): o
+    Este é o contrato de entrada das Etapas 2b/2c (`tag_execution.py`): o
     formato de `recursos` aqui deve ser suficiente para uma etapa seguinte
     decidir o que chamar na API, sem precisar voltar ao relatório da Etapa 1.
+
+    `descoberta_executada_em` propaga `etapa1_report["executado_em"]` (quando
+    a descoberta rodou, não quando esta decisão foi tomada) — é o que
+    `tag_execution.run_tagging_execution` usa para recusar agir sobre uma
+    descoberta velha demais (`max_decision_age_hours`), já que o próprio
+    `executado_em` desta função sempre reflete "agora", mesmo que a
+    descoberta subjacente tenha dias.
     """
     resources = etapa1_report.get("recursos") or []
 
@@ -242,6 +249,7 @@ def build_decision_report(etapa1_report: dict, expected_tag_value: str) -> dict:
     return {
         "conta_id": etapa1_report.get("conta_id"),
         "executado_em": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "descoberta_executada_em": etapa1_report.get("executado_em"),
         "valor_tag_esperado": expected_tag_value,
         "resumo": {
             "total_recursos_avaliados": len(decisoes),

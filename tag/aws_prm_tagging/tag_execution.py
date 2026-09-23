@@ -1,23 +1,26 @@
 """Execução do tagueamento (Etapa 2b: dry-run; Etapa 2c: escrita real) a
 partir do relatório de decisão da Etapa 2a (`decision.build_decision_report`).
 
-Esta Etapa 2b em si nunca escreve nada na conta AWS — só chamadas de
-leitura (revalidação, ver abaixo). O módulo é escrito para ser reaproveitado
-tal-qual pela Etapa 2c (ainda não implementada), trocando apenas o
-`Executor` usado pelo orquestrador: hoje só `DryRunExecutor` existe; a
-Etapa 2c adiciona um `LiveExecutor` que implementa o mesmo `Protocol`
-chamando boto3 de verdade. Toda a lógica de roteamento de API, agrupamento
-em lotes e revalidação é comum às duas etapas e não é duplicada.
+Um único ponto de entrada, `run_tagging_execution`, atende as duas etapas —
+`dry_run=True` (default) é a Etapa 2b, `dry_run=False` é a Etapa 2c. A
+única coisa que muda entre os dois modos é qual `Executor` está por baixo
+(`DryRunExecutor`, que só loga, vs. `LiveExecutor`, que chama boto3 de
+verdade) — todo o resto (roteamento de API, agrupamento em lotes,
+revalidação, classificação de erro, montagem do relatório final) é
+exatamente o mesmo código, nunca duplicado entre as duas etapas. Em
+`dry_run=True`, nenhuma chamada de ESCRITA é feita na conta — só leitura
+(revalidação, salvo com `revalidate=False`).
 
 ## Garantia estrutural de que só `decisao == "taguear"` gera uma chamada
 
 `select_taggable()` é o único ponto de entrada aceito pelo resto do módulo.
 Ela converte cada recurso do relatório de decisão em um `TaggableResource`
-— um tipo que **não tem campo `decisao`**. Todas as funções abaixo (
-`route_strategy`, `group_into_batches`, os métodos de `Executor`) recebem
-`TaggableResource`, nunca o dict bruto do relatório 2a. Não existe caminho
-de código que aceite `pular_iac`/`ja_ok`/`conflito` como parâmetro — é um
-erro de tipo, não uma condição que alguém possa esquecer de checar.
+— um tipo que **não tem campo `decisao`**. Todas as funções abaixo
+(`route_strategy`, `_processar_genericos`/`_processar_dedicados`, os
+métodos de `Executor`) recebem `TaggableResource`, nunca o dict bruto do
+relatório 2a. Não existe caminho de código que aceite
+`pular_iac`/`ja_ok`/`conflito` como parâmetro — é um erro de tipo, não uma
+condição que alguém possa esquecer de checar.
 
 ## Mapeamento de API por tipo de recurso
 
@@ -50,7 +53,7 @@ Confirmado na documentação oficial da AWS (API references, não a página-
 
 Toda execução (dry-run ou, futuramente, live) revalida o estado atual do
 recurso imediatamente antes de agir sobre ele — controlável via
-`revalidate=False` em `run_stage2b`, default `True`. Dois motivos:
+`revalidate=False` em `run_tagging_execution`, default `True`. Dois motivos:
 
 1. Condição de corrida: o recurso pode ter sido deletado, tido a tag
    alterada, ou passado a ser gerenciado por IaC, entre a execução da
@@ -115,6 +118,68 @@ falhou (estado `None`, distinto de um `_RevalidatedState` com
 `valor_atual=None`), e a tentativa de tagueamento (real ou simulada)
 prossegue normalmente — falhar a leitura de revalidação não deveria
 impedir de tentar a ação principal.
+
+## Classificação de erro na escrita real (`LiveExecutor`)
+
+Toda chamada de escrita é decorada com `retry.with_backoff()` — throttling
+é absorvido silenciosamente e só vira erro no relatório se esgotar todas as
+tentativas. Erros definitivos são classificados em 3 categorias
+(`_classificar_erro_aws`), pelo `Code` devolvido pela AWS:
+
+- `RESULTADO_ERRO_PERMISSAO` — `AccessDenied`/variantes. Categoria própria
+  porque é operacionalmente diferente de um erro pontual: precisa de ajuste
+  de política IAM, não é transitório.
+- `RESULTADO_RECURSO_NAO_ENCONTRADO` — o recurso sumiu entre a Etapa 1 e
+  esta execução (`ResourceNotFoundException` e variantes por serviço).
+  Também categoria própria: não é falha operacional, é o relatório da
+  Etapa 1 estar desatualizado — esperado ocasionalmente, não deveria
+  disparar o mesmo alerta que `AccessDenied`.
+- `RESULTADO_ERRO` — qualquer outro código (`ValidationException`, tipo não
+  suportado, etc.) — o código/mensagem originais ficam em `detalhe_erro`
+  mesmo assim.
+
+Uma falha (de qualquer categoria) nunca aborta o resto da execução: no
+caminho genérico, se a chamada de lote inteira levantar exceção, só os
+ARNs DAQUELE lote viram falha — o próximo lote/região segue normalmente.
+No caminho dedicado, cada recurso é uma chamada isolada por natureza (sem
+batch). `tag:TagResources` também pode devolver sucesso HTTP com falha
+parcial (`FailedResourcesMap`) — cada ARN listado ali vira falha
+individual, os demais do mesmo lote viram sucesso.
+
+## Idade máxima do relatório de decisão
+
+`max_decision_age_hours` em `run_tagging_execution` (opcional, `None` =
+sem checagem) recusa agir — levanta `DecisionReportDesatualizadoError` —
+quando `decision_report["descoberta_executada_em"]` (propagado por
+`decision.build_decision_report` a partir do `executado_em` da Etapa 1) é
+mais velho que o limite. Isso é ortogonal à revalidação por recurso: a
+revalidação cobre "esse recurso específico mudou de estado"; a idade do
+relatório cobre "esse universo de recursos pode estar amplamente
+desatualizado" (recursos novos não apareceriam de jeito nenhum,
+independente de revalidação).
+
+## Relatório final (`build_execution_report`)
+
+O relatório interno de `_processar_genericos`/`_processar_dedicados` só
+cobre recursos `decisao == "taguear"` (a única categoria que passa por
+`select_taggable`). O relatório final de saída da Etapa 2b/2c precisa
+cobrir as 5 categorias que fazem sentido para um humano/dashboard —
+`tagueado_sucesso` / `falhou` / `pulado_iac` / `conflito` / `ja_ok` — então
+`build_execution_report` mescla dois grupos de recursos:
+
+- Os `taguear` (resultado desta execução, mapeado por `_categoria_final_do_resultado`
+  — inclui os pulados na revalidação: `ja_tagueado` vira `ja_ok`,
+  `conflito_na_revalidacao` vira `conflito`, `iac_detectado_na_revalidacao`
+  vira `pulado_iac`).
+- Os `pular_iac`/`ja_ok`/`conflito` que a própria Etapa 2a já decidiu — nunca
+  passam por este módulo, nunca geram chamada nenhuma, entram carregados
+  direto no relatório final com a mesma categoria.
+
+Campo `origem` (`"decisao"` / `"revalidacao"` / `"execucao"`) preserva em
+qual momento a classificação foi de fato feita — útil para auditoria e para
+a Etapa 4 distinguir, por exemplo, um conflito visto já na descoberta
+original de um conflito que só apareceu no momento da escrita (possível
+tag de outro parceiro AWS aplicada nesse meio-tempo).
 """
 from __future__ import annotations
 
@@ -128,7 +193,7 @@ from typing import Protocol
 import boto3
 from botocore.exceptions import ClientError
 
-from .decision import DECISAO_TAGUEAR
+from .decision import DECISAO_CONFLITO, DECISAO_JA_OK, DECISAO_PULAR_IAC, DECISAO_TAGUEAR
 from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO, detect_iac
 from .retry import with_backoff
 from .tag_status import TAG_KEY, tags_list_to_dict
@@ -179,11 +244,72 @@ _ESTRATEGIA_DEDICADA: dict[tuple[str, str], ApiStrategy] = {
 }
 
 RESULTADO_SIMULADO_OK = "simulado_ok"
+RESULTADO_TAGUEADO_SUCESSO = "tagueado_sucesso"
 RESULTADO_JA_TAGUEADO = "ja_tagueado"
 RESULTADO_CONFLITO_NA_REVALIDACAO = "conflito_na_revalidacao"
 RESULTADO_IAC_DETECTADO_NA_REVALIDACAO = "iac_detectado_na_revalidacao"
 RESULTADO_ERRO_PERMISSAO = "erro_permissao"
+RESULTADO_RECURSO_NAO_ENCONTRADO = "recurso_nao_encontrado"
 RESULTADO_ERRO = "erro"
+
+# Categoria final de um recurso no relatório de execução (`categoria_final`
+# em `build_execution_report`) — mais grossa que `resultado` acima, pensada
+# para dashboard/leitura humana. Ver `_categoria_final_do_resultado`.
+CATEGORIA_TAGUEADO_SUCESSO = "tagueado_sucesso"
+CATEGORIA_FALHOU = "falhou"
+CATEGORIA_PULADO_IAC = "pulado_iac"
+CATEGORIA_CONFLITO = "conflito"
+CATEGORIA_JA_OK = "ja_ok"
+_TODAS_AS_CATEGORIAS_FINAIS = (
+    CATEGORIA_TAGUEADO_SUCESSO,
+    CATEGORIA_FALHOU,
+    CATEGORIA_PULADO_IAC,
+    CATEGORIA_CONFLITO,
+    CATEGORIA_JA_OK,
+)
+
+# Códigos de erro AWS conhecidos, mapeados para uma categoria de resultado
+# própria — o resto (throttling esgotado, validação, tipo não suportado
+# etc.) cai em RESULTADO_ERRO genérico, com o código original preservado em
+# `detalhe_erro`. Não é uma lista exaustiva — só os casos operacionalmente
+# distintos o suficiente para merecer contagem própria no relatório (ver
+# seção 4 do plano da Etapa 2c: permissão precisa de ajuste de política,
+# "não encontrado" é relatório desatualizado, não falha operacional).
+_CODIGOS_ERRO_PERMISSAO = frozenset({"AccessDenied", "AccessDeniedException", "UnauthorizedException"})
+_CODIGOS_RECURSO_NAO_ENCONTRADO = frozenset(
+    {
+        "ResourceNotFoundException",
+        "NoSuchEntity",
+        "ClusterNotFoundException",
+        "NodegroupNotFoundException",
+        "LoadBalancerNotFound",
+        "TargetGroupNotFound",
+        "ListenerNotFound",
+        "RuleNotFound",
+        "TrustStoreNotFound",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ResourceOutcome:
+    """Resultado de uma tentativa de tagueamento (real ou simulada) sobre um
+    único recurso — devolvido por `Executor.tag_single` e por cada valor de
+    `Executor.tag_generic_batch`. `detalhe_erro` só é preenchido quando
+    `resultado` não é um sucesso."""
+
+    resultado: str
+    detalhe_erro: dict | None = None
+
+
+def _classificar_erro_aws(codigo: str, mensagem: str) -> ResourceOutcome:
+    if codigo in _CODIGOS_ERRO_PERMISSAO:
+        resultado = RESULTADO_ERRO_PERMISSAO
+    elif codigo in _CODIGOS_RECURSO_NAO_ENCONTRADO:
+        resultado = RESULTADO_RECURSO_NAO_ENCONTRADO
+    else:
+        resultado = RESULTADO_ERRO
+    return ResourceOutcome(resultado=resultado, detalhe_erro={"codigo": codigo, "mensagem": mensagem})
 
 
 @dataclass(frozen=True)
@@ -356,16 +482,16 @@ def _revalidate_elb(
 
 # ---------------------------------------------------------------------------
 # Executor — único ponto de decisão entre "logar o que seria feito" (Etapa
-# 2b, `DryRunExecutor`) e "fazer de verdade" (Etapa 2c, ainda não
-# implementada). Todo o roteamento/agrupamento acima é comum às duas.
+# 2b, `DryRunExecutor`) e "fazer de verdade" (Etapa 2c, `LiveExecutor`).
+# Todo o roteamento/agrupamento/revalidação acima é comum às duas.
 # ---------------------------------------------------------------------------
 
 
 class Executor(Protocol):
     def tag_generic_batch(
         self, session: boto3.Session, regiao: str, arns: list[str], tag_key: str, tag_value: str
-    ) -> dict[str, str]:
-        """Devolve `{arn: resultado}` para cada ARN do lote."""
+    ) -> dict[str, ResourceOutcome]:
+        """Devolve `{arn: ResourceOutcome}` para cada ARN do lote."""
         ...
 
     def tag_single(
@@ -375,7 +501,7 @@ class Executor(Protocol):
         resource: TaggableResource,
         tag_key: str,
         tag_value: str,
-    ) -> str:
+    ) -> ResourceOutcome:
         """Devolve o resultado da tentativa para este único recurso."""
         ...
 
@@ -383,11 +509,12 @@ class Executor(Protocol):
 class DryRunExecutor:
     """Etapa 2b: nunca chama boto3 de escrita — só loga, no mesmo formato
     estruturado que vira o relatório de saída (preview fiel do que a Etapa
-    2c executaria com os mesmos dados)."""
+    2c executaria com os mesmos dados). Sempre devolve sucesso simulado —
+    não há como o dry-run saber se uma chamada real falharia."""
 
     def tag_generic_batch(
         self, session: boto3.Session, regiao: str, arns: list[str], tag_key: str, tag_value: str
-    ) -> dict[str, str]:
+    ) -> dict[str, ResourceOutcome]:
         logger.info(
             "[DRY-RUN] tag:TagResources em %s aplicaria {%s: %s} a %d recurso(s): %s",
             regiao,
@@ -396,7 +523,7 @@ class DryRunExecutor:
             len(arns),
             arns,
         )
-        return {arn: RESULTADO_SIMULADO_OK for arn in arns}
+        return {arn: ResourceOutcome(resultado=RESULTADO_SIMULADO_OK) for arn in arns}
 
     def tag_single(
         self,
@@ -405,7 +532,7 @@ class DryRunExecutor:
         resource: TaggableResource,
         tag_key: str,
         tag_value: str,
-    ) -> str:
+    ) -> ResourceOutcome:
         acao_nativa = {
             ApiStrategy.EKS_CLUSTER: "eks:TagResource",
             ApiStrategy.EKS_NODE_GROUP: "eks:TagResource",
@@ -421,7 +548,84 @@ class DryRunExecutor:
             tag_value,
             resource.arn,
         )
-        return RESULTADO_SIMULADO_OK
+        return ResourceOutcome(resultado=RESULTADO_SIMULADO_OK)
+
+
+@with_backoff()
+def _tag_resources_call(client, arns: list[str], tags: dict[str, str]) -> dict:
+    return client.tag_resources(ResourceARNList=arns, Tags=tags)
+
+
+@with_backoff()
+def _eks_tag_resource_call(client, arn: str, tags: dict[str, str]) -> None:
+    client.tag_resource(resourceArn=arn, tags=tags)
+
+
+@with_backoff()
+def _bedrock_tag_resource_call(client, arn: str, tags: list[dict]) -> None:
+    client.tag_resource(resourceARN=arn, tags=tags)
+
+
+@with_backoff()
+def _elb_add_tags_call(client, arn: str, tags: list[dict]) -> None:
+    client.add_tags(ResourceArns=[arn], Tags=tags)
+
+
+class LiveExecutor:
+    """Etapa 2c: chama de verdade a API nativa de cada estratégia (ver
+    docstring do módulo). Implementa o mesmo `Protocol` que
+    `DryRunExecutor` — nenhuma mudança no roteamento/agrupamento/
+    revalidação do resto do módulo para existir."""
+
+    def tag_generic_batch(
+        self, session: boto3.Session, regiao: str, arns: list[str], tag_key: str, tag_value: str
+    ) -> dict[str, ResourceOutcome]:
+        client = session.client("resourcegroupstaggingapi", region_name=regiao)
+        try:
+            resp = _tag_resources_call(client, arns, {tag_key: tag_value})
+        except ClientError as exc:
+            # A chamada inteira falhou (ex.: throttling esgotou todas as
+            # tentativas do retry.py) — todo o lote vira falha com o mesmo
+            # erro; isso não impede o PRÓXIMO lote/região de continuar (ver
+            # `_processar_genericos`, que segue lote a lote).
+            erro = exc.response.get("Error", {})
+            outcome = _classificar_erro_aws(erro.get("Code", ""), erro.get("Message", ""))
+            return {arn: outcome for arn in arns}
+
+        falhas = resp.get("FailedResourcesMap", {})
+        resultado: dict[str, ResourceOutcome] = {}
+        for arn in arns:
+            info_falha = falhas.get(arn)
+            if info_falha is None:
+                resultado[arn] = ResourceOutcome(resultado=RESULTADO_TAGUEADO_SUCESSO)
+            else:
+                resultado[arn] = _classificar_erro_aws(
+                    info_falha.get("ErrorCode", ""), info_falha.get("ErrorMessage", "")
+                )
+        return resultado
+
+    def tag_single(
+        self,
+        session: boto3.Session,
+        estrategia: ApiStrategy,
+        resource: TaggableResource,
+        tag_key: str,
+        tag_value: str,
+    ) -> ResourceOutcome:
+        try:
+            if estrategia in (ApiStrategy.EKS_CLUSTER, ApiStrategy.EKS_NODE_GROUP):
+                client = session.client("eks", region_name=resource.regiao)
+                _eks_tag_resource_call(client, resource.arn, {tag_key: tag_value})
+            elif estrategia is ApiStrategy.BEDROCK_PROFILE:
+                client = session.client("bedrock", region_name=resource.regiao)
+                _bedrock_tag_resource_call(client, resource.arn, [{"key": tag_key, "value": tag_value}])
+            else:  # ELB_LOAD_BALANCER
+                client = session.client("elbv2", region_name=resource.regiao)
+                _elb_add_tags_call(client, resource.arn, [{"Key": tag_key, "Value": tag_value}])
+        except ClientError as exc:
+            erro = exc.response.get("Error", {})
+            return _classificar_erro_aws(erro.get("Code", ""), erro.get("Message", ""))
+        return ResourceOutcome(resultado=RESULTADO_TAGUEADO_SUCESSO)
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +650,9 @@ def _classificar_estado_revalidado(estado: _RevalidatedState, tag_value: str) ->
     return None
 
 
-def _resultado_entry(resource: TaggableResource, estrategia: ApiStrategy, resultado: str) -> dict:
+def _resultado_entry(
+    resource: TaggableResource, estrategia: ApiStrategy, resultado: str, detalhe_erro: dict | None = None
+) -> dict:
     return {
         "arn": resource.arn,
         "servico": resource.servico,
@@ -454,6 +660,7 @@ def _resultado_entry(resource: TaggableResource, estrategia: ApiStrategy, result
         "tipo_recurso": resource.tipo_recurso,
         "estrategia_api": estrategia.value,
         "resultado": resultado,
+        "detalhe_erro": detalhe_erro,
     }
 
 
@@ -489,9 +696,8 @@ def _processar_genericos(
             arns = [r.arn for r in lote]
             resultado_por_arn = executor.tag_generic_batch(session, regiao, arns, tag_key, tag_value)
             for r in lote:
-                resultados.append(
-                    _resultado_entry(r, ApiStrategy.GENERICO, resultado_por_arn.get(r.arn, RESULTADO_ERRO))
-                )
+                outcome = resultado_por_arn.get(r.arn) or ResourceOutcome(resultado=RESULTADO_ERRO)
+                resultados.append(_resultado_entry(r, ApiStrategy.GENERICO, outcome.resultado, outcome.detalhe_erro))
     return resultados
 
 
@@ -537,42 +743,195 @@ def _processar_dedicados(
             if resultado_decidido is not None:
                 resultados.append(_resultado_entry(r, estrategia, resultado_decidido))
                 continue
-            resultado = executor.tag_single(session, estrategia, r, tag_key, tag_value)
-            resultados.append(_resultado_entry(r, estrategia, resultado))
+            outcome = executor.tag_single(session, estrategia, r, tag_key, tag_value)
+            resultados.append(_resultado_entry(r, estrategia, outcome.resultado, outcome.detalhe_erro))
     return resultados
 
 
-def build_stage2b_report(account_id: str | None, expected_tag_value: str, resultados: list[dict]) -> dict:
-    """Monta o relatório de saída no mesmo estilo de `report.build_report` /
-    `decision.build_decision_report` — mesma base para a Etapa 2c e para o
-    dashboard."""
-    resultado_counts = Counter(r["resultado"] for r in resultados)
-    estrategia_counts = Counter(r["estrategia_api"] for r in resultados)
+# ---------------------------------------------------------------------------
+# Idade máxima do relatório de decisão — salvaguarda antes de agir sobre uma
+# descoberta desatualizada (ver docstring do módulo)
+# ---------------------------------------------------------------------------
+
+
+class DecisionReportDesatualizadoError(Exception):
+    """A descoberta (Etapa 1) que embasa este relatório de decisão é mais
+    velha do que o limite pedido, ou o relatório não carrega essa
+    informação — ação recusada até uma Etapa 1/2a novas rodarem. Nunca
+    levantada quando `max_decision_age_hours` não é passado."""
+
+
+def _idade_em_horas(timestamp_iso: str) -> float:
+    momento = datetime.strptime(timestamp_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - momento).total_seconds() / 3600
+
+
+def _checar_idade_do_relatorio(decision_report: dict, max_decision_age_hours: float | None) -> None:
+    if max_decision_age_hours is None:
+        return
+    timestamp = decision_report.get("descoberta_executada_em")
+    if not timestamp:
+        raise DecisionReportDesatualizadoError(
+            "Relatório de decisão sem 'descoberta_executada_em' — não é possível "
+            "verificar a idade da descoberta subjacente (gerado por uma versão "
+            "antiga de decision.py?)."
+        )
+    idade = _idade_em_horas(timestamp)
+    if idade > max_decision_age_hours:
+        raise DecisionReportDesatualizadoError(
+            f"A descoberta (Etapa 1) que embasa este relatório de decisão tem "
+            f"{idade:.1f}h (limite: {max_decision_age_hours}h) — rode a Etapa "
+            "1/2a novamente antes de aplicar."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Relatório final — mescla os recursos "taguear" (resultado desta execução)
+# com os recursos "pular_iac"/"ja_ok"/"conflito" (decididos direto na Etapa
+# 2a, nunca passam por este módulo) num único relatório de 5 categorias.
+# ---------------------------------------------------------------------------
+
+_CATEGORIA_POR_DECISAO_2A = {
+    DECISAO_PULAR_IAC: CATEGORIA_PULADO_IAC,
+    DECISAO_JA_OK: CATEGORIA_JA_OK,
+    DECISAO_CONFLITO: CATEGORIA_CONFLITO,
+}
+
+# resultado (deste módulo) -> (categoria_final, origem) — ver docstring do
+# módulo. RESULTADO_SIMULADO_OK e RESULTADO_TAGUEADO_SUCESSO (dry-run e live,
+# respectivamente) são o único par que aponta para a mesma categoria.
+_CATEGORIA_POR_RESULTADO = {
+    RESULTADO_SIMULADO_OK: (CATEGORIA_TAGUEADO_SUCESSO, "execucao"),
+    RESULTADO_TAGUEADO_SUCESSO: (CATEGORIA_TAGUEADO_SUCESSO, "execucao"),
+    RESULTADO_JA_TAGUEADO: (CATEGORIA_JA_OK, "revalidacao"),
+    RESULTADO_CONFLITO_NA_REVALIDACAO: (CATEGORIA_CONFLITO, "revalidacao"),
+    RESULTADO_IAC_DETECTADO_NA_REVALIDACAO: (CATEGORIA_PULADO_IAC, "revalidacao"),
+}
+
+
+def _categoria_final_do_resultado(resultado: str) -> tuple[str, str]:
+    """`(categoria_final, origem)` para um resultado produzido por
+    `_processar_genericos`/`_processar_dedicados`. Qualquer resultado não
+    mapeado explicitamente (`RESULTADO_ERRO_PERMISSAO`,
+    `RESULTADO_RECURSO_NAO_ENCONTRADO`, `RESULTADO_ERRO`) é uma falha."""
+    return _CATEGORIA_POR_RESULTADO.get(resultado, (CATEGORIA_FALHOU, "execucao"))
+
+
+def build_execution_report(
+    decision_report: dict,
+    resultados_taguear: list[dict],
+    expected_tag_value: str,
+    dry_run: bool,
+    execucao_inicial: bool = False,
+) -> dict:
+    """Monta o relatório final de execução (Etapa 2b em modo preview, Etapa
+    2c em modo real — só `modo`/os `resultado`s individuais mudam) no mesmo
+    estilo de `report.build_report`/`decision.build_decision_report`.
+
+    Ao contrário do relatório interno de `resultados_taguear` (só recursos
+    `decisao == "taguear"`), este relatório cobre TODOS os recursos do
+    relatório de decisão: os `pular_iac`/`ja_ok`/`conflito` da Etapa 2a
+    entram carregados direto (nunca passaram por este módulo, nunca geraram
+    chamada nenhuma), lado a lado com o resultado real da tentativa de
+    tagueamento dos `taguear`. `categoria_final` é a mesma taxonomia de 5
+    valores para as duas origens; `origem` (`"decisao"` vs. `"revalidacao"`
+    vs. `"execucao"`) preserva de onde veio a classificação, para quem
+    quiser auditar."""
+    recursos_finais: list[dict] = []
+
+    for r in resultados_taguear:
+        categoria, origem = _categoria_final_do_resultado(r["resultado"])
+        recursos_finais.append(
+            {
+                "arn": r["arn"],
+                "servico": r["servico"],
+                "regiao": r["regiao"],
+                "tipo_recurso": r["tipo_recurso"],
+                "categoria_final": categoria,
+                "origem": origem,
+                "estrategia_api": r["estrategia_api"],
+                "resultado": r["resultado"],
+                "detalhe_erro": r["detalhe_erro"],
+                "motivo": None,
+            }
+        )
+
+    for r in decision_report.get("recursos") or []:
+        categoria = _CATEGORIA_POR_DECISAO_2A.get(r.get("decisao"))
+        if categoria is None:
+            continue  # decisao == "taguear" (já coberto acima) ou valor inesperado
+        recursos_finais.append(
+            {
+                "arn": r["arn"],
+                "servico": r["servico"],
+                "regiao": r["regiao"],
+                "tipo_recurso": r.get("tipo_recurso"),
+                "categoria_final": categoria,
+                "origem": "decisao",
+                "estrategia_api": None,
+                "resultado": None,
+                "detalhe_erro": None,
+                "motivo": r.get("motivo"),
+            }
+        )
+
+    categoria_counts = Counter(r["categoria_final"] for r in recursos_finais)
+    servico_counts = Counter(r["servico"] for r in recursos_finais)
+    # Granularidade fina (resultado/estrategia_api) só existe para os
+    # recursos que passaram por este módulo — os de origem "decisao" têm
+    # `resultado`/`estrategia_api` nulos e não entram nessas duas contagens.
+    resultado_counts = Counter(r["resultado"] for r in recursos_finais if r["resultado"] is not None)
+    estrategia_counts = Counter(r["estrategia_api"] for r in recursos_finais if r["estrategia_api"] is not None)
+
     return {
-        "conta_id": account_id,
+        "conta_id": decision_report.get("conta_id"),
         "executado_em": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "valor_tag_esperado": expected_tag_value,
-        "modo": "dry_run",
+        "modo": "dry_run" if dry_run else "live",
+        "execucao_inicial": execucao_inicial,
         "resumo": {
-            "total_recursos_processados": len(resultados),
+            "total_recursos": len(recursos_finais),
+            "por_categoria_final": {c: categoria_counts.get(c, 0) for c in _TODAS_AS_CATEGORIAS_FINAIS},
             "por_resultado": dict(sorted(resultado_counts.items())),
             "por_estrategia_api": dict(sorted(estrategia_counts.items())),
+            "por_servico": dict(sorted(servico_counts.items())),
         },
-        "recursos": resultados,
+        "recursos": recursos_finais,
     }
 
 
-def run_stage2b(
+def run_tagging_execution(
     decision_report: dict,
     session: boto3.Session,
     expected_tag_value: str,
+    dry_run: bool = True,
     revalidate: bool = True,
     executor: Executor | None = None,
+    execucao_inicial: bool = False,
+    max_decision_age_hours: float | None = None,
 ) -> dict:
-    """Ponto de entrada da Etapa 2b. `executor` é injetável para teste (e
-    será o ponto de troca para `LiveExecutor` na Etapa 2c) — default
-    `DryRunExecutor()`, a única implementação que existe até a Etapa 2c."""
-    executor = executor or DryRunExecutor()
+    """Ponto de entrada único da Etapa 2b (`dry_run=True`, default) e da
+    Etapa 2c (`dry_run=False`) — a mesma função, só trocando o `Executor`
+    usado por baixo (`executor` explícito tem prioridade; senão,
+    `DryRunExecutor`/`LiveExecutor` conforme `dry_run`). Nenhuma lógica de
+    negócio (quais recursos recebem chamada de escrita, roteamento de API,
+    batching, revalidação) muda entre os dois modos.
+
+    `max_decision_age_hours`: quando informado, recusa agir (levanta
+    `DecisionReportDesatualizadoError`) se a descoberta subjacente ao
+    relatório de decisão for mais velha que isso — ver
+    `decision.build_decision_report` e a docstring deste módulo.
+
+    `execucao_inicial`: sinal de observabilidade repassado ao relatório de
+    saída (`execucao_inicial` no JSON), nunca usado para bloquear a
+    execução — pensado para o Lambda marcar a primeira execução de uma
+    conta (disparada pelo Custom Resource no `Create` da stack) para
+    facilitar revisão humana posterior, sem exigir aprovação prévia."""
+    _checar_idade_do_relatorio(decision_report, max_decision_age_hours)
+
+    if executor is None:
+        executor = DryRunExecutor() if dry_run else LiveExecutor()
+
     taggable = select_taggable(decision_report)
 
     genericos = [r for r in taggable if route_strategy(r) is ApiStrategy.GENERICO]
@@ -582,11 +941,13 @@ def run_stage2b(
         if estrategia is not ApiStrategy.GENERICO:
             dedicados_por_estrategia.setdefault(estrategia, []).append(r)
 
-    resultados = _processar_genericos(
+    resultados_taguear = _processar_genericos(
         session, executor, genericos, TAG_KEY, expected_tag_value, revalidate
     )
-    resultados += _processar_dedicados(
+    resultados_taguear += _processar_dedicados(
         session, executor, dedicados_por_estrategia, TAG_KEY, expected_tag_value, revalidate
     )
 
-    return build_stage2b_report(decision_report.get("conta_id"), expected_tag_value, resultados)
+    return build_execution_report(
+        decision_report, resultados_taguear, expected_tag_value, dry_run, execucao_inicial
+    )

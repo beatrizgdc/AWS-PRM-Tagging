@@ -104,16 +104,16 @@ Nenhuma. `decision.py` é uma função pura — não instancia sessão boto3, n�
 faz nenhuma chamada de API. O subcomando `decide` só lê o JSON da Etapa 1 do
 disco e escreve o relatório de decisão, também no disco.
 
-## Permissões IAM para a Etapa 2b (`apply`, dry-run)
+## Permissões IAM para a Etapa 2b (`apply`, dry-run — sem `--live`)
 
-O subcomando `apply` (`tag_execution.run_stage2b`) nunca chama uma API de
-escrita — o `DryRunExecutor`, único executor que existe até a Etapa 2c, só
-loga a ação que seria tomada. As únicas chamadas reais que a Etapa 2b faz
-são de **leitura**, para a revalidação do estado atual da tag imediatamente
-antes de decidir se simula ou pula cada recurso (ver
-[arquitetura.md](arquitetura.md#tag_executionpy); pode ser desligada com
-`--no-revalidate`, mas então o relatório de dry-run deixa de refletir
-mudanças feitas na conta depois da Etapa 1/2a).
+O subcomando `apply` sem `--live` (`tag_execution.run_tagging_execution`
+com `dry_run=True`, o default) nunca chama uma API de escrita — o
+`DryRunExecutor` só loga a ação que seria tomada. As únicas chamadas reais
+que a Etapa 2b faz são de **leitura**, para a revalidação do estado atual
+de cada recurso (tag E status de IaC) imediatamente antes de decidir se
+simula ou pula cada um (ver [arquitetura.md](arquitetura.md#tag_executionpy);
+pode ser desligada com `--no-revalidate`, mas então o relatório de dry-run
+deixa de refletir mudanças feitas na conta depois da Etapa 1/2a).
 
 ```json
 {
@@ -137,14 +137,16 @@ mudanças feitas na conta depois da Etapa 1/2a).
 Com `--no-revalidate`, nem essa política é necessária — o subcomando `apply`
 não faz nenhuma chamada AWS.
 
-## Permissões IAM para a Etapa 2c (execução real — ainda não implementada)
+## Permissões IAM para a Etapa 2c (`apply --live`, execução real)
 
-**Não aplicar esta política ainda** — é a lista de permissões que a Etapa 2c
-(quando implementada, trocando `DryRunExecutor` por um `LiveExecutor`) vai
-precisar, documentada aqui com antecedência para revisão. Deve viver numa
-política **separada** da política de leitura acima, nunca anexada à mesma
-role usada para descoberta/dry-run — escrita é uma superfície de risco
-diferente de leitura.
+`LiveExecutor` está implementado, mas **a lista abaixo ainda não deve ser
+anexada a uma role de cliente real** até o item "isso não é suficiente
+sozinho" logo abaixo ser resolvido (validação das ~80 permissões nativas
+por serviço) e até a Etapa 2c ter sido exercitada contra a conta sandbox
+(ver "Estratégia de testes" no README/docs de arquitetura). Deve viver numa
+política **separada** da política de leitura da Etapa 2b acima, nunca
+anexada à mesma role usada para descoberta/dry-run — escrita é uma
+superfície de risco diferente de leitura.
 
 ```json
 {
