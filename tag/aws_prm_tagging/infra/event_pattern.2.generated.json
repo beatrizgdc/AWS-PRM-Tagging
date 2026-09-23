@@ -1,0 +1,168 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.payment-cryptography"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKey"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.rds"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDBCluster",
+          "CreateDBInstance"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift-serverless"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkgroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.resiliencehub"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApp"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.route53"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateHostedZone"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.s3"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBucket"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.secretsmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateSecret"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sns"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTopic"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sqs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateQueue"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ssm"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateOpsItem"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.states"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStateMachine"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.timestream-write"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDatabase"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.transfer"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServer"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.vpc-lattice"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServiceNetwork"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.workspaces"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkspaces"
+        ]
+      }
+    }
+  ]
+}

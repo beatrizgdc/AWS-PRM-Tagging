@@ -2,7 +2,8 @@
 
 Automação de tagging AWS para atender a exigência de Resource Tagging do
 programa AWS Partner Revenue Measurement (PRM). Este repositório cobre os
-três primeiros passos de uma automação de **quatro estágios**:
+primeiros três estágios de uma automação de **quatro estágios**, mais um
+início de implementação do quarto:
 
 1. **Mapeamento** (Etapa 1, `map`) — descoberta somente-leitura de recursos
    e status da tag `aws-apn-id` por recurso.
@@ -22,14 +23,27 @@ três primeiros passos de uma automação de **quatro estágios**:
      completa de permissões IAM nativas por serviço** — ver
      [docs/producao.md](docs/producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)
      antes de usar `--live` contra qualquer conta real.
-4. Automação contínua para novos recursos (Etapa 3) e varredura recorrente
-   / auditoria (Etapa 4) — fora do escopo deste repositório por ora.
+4. **Automação contínua** (Etapa 3) — Lambda acionado por regra(s) de
+   EventBridge a cada criação de recurso em escopo, reaproveitando
+   `decision.py` (Etapa 2a) e `tag_execution.py` (Etapa 2c) sem nenhuma
+   lógica de decisão/execução duplicada. Cobre um **lote inicial** de ~25
+   dos ~85 serviços do CSV (os de alta confiança na forma do evento de
+   criação — ver [event_mapping.py](event_mapping.py)); os demais estão
+   mapeados como pendentes, não como lacuna silenciosa (ver
+   [docs/melhorias-futuras.md](docs/melhorias-futuras.md)). Implementação em
+   Python testada (`test/unit/`) e infraestrutura como código (SAM) em
+   [infra/](infra/README.md) — **nenhuma das duas foi validada contra uma
+   conta AWS real ainda** (nem `sam deploy`, nem um evento CloudTrail
+   real capturado). Varredura recorrente/auditoria (Etapa 4) continua fora
+   do escopo deste repositório.
 
-As Etapas 3-4 reaproveitam os módulos escritos aqui (`aws_prm_tagging/`,
-núcleo compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e
-serão empacotadas como Lambda dentro de uma stack CloudFormation, executando
-localmente em cada conta cliente (arquitetura sem acesso cross-account: cada
-conta roda sua própria automação).
+A Etapa 3 reaproveita os módulos escritos aqui (`aws_prm_tagging/`, núcleo
+compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e é
+empacotada como Lambda dentro de uma stack CloudFormation (ver
+[infra/README.md](infra/README.md) para o escopo exato do que já está
+implantável e o que ainda falta mesclar), executando localmente em cada
+conta cliente (arquitetura sem acesso cross-account: cada conta roda sua
+própria automação). A Etapa 4 segue o mesmo modelo, ainda não implementada.
 
 ## O que este script faz
 
@@ -302,11 +316,17 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   report.py                                  monta o relatório JSON da Etapa 1
   retry.py                                   backoff exponencial para throttling
   main.py                                    CLI (subcomandos map / decide / apply)
+  event_mapping.py                           Etapa 3 — mapeamento serviço do CSV -> evento(s) de criação, gera o event pattern do EventBridge
+  event_parser.py                            Etapa 3 — extrai o(s) recurso(s) recém-criado(s) a partir do payload do evento
+  single_resource.py                         Etapa 3 — lê o estado atual de UM recurso (sem descoberta completa)
+  publish.py                                 publicação de resultados no SNS central (núcleo compartilhado — Etapa 3 e futura Etapa 4)
+  handler_continuous_tagging.py              Etapa 3 — handler Lambda (I/O only; reaproveita decision.py e tag_execution.py)
+  infra/                                     SAM/CloudFormation da Etapa 3 (Lambda, Step Functions, EventBridge, SNS) — ver infra/README.md
   requirements.txt                           dependências de runtime (boto3)
-  requirements-dev.txt                       dependências de desenvolvimento (pytest)
+  requirements-dev.txt                       dependências de desenvolvimento (pytest, pyyaml)
   docs/                                      documentação de arquitetura, produção e rollout multi-cliente
   test/
-    unit/                                    testes pytest (offline, sem AWS) — Etapas 2a, 2b e 2c
+    unit/                                    testes pytest (offline, sem AWS) — Etapas 2a, 2b, 2c e 3
     localstack/                              teste de ponta a ponta contra LocalStack (sem AWS real) — Etapa 1
 ```
 

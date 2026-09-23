@@ -1,0 +1,269 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.elasticbeanstalk"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApplication",
+          "CreateEnvironment"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.elasticfilesystem"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFileSystem"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.elasticloadbalancing"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateLoadBalancer"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.elasticmapreduce"
+      ],
+      "detail": {
+        "eventName": [
+          "RunJobFlow"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.es"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDomain"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.finspace"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateEnvironment"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.firehose"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDeliveryStream"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.fsx"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFileSystem"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.gamelift"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFleet"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.glacier"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateVault"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.healthlake"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFHIRDatastore"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kafka"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateClusterV2"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kendra"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateIndex"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesis"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStream"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesisanalyticsv2"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApplication"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesisvideo"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStream"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kms"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKey"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.lambda"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFunction20150331v2"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.logs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateLogGroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.medialive"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateChannel"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mediapackage"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateChannel"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.medical-imaging"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDatastore"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.memorydb"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mq"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBroker"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.network-firewall"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFirewall"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.networkmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCoreNetwork",
+          "CreateGlobalNetwork"
+        ]
+      }
+    }
+  ]
+}

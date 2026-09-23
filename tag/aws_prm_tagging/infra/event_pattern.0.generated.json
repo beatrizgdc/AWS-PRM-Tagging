@@ -1,0 +1,247 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.acm-pca"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCertificateAuthority"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.acm"
+      ],
+      "detail": {
+        "eventName": [
+          "RequestCertificate"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.appsync"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateGraphqlApi"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.athena"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDataCatalog",
+          "CreateWorkGroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.backup"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBackupPlan",
+          "CreateBackupVault"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.bedrock"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateInferenceProfile"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.clouddirectory"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDirectory"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.cloudfront"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDistribution"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.cloudhsmv2"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.codebuild"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateProject"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.codepipeline"
+      ],
+      "detail": {
+        "eventName": [
+          "CreatePipeline"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.cognito-identity"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateIdentityPool"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.cognito-idp"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateUserPool"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.connect"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateInstance"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.directconnect"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateConnection",
+          "CreateDirectConnectGateway"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.dms"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateReplicationInstance",
+          "CreateReplicationTask"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ds"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDirectory",
+          "CreateMicrosoftAD"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.dynamodb"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTable"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ec2"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTransitGateway",
+          "CreateVolume",
+          "CreateVpc",
+          "RunInstances"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ecr"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateRepository"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ecs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster",
+          "CreateService"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.eks"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster",
+          "CreateNodegroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.elasticache"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCacheCluster"
+        ]
+      }
+    }
+  ]
+}

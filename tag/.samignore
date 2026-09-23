@@ -1,0 +1,8 @@
+aws_prm_tagging/test/
+aws_prm_tagging/docs/
+aws_prm_tagging/reference/
+aws_prm_tagging/infra/
+aws_prm_tagging/.pytest_cache/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/

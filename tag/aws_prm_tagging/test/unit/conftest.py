@@ -118,6 +118,46 @@ def relatorio_decisao_factory():
 
 
 @pytest.fixture
+def cloudtrail_event_factory():
+    """Fábrica de eventos no formato "AWS API Call via CloudTrail" entregue
+    pelo EventBridge — usada pelos testes de `event_parser.py` e
+    `handler_continuous_tagging.py` (Etapa 3). `detail_overrides` é
+    mesclado por cima do `detail` default (útil para
+    `responseElements`/`requestParameters` específicos de cada teste)."""
+
+    def _build(
+        event_source: str = "ec2.amazonaws.com",
+        event_name: str = "RunInstances",
+        aws_region: str = "us-east-1",
+        account_id: str = "000000000000",
+        event_id: str = "11111111-2222-3333-4444-555555555555",
+        detail_overrides: dict | None = None,
+    ) -> dict:
+        detail = {
+            "eventVersion": "1.08",
+            "eventSource": event_source,
+            "eventName": event_name,
+            "awsRegion": aws_region,
+            "recipientAccountId": account_id,
+            "eventID": event_id,
+            "requestParameters": {},
+            "responseElements": {},
+        }
+        detail.update(detail_overrides or {})
+        return {
+            "version": "0",
+            "id": event_id,
+            "detail-type": "AWS API Call via CloudTrail",
+            "source": f"aws.{event_source.split('.')[0]}",
+            "account": account_id,
+            "region": aws_region,
+            "detail": detail,
+        }
+
+    return _build
+
+
+@pytest.fixture
 def fake_session_factory():
     """Fábrica de uma sessão boto3 falsa, sem nenhuma chamada de rede real —
     usada pelos testes de `tag_execution.py` que exercitam a revalidação

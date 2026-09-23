@@ -1,0 +1,35 @@
+{
+  "Comment": "Etapa 3 (PRM Resource Tagging) - aguarda um debounce apos o evento de criacao de recurso (reduzir corrida com IaC aplicando suas proprias tags), depois invoca o handler que reaproveita a Etapa 2a (decisao) e a Etapa 2c (tagueamento real, ja com revalidacao embutida).",
+  "StartAt": "AguardarDebounce",
+  "States": {
+    "AguardarDebounce": {
+      "Type": "Wait",
+      "Comment": "Standard Workflow: cobrado por transicao de estado, nao por tempo de espera - um Wait longo aqui nao tem custo de execucao ociosa (diferente de manter um Lambda dormindo).",
+      "Seconds": ${DebounceSeconds},
+      "Next": "ProcessarRecursoRecemCriado"
+    },
+    "ProcessarRecursoRecemCriado": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${LambdaArn}",
+        "Payload.$": "$"
+      },
+      "Retry": [
+        {
+          "Comment": "Retry recomendado pela AWS para invocacao de Lambda via Step Functions (throttling/erro transitorio do proprio servico Lambda, nao das APIs da AWS que o handler chama por dentro - essas ja tem retry proprio em retry.py).",
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    }
+  }
+}

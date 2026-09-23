@@ -138,22 +138,25 @@ si, que já está implementada e testada para 1/2a/2b/2c:
 | 2a — Decisão (`decide`) | Classifica cada recurso em `taguear`/`pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` | CLI local/manual (estado atual deste repositório) |
 | 2b — Tagueamento, dry-run (`apply`) | Simula a chamada de API por recurso `taguear`, sem escrever | CLI local/manual (estado atual deste repositório) |
 | 2c — Tagueamento, execução real (`apply --live`) | Chama as APIs de escrita de verdade | CLI local/manual (estado atual deste repositório); ainda não validada contra sandbox nem com a lista completa de permissões IAM nativas por serviço — ver [producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real) |
-| 3 — Automação contínua | EventBridge + Lambda reagindo a criação de recursos, validando tag existente antes de agir | Ainda não implementada — Lambda + regra EventBridge dentro da stack do StackSet |
+| 3 — Automação contínua | EventBridge + Step Functions (debounce) + Lambda reagindo a criação de recursos, validando tag existente antes de agir | Implementada para um lote inicial de ~25 serviços (código + testes + template SAM em `infra/`) — **não validada contra conta AWS real** (nem deploy, nem evento CloudTrail real). Ver [infra/README.md](../infra/README.md) e [melhorias-futuras.md](melhorias-futuras.md) para o que falta mesclar na stack única e as pendências registradas. |
 | 4 — Varredura recorrente e auditoria | Repete a lógica da Etapa 1 periodicamente; alerta de drift/remoção via CloudTrail + EventBridge + SNS (near real-time) com a varredura periódica como backstop; verificação de SCP e de tag policies do Organizations (pendente aprovação do cliente); alimenta o dashboard | Ainda não implementada — Lambda agendada (EventBridge Scheduler) dentro da stack do StackSet |
 
 As Etapas 1-2c hoje só rodam como CLI local, encadeadas manualmente por
 quem executa (a saída em arquivo de uma alimenta a entrada da próxima) —
-nenhuma delas está empacotada como Lambda ainda. As Etapas 3-4 (a
-implementar) reaproveitam os módulos de `aws_prm_tagging/` (em particular
-`resource_discovery.py`, `tag_status.py`, `iac_detection.py`, `ou_tree.py`,
-`decision.py`, `tag_execution.py`) como dependência empacotada (ex.: Lambda
-Layer) das funções Lambda implantadas por StackSet, evitando duplicar a
-lógica de descoberta/decisão/execução entre etapas — e a Etapa 8 do
-levantamento de code review (Custom Resource do CloudFormation disparando
-o tagueamento inicial de forma assíncrona, para não esbarrar no limite de
-15 minutos do Lambda em contas grandes) precisa ser resolvida junto do
-desenho do empacotamento das Etapas 2b/2c como Lambda — ver
-[melhorias-futuras.md](melhorias-futuras.md).
+nenhuma delas está empacotada como Lambda ainda. A Etapa 3 já é (ver acima)
+— reaproveita os módulos de `aws_prm_tagging/` (em particular
+`decision.py`, `tag_execution.py`, mais os módulos próprios `event_mapping.py`/
+`event_parser.py`/`single_resource.py`/`publish.py`) diretamente como parte
+do pacote de deploy da função Lambda (`infra/template.yaml`, `CodeUri`
+apontando para o pacote inteiro — não uma Lambda Layer separada; migrar
+para Layer compartilhada entre as futuras funções das Etapas 1/2/4 fica
+para quando a stack única for montada de verdade, ver
+[infra/README.md](../infra/README.md)). A Etapa 4 (a implementar) segue o
+mesmo modelo. A Etapa 8 do levantamento de code review (Custom Resource do
+CloudFormation disparando o tagueamento inicial de forma assíncrona, para
+não esbarrar no limite de 15 minutos do Lambda em contas grandes) continua
+pendente — precisa ser resolvida junto do desenho do empacotamento das
+Etapas 2b/2c como Lambda — ver [melhorias-futuras.md](melhorias-futuras.md).
 
 ## Pontos em aberto (resumo)
 

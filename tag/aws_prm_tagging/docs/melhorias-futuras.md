@@ -13,6 +13,185 @@ mapeamento contrato↔OU, etc.) ficam em
 [arquitetura-multicliente.md](arquitetura-multicliente.md#pontos-em-aberto-resumo),
 não aqui.
 
+## Pendências da Etapa 3 (automação contínua)
+
+Decisões explicitamente adiadas durante a implementação inicial da Etapa 3
+(EventBridge + Step Functions + Lambda), combinadas com o gestor do
+projeto — cada uma com o porquê de não ter entrado agora.
+
+### Mapeamento evento→serviço cobre só um lote inicial (~25 de ~85 serviços)
+
+**O quê:** `event_mapping.py` mapeia eventos de criação de alta confiança
+para ~25 dos ~85 serviços do CSV oficial (EC2, S3, Lambda, DynamoDB, RDS,
+EKS, Bedrock, SNS, SQS, ECR, ECS, EFS, ElastiCache, KMS, CloudFront, Route
+53, Secrets Manager, Step Functions, ELB, e mais alguns com `eventName`
+plausível mas sem extractor dedicado). Os demais ficam `None`
+explicitamente, com o motivo documentado por linha (múltiplos tipos de
+recurso sem "o" recurso óbvio para PRM, serviço muito novo, API não-REST,
+serviço descontinuado).
+
+**Por que não foi resolvido agora:** mapear ~60 serviços adicionais exigiria
+confiança na forma exata de `responseElements`/`requestParameters` de cada
+API sem acesso a um evento CloudTrail real capturado — inventar isso teria
+risco real (evento mapeado errado = silenciosamente nunca dispara, ou
+extractor errado = ARN malformado). O CSV é atualizado manualmente
+(decisão do gestor) — este mapeamento segue o mesmo modelo: extensão
+incremental, não um trabalho de uma vez só.
+
+**O que destrava:** priorizar, com o gestor/PDM, quais dos serviços ainda
+`None` são mais usados pelos clientes da EMPRESAX, e mapear/testar em sandbox
+um de cada vez.
+
+### Alerta ativo quando o CSV ganha um serviço sem mapeamento de evento
+
+**O quê:** `validate_against_csv()` já trava a divergência em tempo de
+desenvolvimento (o teste `test_event_mapping.py` falha se o CSV tiver um
+`product_service_code` sem nenhuma entrada na tabela). O que ainda não
+existe é um alerta em PRODUÇÃO quando isso acontece — hoje o comportamento é
+silencioso: o serviço simplesmente não é observado pela Etapa 3 até alguém
+mapear.
+
+**Por que não foi resolvido agora:** decisão do gestor — registrar como
+melhoria em vez de implementar agora.
+
+**O que destrava:** desenhar um mecanismo (ideia do gestor: um e-mail via
+SNS) que rode periodicamente (ou no deploy) comparando o CSV vigente contra
+`event_mapping.py` e alertando quando há um `product_service_code` novo sem
+mapeamento — candidato natural para rodar junto da Etapa 4 quando ela for
+implementada.
+
+### Extractors da Etapa 3 ainda não validados em sandbox
+
+**O quê:** tanto os extractors dedicados (`event_parser._REGISTRY`) quanto
+o fallback genérico se baseiam em conhecimento de documentação pública das
+APIs da AWS, não em eventos CloudTrail reais capturados. Nenhum foi
+confirmado contra uma conta AWS real.
+
+**Por que não foi resolvido agora:** exigiria gerar cada tipo de recurso
+numa conta sandbox e capturar o evento real — trabalho de validação, não de
+design; fica natural de fazer junto da priorização de mapeamento acima.
+
+**O que destrava:** para cada serviço do lote inicial, criar o recurso numa
+conta sandbox com CloudTrail habilitado, capturar o evento real, e
+confirmar contra o extractor correspondente (ou corrigir).
+
+### Corrida com IaC — debounce de 30 minutos, sem validação de tempo real
+
+**O quê:** `DebounceSeconds` (Step Functions `Wait`) tem default de 1800s
+(30 minutos), combinado explicitamente com o gestor como ponto de partida.
+
+**Por que não foi resolvido com mais precisão:** não há dado real de quanto
+tempo as ferramentas de IaC usadas pelos clientes da EMPRESAX (Terraform,
+CloudFormation, `eksctl`, etc.) levam entre criar um recurso e aplicar suas
+próprias tags — 30 minutos é uma margem confortável, mas não validada.
+
+**O que destrava:** observar, depois de alguns meses em produção, quantos
+recursos resultam em `taguear` que na verdade eram gerenciados por IaC
+(sinal indireto: o próprio IaC re-tagueando por cima na consolidação
+seguinte causaria um falso "conflito" no relatório) — ajustar o debounce
+para cima ou para baixo com esse dado.
+
+### Buffer SQS entre EventBridge e o processamento — não implementado
+
+**O quê:** decisão explícita do gestor: manter invocação direta do Step
+Functions pela regra do EventBridge, sem fila SQS no meio.
+
+**Por que não foi resolvido agora:** decisão consciente de manter o desenho
+mais simples por ora — SQS ajudaria a suavizar rajadas de criação de
+recurso (ex.: Auto Scaling), mas adiciona um componente a mais e não há
+dado real de que o volume atual de algum cliente justifique isso.
+
+**O que destrava:** monitorar `Throttles`/erros de concorrência da função
+Lambda (`Etapa3Function`) e do Step Functions em produção; se rajadas
+causarem throttling real de API, inserir uma fila SQS entre a regra do
+EventBridge e o Step Functions (ou entre o Step Functions e o Lambda).
+
+### Load balancer/node/volume de EKS criados dinamicamente — deferido à Etapa 4
+
+**O quê:** um Load Balancer criado por um Ingress Controller do EKS gera
+sim um evento `elasticloadbalancing:CreateLoadBalancer` observável — mas,
+no momento exato do evento, a tag de convenção que permitiria associá-lo a
+um cluster específico (`elbv2.k8s.aws/cluster`) normalmente ainda não foi
+aplicada (o controller faz isso numa chamada `AddTags` separada, logo
+depois). Nodes/volumes EBS de node groups managed em geral JÁ vêm com essas
+tags no próprio `RunInstances`/`CreateVolume` (via `TagSpecifications` do
+launch template), mas isso não é garantido para todo node group.
+
+**Por que não foi resolvido agora:** decisão explícita do gestor — esses 3
+subtipos de recurso EKS ficam de fora da detecção por evento da Etapa 3;
+continuam cobertos pelo scan periódico da Etapa 4 (fora do escopo deste
+repositório), que já lê o estado final consolidado do recurso, sem essa
+janela de corrida.
+
+**O que destrava:** nada a fazer aqui — comportamento intencional. Só
+revisitar se a Etapa 4 acabar não cobrindo esse gap na prática (ex.: se o
+intervalo entre varreduras da Etapa 4 for longo demais para o SLA de
+compliance desejado).
+
+### Falha de extração de evento — decisão de alertar ainda em aberto
+
+**O quê:** quando `event_parser.parse_creation_event` não consegue extrair
+nenhum recurso (payload insuficiente, evento sem extractor confiável), o
+handler hoje só loga um `WARNING` — não publica nada no SNS.
+
+**Por que não foi resolvido agora:** decisão do gestor — registrar como
+melhoria em vez de decidir agora entre "alertar via SNS" (mais visível, mas
+gera ruído para casos esperados) e "só logar" (mais simples, mas depende de
+alguém observar o CloudWatch Logs ativamente).
+
+**O que destrava:** decisão de produto sobre o nível de alerta desejado
+para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
+"Alerta ativo quando o CSV ganha um serviço sem mapeamento" acima.
+
+### Permissões IAM nativas por serviço só cobrem o lote inicial
+
+**O quê:** `infra/template.yaml` (`PrmEtapa3NativeTagWriteLoteInicial`) só
+tem a permissão de tagging nativa (exigida além de `tag:TagResources`) para
+os ~18 serviços com extractor dedicado. Um recurso de um serviço coberto só
+pelo fallback genérico de extração (ex.: AppSync, Athena, Backup...) vai
+gerar uma tentativa de escrita que falha com `AccessDenied` até essa
+permissão ser adicionada.
+
+**Por que não foi resolvido agora:** a lista completa de ~80 ações nativas
+de tagging por serviço já é uma pendência conhecida da Etapa 2c (ver
+"Isso não é suficiente sozinho" em
+[producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real))
+— não duplicada aqui, é a mesma pendência.
+
+**O que destrava:** o mesmo levantamento pendente da Etapa 2c; quando
+resolvido lá, aplicar a mesma lista aqui.
+
+### DLQ para o alvo do EventBridge — não implementado
+
+**O quê:** as regras do EventBridge têm `RetryPolicy` (2 tentativas,
+`MaximumEventAgeInSeconds` configurável), mas nenhum
+`DeadLetterConfig` — um evento que esgote as tentativas de entrega ao Step
+Functions é simplesmente descartado, sem rastro.
+
+**Por que não foi resolvido agora:** adicionar um DLQ de verdade exige uma
+fila SQS dedicada (o EventBridge só suporta DLQ via SQS) — coerente com a
+decisão de manter o desenho sem SQS por ora (ver item acima); ficou de fora
+junto.
+
+**O que destrava:** mesma decisão do buffer SQS acima — se/quando uma fila
+for adicionada à arquitetura, o DLQ vem natural junto dela.
+
+### `sam validate`/`cfn-lint`/deploy em sandbox não executados
+
+**O quê:** `infra/template.yaml` foi validado só por parsing YAML e por um
+teste que confirma que os blocos `EventPattern` batem com os arquivos
+gerados — nunca rodou `sam validate`, `cfn-lint`, nem foi implantado contra
+uma conta AWS real.
+
+**Por que não foi resolvido agora:** este ambiente de desenvolvimento não
+tem AWS SAM CLI nem `cfn-lint` instalados, e implantar contra uma conta
+real está fora do escopo desta tarefa (só criar os arquivos).
+
+**O que destrava:** rodar `sam validate` e `cfn-lint` localmente (ou em CI),
+e implantar contra a conta sandbox mencionada em
+[producao.md](producao.md) antes de considerar este template pronto para
+qualquer cliente real — mesma disciplina já seguida para a Etapa 2c.
+
 ## Cobertura de recursos que nunca tiveram tag nenhuma
 
 **O quê:** `resourcegroupstaggingapi:GetResources` (usado por
@@ -305,12 +484,18 @@ organizado. Baixa prioridade, sem prazo:
 - **Duplicação de constantes E de funções entre módulos** — `"Amazon
   EKS"`/`"Amazon Bedrock"` como string literal, o conjunto de tipos de IaC
   "detectado" (`_IAC_DETECTADO`), os `tipo_recurso` de EKS/Bedrock —
-  repetidos em `decision.py`, `tag_execution.py` e `resource_discovery.py`.
-  Um `constants.py` compartilhado resolveria, mas é uma mudança que toca os
-  3 módulos de uma vez. Além das constantes, `_chunk` (idêntica) e
-  `_get_resources_page` (praticamente idêntica) existem hoje tanto em
-  `resource_discovery.py` quanto em `tag_execution.py` — mesmo caso, um
-  módulo utilitário compartilhado resolveria as duas coisas juntas.
+  repetidos em `decision.py`, `tag_execution.py`, `resource_discovery.py` e
+  agora também `single_resource.py` (Etapa 3). Um `constants.py`
+  compartilhado resolveria, mas é uma mudança que toca vários módulos de uma
+  vez. Além das constantes, `_chunk` (idêntica) e `_get_resources_page`
+  (praticamente idêntica) existem hoje tanto em `resource_discovery.py`
+  quanto em `tag_execution.py` — mesmo caso, um módulo utilitário
+  compartilhado resolveria as duas coisas juntas. `single_resource.py`
+  também duplica, de propósito (ver docstring do módulo), a MESMA leitura de
+  tags que `tag_execution._revalidate_generic`/`_revalidate_eks_or_bedrock`/
+  `_revalidate_elb` já fazem — só que para um ARN de cada vez em vez de um
+  lote; extrair um helper compartilhado tocaria código já testado/usado em
+  `--live`, então ficou para quando este refactor mais amplo for priorizado.
 - **`retry.py` é um retry próprio** — o botocore já oferece
   `Config(retries={"mode": "adaptive"})` nativamente. Trocar exigiria
   reavaliar se a diferenciação atual entre "erro retryable" (throttling) e
