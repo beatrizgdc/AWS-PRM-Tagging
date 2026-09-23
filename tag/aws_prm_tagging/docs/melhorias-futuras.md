@@ -19,7 +19,19 @@ Decisões explicitamente adiadas durante a implementação inicial da Etapa 3
 (EventBridge + Step Functions + Lambda), combinadas com o gestor do
 projeto — cada uma com o porquê de não ter entrado agora.
 
+Cada item abaixo tem uma **classificação**: `melhoria futura` significa que
+a Etapa 3, hoje, já funciona corretamente sem esse item — a ausência dele
+se degrada com segurança (falha reportada, nunca uma ação de tagueamento
+errada) e não bloqueia nem é pré-requisito para nenhuma etapa seguinte;
+entra quando houver decisão de produto ou dado de produção que justifique.
+Nenhuma pendência aberta aqui é bloqueante hoje.
+
 ### Mapeamento evento→serviço — 69 de ~85 serviços cobertos, 16 conscientemente de fora
+
+**Classificação: melhoria futura.** Não bloqueia a Etapa 3 (os 16 ficam
+`None` explicitamente, sem tentativa de tagueamento incorreta) nem é
+pré-requisito da Etapa 4 (que varre o estado final do recurso, não depende
+de evento de criação).
 
 **Atualizado.** Uma primeira versão deste item registrava cobertura de
 ~25/85 serviços, "de memória". Revisitado usando o `botocore` instalado
@@ -66,6 +78,10 @@ pelos clientes da EMPRESAX para justificar escolher um recurso "principal"
 por decisão de produto (não só técnica) e mapear só esse.
 
 ### Alerta ativo quando o CSV ganha um serviço sem mapeamento de evento
+
+**Classificação: melhoria futura.** Não bloqueia a Etapa 3 hoje (o teste
+`validate_against_csv` já trava a divergência em desenvolvimento) e é
+candidato natural para nascer junto da Etapa 4, não um pré-requisito dela.
 
 **O quê:** `validate_against_csv()` já trava a divergência em tempo de
 desenvolvimento (o teste `test_event_mapping.py` falha se o CSV tiver um
@@ -140,6 +156,11 @@ para cima ou para baixo com esse dado.
 
 ### Buffer SQS entre EventBridge e o processamento — não implementado
 
+**Classificação: melhoria futura.** Decisão consciente já tomada com o
+gestor de manter o desenho simples por ora; reativa a dado de throttling em
+produção que ainda não existe — não bloqueia a Etapa 3 nem é pré-requisito
+de nenhuma etapa seguinte.
+
 **O quê:** decisão explícita do gestor: manter invocação direta do Step
 Functions pela regra do EventBridge, sem fila SQS no meio.
 
@@ -176,6 +197,11 @@ intervalo entre varreduras da Etapa 4 for longo demais para o SLA de
 compliance desejado).
 
 ### Falha de extração de evento — decisão de alertar ainda em aberto
+
+**Classificação: melhoria futura.** Hoje já se degrada com segurança (só
+loga `WARNING`, nenhuma ação incorreta) — não bloqueia a Etapa 3; pode
+reaproveitar o mesmo mecanismo do item "Alerta ativo quando o CSV ganha um
+serviço sem mapeamento" acima quando esse for priorizado.
 
 **O quê:** quando `event_parser.parse_creation_event` não consegue extrair
 nenhum recurso (payload insuficiente, evento sem extractor confiável), o
@@ -225,6 +251,10 @@ adicionar à política.
 resolvido lá, aplicar a mesma lista aqui.
 
 ### DLQ para o alvo do EventBridge — não implementado
+
+**Classificação: melhoria futura.** Mesma decisão do buffer SQS acima —
+não bloqueia a Etapa 3 nem é pré-requisito de nenhuma etapa seguinte, só
+vem natural junto se/quando uma fila for adicionada à arquitetura.
 
 **O quê:** as regras do EventBridge têm `RetryPolicy` (2 tentativas,
 `MaximumEventAgeInSeconds` configurável), mas nenhum
@@ -560,21 +590,29 @@ organizado. Baixa prioridade, sem prazo:
   arquivo é docstring). Vale dividir em módulos menores (revalidação,
   executores, relatório) quando o arquivo crescer mais — hoje ainda é
   navegável.
-- **Duplicação de constantes E de funções entre módulos** — `"Amazon
-  EKS"`/`"Amazon Bedrock"` como string literal, o conjunto de tipos de IaC
-  "detectado" (`_IAC_DETECTADO`), os `tipo_recurso` de EKS/Bedrock —
-  repetidos em `decision.py`, `tag_execution.py`, `resource_discovery.py` e
-  agora também `single_resource.py` (Etapa 3). Um `constants.py`
-  compartilhado resolveria, mas é uma mudança que toca vários módulos de uma
-  vez. Além das constantes, `_chunk` (idêntica) e `_get_resources_page`
-  (praticamente idêntica) existem hoje tanto em `resource_discovery.py`
-  quanto em `tag_execution.py` — mesmo caso, um módulo utilitário
-  compartilhado resolveria as duas coisas juntas. `single_resource.py`
-  também duplica, de propósito (ver docstring do módulo), a MESMA leitura de
-  tags que `tag_execution._revalidate_generic`/`_revalidate_eks_or_bedrock`/
-  `_revalidate_elb` já fazem — só que para um ARN de cada vez em vez de um
-  lote; extrair um helper compartilhado tocaria código já testado/usado em
-  `--live`, então ficou para quando este refactor mais amplo for priorizado.
+- **Duplicação de constantes entre módulos** — `"Amazon EKS"`/`"Amazon
+  Bedrock"` como string literal, o conjunto de tipos de IaC "detectado"
+  (`_IAC_DETECTADO`), os `tipo_recurso` de EKS/Bedrock — repetidos em
+  `decision.py`, `tag_execution.py`, `resource_discovery.py` e
+  `single_resource.py` (Etapa 3). Um `constants.py` compartilhado
+  resolveria, mas é uma mudança que toca vários módulos de uma vez. Além
+  das constantes, `_chunk` (idêntica) e `_get_resources_page` (praticamente
+  idêntica) existem hoje tanto em `resource_discovery.py` quanto em
+  `tag_execution.py` — mesmo caso, um módulo utilitário compartilhado
+  resolveria as duas coisas juntas.
+
+  **Resolvido — a duplicação das chamadas de API nativa (EKS/Bedrock/
+  ELBv2)**: `single_resource.py` (Etapa 3, lê 1 ARN por vez) chamava a
+  mesma API que `tag_execution._revalidate_eks_or_bedrock`/`_revalidate_elb`
+  (Etapas 2b/2c, revalida em lote) já chamavam, com código copiado. Extraído
+  para [`tag_reads.py`](../tag_reads.py) — as 3 chamadas de API
+  (`eks_list_tags`/`bedrock_list_tags`/`elb_describe_tags`) agora moram num
+  só lugar, cada módulo continua com sua própria lógica de formato de
+  saída/lote/erro por cima. `resourcegroupstaggingapi:GetResources`
+  continua fora de propósito — os dois módulos usam essa API de forma
+  genuinamente diferente (1 ARN filtrado vs. região inteira paginada), não
+  é duplicação. Suíte inteira (232 testes) e `sam build` confirmados sem
+  regressão depois da extração.
 - **`retry.py` é um retry próprio** — o botocore já oferece
   `Config(retries={"mode": "adaptive"})` nativamente. Trocar exigiria
   reavaliar se a diferenciação atual entre "erro retryable" (throttling) e

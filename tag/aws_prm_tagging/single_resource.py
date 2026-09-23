@@ -12,16 +12,12 @@ schema exato de `resource_discovery._build_resource` (`arn`, `servico`,
 `decision.classify_resource` (Etapa 2a) possa ser chamado sem nenhuma
 adaptação.
 
-**Duplicação conhecida com `tag_execution.py`**: as quatro funções de
-leitura abaixo (`_read_tags_generic`/`_read_tags_eks`/`_read_tags_bedrock`/
-`_read_tags_elb`) fazem essencialmente a mesma chamada de API que
-`tag_execution._revalidate_generic`/`_revalidate_eks_or_bedrock`/
-`_revalidate_elb` já fazem — só que para um ARN de cada vez, no formato de
-saída da Etapa 1, não no formato interno de revalidação da Etapa 2b/2c. Não
-extraí um helper compartilhado agora para não mexer em `tag_execution.py`
-(código já testado e usado em execução real/`--live`) só para esta
-reorganização — registrado como melhoria futura em
-`docs/melhorias-futuras.md`.
+As três chamadas de API nativa (EKS/Bedrock/ELBv2) usadas abaixo vêm de
+`tag_reads.py`, compartilhado com `tag_execution.py` — mesma chamada,
+formato de saída diferente (aqui é o schema da Etapa 1, lá é o formato
+interno de revalidação da Etapa 2b/2c). Só o caminho genérico
+(`resourcegroupstaggingapi:GetResources`) não é compartilhado — ver
+docstring de `tag_reads.py` para o porquê.
 
 Sobre a limitação conhecida de `resourcegroupstaggingapi:GetResources` não
 devolver recursos SEM NENHUMA tag (ver `resource_discovery.py`): aqui isso
@@ -39,6 +35,7 @@ from botocore.exceptions import ClientError
 
 from .iac_detection import detect_iac
 from .retry import with_backoff
+from .tag_reads import bedrock_list_tags, eks_list_tags, elb_describe_tags
 from .tag_status import find_similar_tag_keys, get_tag_status, tags_list_to_dict
 
 _SERVICO_EKS = "Amazon EKS"
@@ -63,36 +60,21 @@ def _read_tags_generic(session: boto3.Session, regiao: str, arn: str) -> dict[st
     return tags_list_to_dict(mappings[0].get("Tags", []))
 
 
-@with_backoff()
-def _eks_list_tags(client, arn: str) -> dict:
-    return client.list_tags_for_resource(resourceArn=arn)
-
-
 def _read_tags_eks(session: boto3.Session, regiao: str, arn: str) -> dict[str, str]:
     client = session.client("eks", region_name=regiao)
-    resp = _eks_list_tags(client, arn)
+    resp = eks_list_tags(client, arn)
     return resp.get("tags", {})
-
-
-@with_backoff()
-def _bedrock_list_tags(client, arn: str) -> dict:
-    return client.list_tags_for_resource(resourceARN=arn)
 
 
 def _read_tags_bedrock(session: boto3.Session, regiao: str, arn: str) -> dict[str, str]:
     client = session.client("bedrock", region_name=regiao)
-    resp = _bedrock_list_tags(client, arn)
+    resp = bedrock_list_tags(client, arn)
     return tags_list_to_dict(resp.get("tags", []))
-
-
-@with_backoff()
-def _elb_describe_tags(client, arn: str) -> dict:
-    return client.describe_tags(ResourceArns=[arn])
 
 
 def _read_tags_elb(session: boto3.Session, regiao: str, arn: str) -> dict[str, str]:
     client = session.client("elbv2", region_name=regiao)
-    resp = _elb_describe_tags(client, arn)
+    resp = elb_describe_tags(client, [arn])
     descriptions = resp.get("TagDescriptions") or []
     if not descriptions:
         return {}

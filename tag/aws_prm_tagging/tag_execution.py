@@ -237,6 +237,7 @@ from .decision import (
 )
 from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO, detect_iac
 from .retry import with_backoff
+from .tag_reads import bedrock_list_tags, eks_list_tags, elb_describe_tags
 from .tag_status import TAG_KEY, find_similar_tag_keys, tags_list_to_dict
 
 logger = logging.getLogger(__name__)
@@ -517,31 +518,16 @@ def _revalidate_generic(
     return resultado
 
 
-@with_backoff()
-def _eks_list_tags(client, resource_arn: str) -> dict:
-    return client.list_tags_for_resource(resourceArn=resource_arn)
-
-
-@with_backoff()
-def _bedrock_list_tags(client, resource_arn: str) -> dict:
-    return client.list_tags_for_resource(resourceARN=resource_arn)
-
-
-@with_backoff()
-def _elb_describe_tags(client, arns: list[str]) -> dict:
-    return client.describe_tags(ResourceArns=arns)
-
-
 def _revalidate_eks_or_bedrock(
     session: boto3.Session, service_name: str, regiao: str, resource: TaggableResource, tag_key: str
 ) -> _RevalidatedState | _RevalidationFailure:
     client = session.client(service_name, region_name=regiao)
     try:
         if service_name == "eks":
-            resp = _eks_list_tags(client, resource.arn)
+            resp = eks_list_tags(client, resource.arn)
             tags = resp.get("tags", {})
         else:
-            resp = _bedrock_list_tags(client, resource.arn)
+            resp = bedrock_list_tags(client, resource.arn)
             tags = tags_list_to_dict(resp.get("tags", []))
         return _RevalidatedState(
             valor_atual=tags.get(tag_key),
@@ -577,7 +563,7 @@ def _revalidate_elb(
     }
     for lote in _chunk([r.arn for r in resources], 20):  # describe_tags aceita até 20 ARNs
         try:
-            resp = _elb_describe_tags(client, lote)
+            resp = elb_describe_tags(client, lote)
         except ClientError:
             # A chamada do lote inteiro falhou — comportamento conhecido do
             # DescribeTags de load balancers quando 1 ARN do lote não existe
@@ -596,7 +582,7 @@ def _revalidate_elb(
             )
             for arn in lote:
                 try:
-                    resp_individual = _elb_describe_tags(client, [arn])
+                    resp_individual = elb_describe_tags(client, [arn])
                 except ClientError as exc_individual:
                     erro = exc_individual.response.get("Error", {})
                     logger.exception(
