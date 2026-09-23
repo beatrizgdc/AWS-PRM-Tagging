@@ -45,6 +45,39 @@ def test_tag_ausente_com_iac_terraform_heuristico_pular_iac(recurso_factory):
     assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
 
 
+def test_pular_iac_com_ferramenta_aws_conhecida_tem_motivo_especifico(recurso_factory):
+    """Quando a stack de CloudFormation é gerada internamente por uma
+    automação da AWS (Elastic Beanstalk/Control Tower/Service
+    Catalog/eksctl — ver `iac_detection.py`), não existe IaC do cliente
+    para editar: o `motivo` deve apontar a ferramenta certa em vez do
+    texto genérico "taguear via IaC", que não tem nenhuma ação real por
+    trás nesses casos. A DECISÃO continua `pular_iac` — nunca tagueado via
+    API, exatamente igual ao caso sem ferramenta identificada."""
+    recurso = recurso_factory(
+        status_tag="sem_tag",
+        iac_tipo="cloudformation",
+        stack_name="awseb-e-abc123-stack",
+        ferramenta_aws="AWS Elastic Beanstalk",
+    )
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
+    assert "AWS Elastic Beanstalk" in resultado["motivo"]
+    assert resultado["iac"]["gerenciado_por_ferramenta_aws"] == "AWS Elastic Beanstalk"
+
+
+def test_pular_iac_sem_ferramenta_aws_conhecida_mantem_motivo_generico(recurso_factory):
+    """Stack presumivelmente do próprio cliente (sem prefixo de ferramenta
+    AWS conhecido) continua com o motivo genérico de sempre — "taguear via
+    IaC" faz sentido quando existe mesmo um IaC do cliente para agir."""
+    recurso = recurso_factory(
+        status_tag="sem_tag", iac_tipo="cloudformation", stack_name="minha-stack-de-producao"
+    )
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
+    assert "taguear via IaC" in resultado["motivo"]
+    assert resultado["iac"]["gerenciado_por_ferramenta_aws"] is None
+
+
 def test_tag_presente_valor_esperado_ja_ok(recurso_factory):
     recurso = recurso_factory(status_tag="ok", valor_tag_encontrado=EXPECTED, iac_tipo="desconhecido")
     resultado = decision.classify_resource(recurso, EXPECTED)

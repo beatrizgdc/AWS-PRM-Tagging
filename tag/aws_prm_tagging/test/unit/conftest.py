@@ -29,6 +29,7 @@ def recurso_factory():
         valor_tag_encontrado: str | None = None,
         iac_tipo: str = "desconhecido",
         stack_name: str | None = None,
+        ferramenta_aws: str | None = None,
         tag_similar_encontrada: bool = False,
         tag_similar_chaves: list[str] | None = None,
     ) -> dict:
@@ -41,7 +42,7 @@ def recurso_factory():
             "valor_tag_encontrado": valor_tag_encontrado,
             "tag_similar_encontrada": tag_similar_encontrada,
             "tag_similar_chaves": tag_similar_chaves or [],
-            "iac": {"tipo": iac_tipo, "stack_name": stack_name},
+            "iac": {"tipo": iac_tipo, "stack_name": stack_name, "gerenciado_por_ferramenta_aws": ferramenta_aws},
         }
 
     return _build

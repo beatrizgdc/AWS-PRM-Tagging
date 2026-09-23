@@ -212,6 +212,20 @@ das APIs) e `[{"key":..,"value":..}]` (Bedrock) para `dict`.
   AWS explicitamente orienta a evitar.
 - Ausência de qualquer sinal → `desconhecido`. Nunca se assume "não é IaC".
 
+**`gerenciado_por_ferramenta_aws`** (novo campo em `detect_iac`, só
+preenchido quando `tipo == "cloudformation"`): identifica pelo prefixo do
+nome da stack se o CloudFormation por trás da tag foi gerado internamente
+por uma automação da própria AWS — Elastic Beanstalk (`awseb-`), Control
+Tower (`StackSet-AWSControlTower`), Service Catalog (`SC-`) — ou por
+`eksctl` (`eksctl-`), em vez de escrito pelo cliente. **Isso nunca muda a
+decisão** (`pular_iac` continua `pular_iac`, nunca tagueado via API) — só
+existe para `decision.py` compor um `motivo` que aponte a ação real:
+"taguear via IaC" é um conselho vazio quando não existe template do
+cliente para editar (ex.: um recurso do Elastic Beanstalk — o cliente só
+usou o console do EB, nunca viu o CloudFormation por trás). `None` quando
+a stack não bate com nenhum prefixo conhecido — presumida como stack do
+próprio cliente, mantendo o `motivo` genérico de sempre.
+
 ### `ou_tree.py`
 
 `discover_ou_tree(session, account_id)`: `organizations:DescribeOrganization`
@@ -257,6 +271,14 @@ para revisão humana. Só é verificado quando a tag está mesmo ausente e o
 recurso não é `pular_iac` (IaC detectado tem precedência: se o recurso já
 não seria tagueado via API de qualquer forma, o risco de duplicata não
 existe).
+
+`pular_iac` com `motivo` específico por ferramenta: quando
+`resource["iac"]["gerenciado_por_ferramenta_aws"]` vem preenchido (ver
+`iac_detection.py` acima), o `motivo` aponta a ferramenta certa ("configure
+a tag nas opções do Elastic Beanstalk") em vez do texto genérico "taguear
+via IaC" — que seria um conselho vazio nesses casos, já que não existe
+template do cliente para editar. A decisão continua `pular_iac` de
+qualquer forma; só o texto explicativo muda.
 
 Reaproveita `tag_status.get_tag_status`, mas **recalculado** a partir de
 `valor_tag_encontrado` (o valor bruto que a Etapa 1 já extraiu) contra o

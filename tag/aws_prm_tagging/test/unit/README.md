@@ -27,7 +27,9 @@ gigante por módulo — nomeado `test_<módulo>_<área>.py`. Para `decision.py`
 
 - `test_decision_precedencia.py` — regra de precedência de
   `classify_resource` (tag ausente vs. presente, papel do IaC, tag com
-  grafia parecida).
+  grafia parecida, `motivo` específico por ferramenta AWS quando
+  `gerenciado_por_ferramenta_aws` vem preenchido — decisão continua
+  `pular_iac`, só o texto muda).
 - `test_decision_escopo.py` — filtragem de escopo por `tipo_recurso` (os 5
   sub-tipos de EKS, exclusão de Fargate e de Bedrock fora de application
   inference profile).
@@ -64,6 +66,13 @@ Para `main.py`:
 - `test_main_validacao.py` — `_validate_expected_tag_value` (formato
   `pc:<product-code>` fechado, `ra-...` e qualquer outro formato
   recusados).
+
+Para `iac_detection.py`:
+
+- `test_iac_detection.py` — precedência CloudFormation/Terraform,
+  heurística de Terraform em 2 níveis, e `gerenciado_por_ferramenta_aws`
+  identificado por prefixo de nome de stack (Elastic Beanstalk, Control
+  Tower, Service Catalog, eksctl).
 
 Para `services.py`:
 

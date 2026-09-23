@@ -154,6 +154,7 @@ def _decidir(
     expected_tag_value: str,
     iac_tipo: str,
     tag_similar_encontrada: bool,
+    ferramenta_aws: str | None = None,
 ) -> tuple[str, str]:
     """Aplica a regra de precedência (ver docstring do módulo) e devolve
     `(decisao, motivo)`.
@@ -161,12 +162,30 @@ def _decidir(
     Recalcula o status da tag via `tag_status.get_tag_status` a partir do
     valor bruto já extraído pela Etapa 1 (`valor_tag_atual`), reconstruindo
     um dict de uma chave só — em vez de confiar no `status_tag` já congelado
-    do relatório da Etapa 1 (ver docstring do módulo para o porquê)."""
+    do relatório da Etapa 1 (ver docstring do módulo para o porquê).
+
+    `ferramenta_aws` (de `iac_detection.detect_iac`, via
+    `resource["iac"]["gerenciado_por_ferramenta_aws"]`): quando a stack de
+    CloudFormation detectada é gerada internamente por uma automação da AWS
+    (Elastic Beanstalk, Control Tower, Service Catalog) ou por `eksctl`, não
+    pelo cliente diretamente, o `motivo` de `pular_iac` aponta a ação real
+    (configurar a tag na própria ferramenta) em vez do texto genérico
+    "taguear via IaC" — que não tem nenhuma ação por trás nesses casos,
+    porque não existe template do cliente para editar. **A decisão
+    continua `pular_iac`, nunca tagueada via API** — isso nunca muda."""
     tags_reconstruidas = {} if valor_tag_atual is None else {TAG_KEY: valor_tag_atual}
     status_tag, _ = get_tag_status(tags_reconstruidas, expected_tag_value)
 
     if status_tag == STATUS_SEM_TAG:
         if iac_tipo in _IAC_DETECTADO:
+            if ferramenta_aws:
+                return (
+                    DECISAO_PULAR_IAC,
+                    f"tag aws-apn-id ausente; recurso gerenciado internamente por "
+                    f"{ferramenta_aws} via CloudFormation — não existe IaC do cliente "
+                    f"para editar aqui; configure a tag diretamente nas opções/config do "
+                    f"{ferramenta_aws}, nunca via API/CLI/Console",
+                )
             return (
                 DECISAO_PULAR_IAC,
                 f"tag aws-apn-id ausente; recurso gerenciado por IaC ({iac_tipo}) "
@@ -225,7 +244,10 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
     iac = resource["iac"]
     valor_tag_atual = resource.get("valor_tag_encontrado")
     tag_similar_encontrada = bool(resource.get("tag_similar_encontrada", False))
-    decisao, motivo = _decidir(valor_tag_atual, expected_tag_value, iac["tipo"], tag_similar_encontrada)
+    ferramenta_aws = iac.get("gerenciado_por_ferramenta_aws")
+    decisao, motivo = _decidir(
+        valor_tag_atual, expected_tag_value, iac["tipo"], tag_similar_encontrada, ferramenta_aws
+    )
 
     return {
         "arn": resource["arn"],
@@ -241,6 +263,7 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
             "tipo": iac["tipo"],
             "detectado": iac["tipo"] in _IAC_DETECTADO,
             "stack_name": iac.get("stack_name"),
+            "gerenciado_por_ferramenta_aws": ferramenta_aws,
         },
     }
 
