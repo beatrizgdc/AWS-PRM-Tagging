@@ -1,8 +1,9 @@
 # Execução em produção (contas cliente)
 
-Este documento cobre como executar o estágio 1 (mapeamento) contra uma conta
-AWS de cliente real, e o que muda quando os estágios seguintes forem
-empacotados como Lambda.
+Este documento cobre como executar as Etapas 1, 2a, 2b e 2c (`map`,
+`decide`, `apply` sem/com `--live`) contra uma conta AWS de cliente real —
+hoje via CLI local —, e o que muda quando essas etapas (e as próximas,
+Etapa 3/4) forem empacotadas como Lambda.
 
 ## Modelo de acesso
 
@@ -209,6 +210,33 @@ a Etapa 2c for implementada, não algo a assumir aqui.
    `total_recursos`/`sem_tag` do relatório é um piso, não necessariamente o
    universo completo. Detalhe em
    [arquitetura.md](arquitetura.md#resource_discoverypy).
+7. Rodar a Etapa 2a (decisão) sobre o relatório da Etapa 1 — não usa boto3,
+   sem permissão IAM adicional:
+
+   ```bash
+   python3 -m aws_prm_tagging.main decide \
+     --input relatorio-<cliente>-<data>.json \
+     --expected-tag-value pc:<PRODUCT_CODE_DO_CLIENTE> \
+     --output decisao-<cliente>-<data>.json
+   ```
+
+8. Rodar a Etapa 2b (dry-run) sobre o relatório de decisão — revisar o
+   `resumo.por_categoria_final` antes de sequer considerar `--live` (ver
+   ["Permissões IAM para a Etapa 2b"](#permissões-iam-para-a-etapa-2b-apply-dry-run--sem---live)
+   acima):
+
+   ```bash
+   python3 -m aws_prm_tagging.main apply \
+     --input decisao-<cliente>-<data>.json \
+     --profile cliente-x-prm-readonly \
+     --output dry-run-<cliente>-<data>.json
+   ```
+
+9. Etapa 2c (`apply --live`, execução real): **não rodar contra conta de
+   cliente ainda** — ver as ressalvas em
+   ["Permissões IAM para a Etapa 2c"](#permissões-iam-para-a-etapa-2c-apply---live-execução-real)
+   acima (lista de permissões nativas por serviço não validada, nenhum
+   teste contra sandbox realizado até agora).
 
 ## Escala e tempo de execução
 
@@ -238,14 +266,21 @@ sub-OU, modelo de reporte por push, dashboard) está em
 [arquitetura-multicliente.md](arquitetura-multicliente.md).
 
 Os módulos em `aws_prm_tagging/` (exceto `main.py`, que é só o CLI) são
-puros o suficiente para serem importados diretamente por um handler Lambda:
+puros o suficiente para serem importados diretamente por um handler Lambda
+— incluindo `decision.py` (Etapa 2a) e `tag_execution.py` (Etapas 2b/2c,
+que já faz chamadas reais de leitura/escrita, mas sem I/O de arquivo):
 
 ```python
-from aws_prm_tagging import regions, resource_discovery, services, tag_status, iac_detection, report
+from aws_prm_tagging import (
+    regions, resource_discovery, services, tag_status, iac_detection,
+    report, decision, tag_execution,
+)
 
 def handler(event, context):
     session = boto3.Session()  # usa a execution role da própria Lambda
     ...
+    # tag_execution.run_tagging_execution(decision_report, session=session,
+    #     expected_tag_value=..., dry_run=False)  # Etapa 2c
 ```
 
 Pontos a considerar ao empacotar como Lambda:

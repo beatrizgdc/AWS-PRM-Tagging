@@ -2,7 +2,15 @@
 
 ## Visão geral do fluxo
 
-`main.py` orquestra, nesta ordem:
+`main.py` tem 3 subcomandos hoje (`map`/`decide`/`apply` — ver seção
+`main.py` abaixo); esta visão geral é do subcomando `map` (Etapa 1), o mais
+envolvido dos três. `decide` (Etapa 2a) e `apply` (Etapas 2b/2c) são bem
+mais diretos — um lê a saída do anterior, chama a função de núcleo
+correspondente (`decision.build_decision_report`/
+`tag_execution.run_tagging_execution`) e grava o resultado; detalhes nas
+seções `decision.py`/`tag_execution.py` abaixo.
+
+`map` orquestra, nesta ordem:
 
 1. Resolve a sessão boto3 (`--profile` ou cadeia padrão de credenciais).
 2. `sts.get_caller_identity` para obter o `conta_id`.
@@ -11,7 +19,8 @@
 5. Para cada região: `resource_discovery.discover_generic_resources`,
    `discover_bedrock_resources` e `discover_eks_resources`, cada chamada
    isolada em `try/except` — uma falha em uma etapa/região não aborta o
-   restante da execução.
+   restante da execução, e é registrada em `falhas_descoberta` (ver
+   `report.py` abaixo), não só no log.
 6. `ou_tree.discover_ou_tree` (uma vez, não por região).
 7. `report.build_report` monta o JSON final e `main.py` grava em disco.
 
@@ -76,7 +85,8 @@ Duas ambiguidades conhecidas, documentadas em comentários no próprio arquivo:
   diferenciar com certeza pelo ARN — todos caem no bucket "Amazon Relational
   Database Service (RDS)". Isso é um ponto de refinamento futuro, não um bug:
   o recurso ainda é descoberto e classificado corretamente quanto ao status
-  da tag, só o rótulo de serviço no relatório pode não distinguir a engine.
+  da tag, só o rótulo de serviço no relatório pode não distinguir a engine
+  (registrado em [melhorias-futuras.md](melhorias-futuras.md#amazon-documentdb-e-amazon-neptune-aparecem-como-amazon-rds-no-relatório)).
 
 `Amazon Bedrock` (plano, não AgentCore) e `Amazon EKS` são deliberadamente
 **omitidos** dessa tabela: são tratados por lógica dedicada em
@@ -112,7 +122,9 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   > na conta — criar esse índice é uma escrita, o que quebraria a premissa
   > de "100% somente-leitura" da Etapa 1 se feito por este script. Decisão
   > tomada: por ora, essa lacuna fica documentada como limitação conhecida
-  > em vez de resolvida — não pega recursos que nunca foram tagueados nenhuma
+  > em vez de resolvida (registrada em
+  > [melhorias-futuras.md](melhorias-futuras.md#cobertura-de-recursos-que-nunca-tiveram-tag-nenhuma))
+  > — não pega recursos que nunca foram tagueados nenhuma
   > vez. Isso não foi pego pelo teste em LocalStack porque a emulação de lá
   > não impõe essa mesma restrição (ver
   > [test/localstack/README.md](../test/localstack/README.md)).

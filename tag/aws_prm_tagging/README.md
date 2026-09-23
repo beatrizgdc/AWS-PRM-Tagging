@@ -7,8 +7,9 @@ três primeiros passos de uma automação de **quatro estágios**:
 1. **Mapeamento** (Etapa 1, `map`) — descoberta somente-leitura de recursos
    e status da tag `aws-apn-id` por recurso.
 2. **Decisão** (Etapa 2a, `decide`) — classifica cada recurso do relatório
-   da Etapa 1 em `taguear` / `pular_iac` / `ja_ok` / `conflito`. Sem
-   escrita — só decide, não chama nenhuma API de tagueamento.
+   da Etapa 1 em `taguear` / `pular_iac` / `revisar_tag_similar` / `ja_ok`
+   / `conflito`. Sem escrita — só decide, não chama nenhuma API de
+   tagueamento.
 3. **Tagueamento** (`apply`) — dois modos da mesma lógica
    (`tag_execution.run_tagging_execution`):
    - **Etapa 2b, dry-run (default)** — simula, recurso a recurso, a chamada
@@ -66,6 +67,7 @@ Documentação completa:
 - [docs/arquitetura.md](docs/arquitetura.md) — como o projeto está estruturado, módulo por módulo, decisões de design e limitações conhecidas.
 - [docs/producao.md](docs/producao.md) — como configurar credenciais, permissões IAM e executar contra uma conta cliente real.
 - [docs/arquitetura-multicliente.md](docs/arquitetura-multicliente.md) — rollout via CloudFormation StackSets para os clientes da EMPRESAX (camada acima da execução por conta).
+- [docs/melhorias-futuras.md](docs/melhorias-futuras.md) — pendências técnicas conhecidas e registradas, não corrigidas ainda (exigem decisão de arquitetura/produto ou têm custo maior que uma correção pontual).
 - [test/localstack/README.md](test/localstack/README.md) — cenário de teste local contra LocalStack, sem tocar em nenhuma conta AWS real.
 
 ## Onde rodar os comandos
@@ -258,10 +260,12 @@ Dois níveis, sem sobreposição:
 
 - **`test/unit/`** — pytest, 100% offline (sem AWS, sem credencial nenhuma;
   os testes de `tag_execution.py`/Etapas 2b/2c usam sessões/clients boto3
-  falsos em vez de rede real). Cobre hoje a Etapa 2a (`decision.py`) e as
-  Etapas 2b/2c (`tag_execution.py`, incluindo `LiveExecutor`), importando
-  `aws_prm_tagging` como pacote — por isso, ao contrário do resto deste
-  README, roda do diretório **pai** desta pasta (mesma exigência de
+  falsos em vez de rede real). Cobre a Etapa 2a (`decision.py`), as Etapas
+  2b/2c (`tag_execution.py`, incluindo `LiveExecutor`), `iac_detection.py`,
+  `report.py`, a validação pura de `main.py`, `services.classify_arn` e as
+  funções puras de `resource_discovery.py` — importando `aws_prm_tagging`
+  como pacote, por isso, ao contrário do resto deste README, roda do
+  diretório **pai** desta pasta (mesma exigência de
   ["Onde rodar os comandos"](#onde-rodar-os-comandos) para o CLI):
 
   ```bash
@@ -291,7 +295,7 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   resource_discovery.py                      Resource Groups Tagging API + casos especiais (Bedrock, EKS)
   tag_status.py                              classificação sem_tag / ok / conflito
   iac_detection.py                           heurística de IaC
-  decision.py                                Etapa 2a — decisão de tagueamento (taguear/pular_iac/ja_ok/conflito)
+  decision.py                                Etapa 2a — decisão de tagueamento (taguear/pular_iac/revisar_tag_similar/ja_ok/conflito)
   tag_execution.py                           Etapas 2b (dry-run) e 2c (execução real) — roteamento de API, batching, revalidação
   ou_tree.py                                 árvore de OUs da Organization
   report.py                                  monta o relatório JSON da Etapa 1

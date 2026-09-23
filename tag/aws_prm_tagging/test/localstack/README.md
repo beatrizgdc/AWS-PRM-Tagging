@@ -165,8 +165,11 @@ excluir instâncias/buckets/cluster manualmente.
   (por isso o node group de teste não tem instâncias/volumes/load balancer
   associados) — a lógica de `_get_asg_instance_ids`,
   `_instances_arns_and_tags`, `_volumes_arns_and_tags` e
-  `_load_balancers_for_cluster` em `resource_discovery.py` fica coberta pela
-  leitura de código e por este teste apenas no caminho "zero resultados",
-  não no caminho "com instâncias reais". Validação desses caminhos
-  específicos, se necessária, requer um cluster EKS managed real (fora do
-  escopo deste teste local).
+  `_list_region_load_balancers_with_tags`/`_filter_load_balancers_for_cluster`
+  em `resource_discovery.py` fica coberta pela leitura de código (e, para
+  `_filter_load_balancers_for_cluster`, por
+  [test/unit/test_resource_discovery_puro.py](../unit/test_resource_discovery_puro.py),
+  já que é uma função pura sem boto3) e por este teste apenas no caminho
+  "zero resultados", não no caminho "com instâncias reais". Validação
+  desses caminhos específicos, se necessária, requer um cluster EKS
+  managed real (fora do escopo deste teste local).
