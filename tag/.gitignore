@@ -11,3 +11,9 @@ prm_apply_report.json
 # qualquer_nome_teste.json) — nomes customizados não cabem num padrão fixo,
 # então a convenção é usar sempre o sufixo "_teste.json"
 *_teste.json
+# Rede de segurança para o mesmo caso: nomes de saída de teste que não
+# seguem o sufixo acima (ex.: resultado_um_recurso_dry.json), mas começam
+# com um destes prefixos — também contêm ARNs/conta real.
+mapa*.json
+decisao*.json
+resultado*.json

@@ -17,6 +17,12 @@ prm_apply_report.json
 # qualquer_nome_teste.json) — nomes customizados nao cabem num padrao fixo,
 # entao a convencao e usar sempre o sufixo "_teste.json"
 *_teste.json
+# Rede de seguranca para o mesmo caso: nomes de saida de teste que nao
+# seguem o sufixo acima (ex.: resultado_um_recurso_dry.json), mas comecam
+# com um destes prefixos — tambem contem ARNs/conta real.
+mapa*.json
+decisao*.json
+resultado*.json
 
 # SO / editor
 .DS_Store

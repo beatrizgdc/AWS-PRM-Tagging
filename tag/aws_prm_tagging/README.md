@@ -69,6 +69,7 @@ Documentação completa:
 - [docs/arquitetura-multicliente.md](docs/arquitetura-multicliente.md) — rollout via CloudFormation StackSets para os clientes da EMPRESAX (camada acima da execução por conta).
 - [docs/melhorias-futuras.md](docs/melhorias-futuras.md) — pendências técnicas conhecidas e registradas, não corrigidas ainda (exigem decisão de arquitetura/produto ou têm custo maior que uma correção pontual).
 - [test/localstack/README.md](test/localstack/README.md) — cenário de teste local contra LocalStack, sem tocar em nenhuma conta AWS real.
+- [test/manual-live/README.md](test/manual-live/README.md) — smoke test manual da Etapa 2c (`apply --live`) contra 1 único recurso descartável, numa conta AWS real de sandbox.
 
 ## Onde rodar os comandos
 
