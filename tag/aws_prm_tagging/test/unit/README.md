@@ -4,10 +4,12 @@ Pytest, 100% offline — sem rede real, sem credencial, sem nenhuma conta AWS
 real. Cobre `decision.py` (Etapa 2a, 100% sem boto3), `tag_execution.py`
 (Etapas 2b e 2c — usa boto3, mas os testes passam sessões/clients falsos em
 vez de rede real; ver `fake_session_factory` em `conftest.py`), `report.py`
-(Etapa 1, 100% sem boto3) e a validação pura de `main.py`
-(`_validate_expected_tag_value`). Ver
-[test/localstack/README.md](../localstack/README.md) para o teste e2e da
-Etapa 1 completa, que precisa de boto3 + LocalStack de verdade.
+(Etapa 1, 100% sem boto3), a validação pura de `main.py`
+(`_validate_expected_tag_value`), `services.classify_arn` (também 100% sem
+boto3) e as funções puras de `resource_discovery.py` extraídas para não
+dependerem de boto3. Ver [test/localstack/README.md](../localstack/README.md)
+para o teste e2e da Etapa 1 completa (o resto de `resource_discovery.py`,
+que ainda depende de boto3), que precisa de boto3 + LocalStack de verdade.
 
 Rodar (do diretório que contém `aws_prm_tagging/` — ver ["Onde rodar os
 comandos"](../../README.md#onde-rodar-os-comandos) no README raiz):
@@ -62,6 +64,18 @@ Para `main.py`:
 - `test_main_validacao.py` — `_validate_expected_tag_value` (formato
   `pc:<product-code>` fechado, `ra-...` e qualquer outro formato
   recusados).
+
+Para `services.py`:
+
+- `test_services_classify_arn.py` — desambiguação de código de produto
+  compartilhado (`vpc-lattice` classificado com nome próprio, não como
+  "AWS Transit Gateway"; regressão da desambiguação ec2 compute vs. rede).
+
+Para `resource_discovery.py` (só a parte pura, sem boto3):
+
+- `test_resource_discovery_puro.py` — `_chunk` e
+  `_filter_load_balancers_for_cluster` (filtro puro sobre o resultado já
+  coletado uma vez por região, não mais relistado a cada cluster).
 
 Ao adicionar um módulo novo (Etapa 3 em diante), crie um novo grupo de
 arquivos `test_<módulo>_<área>.py` seguindo o mesmo padrão, em vez de

@@ -21,6 +21,15 @@ documentadas para os próximos estágios:
    Direct Connect Gateway). Usamos o tipo de recurso dentro do ARN
    (ex.: "instance", "volume" vs. "vpc", "transit-gateway") para desambiguar
    na função `classify_arn`.
+
+O código "AmazonVPC" também é compartilhado no CSV por DUAS linhas ("AWS
+Transit Gateway" e "Amazon VPC Lattice") — ao contrário da limitação nº 2
+acima, aqui não é ambiguidade real: o namespace "vpc-lattice" do ARN já
+identifica o recurso sem dúvida nenhuma. `classify_arn` desambigua isso por
+nome (`_service_by_name`) em vez de por código, para não deixar
+`_service_by_code` pegar sempre a primeira linha com esse código (que
+rotularia todo recurso VPC Lattice como "AWS Transit Gateway" no
+relatório — a tag aplicada não mudaria, só o campo "servico").
 """
 from __future__ import annotations
 
@@ -158,7 +167,10 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "ssm": "AWSSystemsManager",
     "timestream": "AmazonTimestream",
     "transfer": "AWSTransfer",
-    "vpc-lattice": "AmazonVPC",
+    # "vpc-lattice" fica de fora de propósito: compartilha o código
+    # "AmazonVPC" com "AWS Transit Gateway" no CSV — tratado à parte em
+    # `classify_arn` via `_service_by_name`, não por este mapeamento de
+    # código (ver docstring do módulo).
     "workspaces": "AmazonWorkSpaces",
 }
 
@@ -190,6 +202,13 @@ def _service_by_code(services: list[Service], code: str) -> Optional[Service]:
     return None
 
 
+def _service_by_name(services: list[Service], name: str) -> Optional[Service]:
+    for svc in services:
+        if svc.name == name:
+            return svc
+    return None
+
+
 def classify_arn(arn: str, services: list[Service]) -> Optional[Service]:
     """Retorna o Service (linha do CSV) correspondente a um ARN, ou None se
     o recurso não pertencer a nenhum serviço elegível conhecido."""
@@ -208,6 +227,12 @@ def classify_arn(arn: str, services: list[Service]) -> Optional[Service]:
             else "AmazonVPC"
         )
         return _service_by_code(services, code)
+
+    if namespace == "vpc-lattice":
+        # Ver docstring do módulo — namespace inequívoco, mas o código
+        # "AmazonVPC" é compartilhado com "AWS Transit Gateway" no CSV, e
+        # _service_by_code pegaria sempre a primeira linha com esse código.
+        return _service_by_name(services, "Amazon VPC Lattice")
 
     code = _NAMESPACE_TO_CODE.get(namespace)
     if code is None:

@@ -60,11 +60,16 @@ não do CSV (o CSV não traz essa correspondência).
 Duas ambiguidades conhecidas, documentadas em comentários no próprio arquivo:
 
 - **`ec2`** é usado tanto por Amazon EC2 quanto pelos recursos de rede
-  faturados sob "AWS Transit Gateway"/"Amazon VPC Lattice" (mesmo código de
-  produto `AmazonVPC` no CSV, para duas linhas diferentes). Desambiguado por
-  tipo de recurso dentro do ARN (`instance`, `volume`, `security-group` etc.
-  vão para EC2; `vpc`, `transit-gateway`, `vpc-peering-connection` etc. vão
-  para a linha de rede).
+  faturados sob a linha "AWS Transit Gateway" do CSV (mesmo código de
+  produto `AmazonVPC`). Desambiguado por tipo de recurso dentro do ARN
+  (`instance`, `volume`, `security-group` etc. vão para EC2; `vpc`,
+  `transit-gateway`, `vpc-peering-connection` etc. vão para a linha de
+  rede). O namespace `vpc-lattice` também usa o código `AmazonVPC`, mas
+  **não** é ambíguo (identifica o recurso sem dúvida) — por isso é tratado
+  à parte, por nome (`_service_by_name`), em vez de cair na mesma busca por
+  código que pegaria sempre a primeira linha ("AWS Transit Gateway") e
+  rotularia todo recurso VPC Lattice errado no relatório (correção
+  aplicada; a tag em si nunca esteve errada, só o rótulo `servico`).
 - **`rds`** é compartilhado por Amazon RDS, Aurora, Amazon DocumentDB e Amazon
   Neptune (todos usam ARNs `arn:aws:rds:...`). Sem uma chamada adicional à API
   de cada engine para inspecionar o atributo `Engine`, não há como
@@ -125,12 +130,22 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   automáticas `eks:cluster-name` / `kubernetes.io/cluster/<nome>` (nodes
   self-managed, heurística best-effort documentada no código) —
   `tipo_recurso="node"`; para essas instâncias, os volumes EBS anexados
-  (`ec2:DescribeVolumes`) — `tipo_recurso="ebs_volume"`; e os load balancers
-  do cluster, identificados pelas tags de convenção do AWS Load Balancer
-  Controller (`elbv2.k8s.aws/cluster`, `kubernetes.io/cluster/<nome>` —
-  também best-effort, não há uma API que amarre LB a cluster diretamente) —
-  `tipo_recurso="load_balancer"`. Fargate on EKS nunca aparece aqui porque
+  (`ec2:DescribeVolumes`, paginado via `NextToken` e em lotes de até 100
+  IDs por filtro — `_describe_instances_all`/`_describe_volumes_all`, ver
+  `_TAMANHO_LOTE_FILTRO_EC2`) — `tipo_recurso="ebs_volume"`; e os load
+  balancers do cluster, identificados pelas tags de convenção do AWS Load
+  Balancer Controller (`elbv2.k8s.aws/cluster`, `kubernetes.io/cluster/<nome>`
+  — também best-effort, não há uma API que amarre LB a cluster diretamente)
+  — `tipo_recurso="load_balancer"`. Fargate on EKS nunca aparece aqui porque
   não gera instâncias EC2.
+
+  A listagem de load balancers da região (`describe_load_balancers` +
+  `describe_tags`) roda **uma vez só** por chamada de
+  `discover_eks_resources` (`_list_region_load_balancers_with_tags`), não
+  uma vez por cluster — `_filter_load_balancers_for_cluster` depois só
+  filtra esse resultado já coletado, sem nenhuma chamada de API adicional.
+  Antes desta correção, uma conta com N clusters EKS relistava todos os
+  load balancers da região N vezes.
 
   As instâncias EC2 e volumes EBS dos nodes **também** são descobertos pelo
   passo genérico (o namespace `ec2` não está em `_DEDICATED_SERVICE_CODES`),

@@ -256,16 +256,62 @@ def _describe_auto_scaling_group(client, asg_name: str) -> dict:
     return client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
 
 
-@with_backoff()
-def _describe_instances(client, filters: list[dict]) -> dict:
-    return client.describe_instances(Filters=filters)
+def _chunk(items: list, size: int) -> list[list]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+# Tamanho de lote conservador para os filtros "instance-id"/"attachment.instance-id"
+# abaixo — a AWS não documenta um limite fixo e único para o número de
+# valores num filtro de describe_instances/describe_volumes, então 100 é
+# uma escolha conservadora (bem abaixo de qualquer limite conhecido) em vez
+# de assumir que a lista de instance_ids de um cluster nunca vai ser grande
+# o suficiente para importar.
+_TAMANHO_LOTE_FILTRO_EC2 = 100
 
 
 @with_backoff()
-def _describe_volumes(client, instance_ids: list[str]) -> dict:
-    return client.describe_volumes(
-        Filters=[{"Name": "attachment.instance-id", "Values": instance_ids}]
-    )
+def _describe_instances_page(client, filters: list[dict], next_token: str | None) -> dict:
+    kwargs: dict = {"Filters": filters}
+    if next_token:
+        kwargs["NextToken"] = next_token
+    return client.describe_instances(**kwargs)
+
+
+def _describe_instances_all(client, filters: list[dict]) -> list[dict]:
+    """Pagina `describe_instances` inteiro — devolve todas as `Reservations`.
+
+    Sem isso, uma resposta paginada (conta/cluster com muitas instâncias)
+    perderia silenciosamente as instâncias das páginas seguintes."""
+    reservations: list[dict] = []
+    token = None
+    while True:
+        resp = _describe_instances_page(client, filters, token)
+        reservations.extend(resp.get("Reservations", []))
+        token = resp.get("NextToken")
+        if not token:
+            break
+    return reservations
+
+
+@with_backoff()
+def _describe_volumes_page(client, instance_ids: list[str], next_token: str | None) -> dict:
+    kwargs: dict = {"Filters": [{"Name": "attachment.instance-id", "Values": instance_ids}]}
+    if next_token:
+        kwargs["NextToken"] = next_token
+    return client.describe_volumes(**kwargs)
+
+
+def _describe_volumes_all(client, instance_ids: list[str]) -> list[dict]:
+    """Pagina `describe_volumes` inteiro — devolve todos os `Volumes`."""
+    volumes: list[dict] = []
+    token = None
+    while True:
+        resp = _describe_volumes_page(client, instance_ids, token)
+        volumes.extend(resp.get("Volumes", []))
+        token = resp.get("NextToken")
+        if not token:
+            break
+    return volumes
 
 
 @with_backoff()
@@ -336,7 +382,7 @@ def _get_node_instance_ids_by_cluster_tags(ec2_client, cluster_name: str) -> lis
     ]
     for filters in filter_sets:
         try:
-            resp = _describe_instances(ec2_client, filters)
+            reservations = _describe_instances_all(ec2_client, filters)
         except ClientError:
             logger.exception(
                 "Falha ao buscar instâncias EC2 do cluster EKS %s com filtro %s",
@@ -344,7 +390,7 @@ def _get_node_instance_ids_by_cluster_tags(ec2_client, cluster_name: str) -> lis
                 filters,
             )
             continue
-        for reservation in resp.get("Reservations", []):
+        for reservation in reservations:
             for instance in reservation.get("Instances", []):
                 instance_ids.add(instance["InstanceId"])
     return sorted(instance_ids)
@@ -353,52 +399,46 @@ def _get_node_instance_ids_by_cluster_tags(ec2_client, cluster_name: str) -> lis
 def _instances_arns_and_tags(
     ec2_client, account_id: str, region: str, instance_ids: list[str]
 ) -> list[tuple[str, dict]]:
-    if not instance_ids:
-        return []
-    out = []
-    try:
-        resp = _describe_instances(
-            ec2_client, [{"Name": "instance-id", "Values": instance_ids}]
-        )
-    except ClientError:
-        logger.exception("Falha ao obter tags das instâncias EKS %s", instance_ids)
-        return []
-    for reservation in resp.get("Reservations", []):
-        for instance in reservation.get("Instances", []):
-            arn = f"arn:aws:ec2:{region}:{account_id}:instance/{instance['InstanceId']}"
-            tags = tags_list_to_dict(instance.get("Tags", []))
-            out.append((arn, tags))
+    out: list[tuple[str, dict]] = []
+    for lote in _chunk(instance_ids, _TAMANHO_LOTE_FILTRO_EC2):
+        try:
+            reservations = _describe_instances_all(ec2_client, [{"Name": "instance-id", "Values": lote}])
+        except ClientError:
+            logger.exception("Falha ao obter tags das instâncias EKS %s", lote)
+            continue
+        for reservation in reservations:
+            for instance in reservation.get("Instances", []):
+                arn = f"arn:aws:ec2:{region}:{account_id}:instance/{instance['InstanceId']}"
+                tags = tags_list_to_dict(instance.get("Tags", []))
+                out.append((arn, tags))
     return out
 
 
 def _volumes_arns_and_tags(
     ec2_client, account_id: str, region: str, instance_ids: list[str]
 ) -> list[tuple[str, dict]]:
-    if not instance_ids:
-        return []
-    out = []
-    try:
-        resp = _describe_volumes(ec2_client, instance_ids)
-    except ClientError:
-        logger.exception("Falha ao obter volumes EBS dos nodes EKS %s", instance_ids)
-        return []
-    for volume in resp.get("Volumes", []):
-        arn = f"arn:aws:ec2:{region}:{account_id}:volume/{volume['VolumeId']}"
-        tags = tags_list_to_dict(volume.get("Tags", []))
-        out.append((arn, tags))
+    out: list[tuple[str, dict]] = []
+    for lote in _chunk(instance_ids, _TAMANHO_LOTE_FILTRO_EC2):
+        try:
+            volumes = _describe_volumes_all(ec2_client, lote)
+        except ClientError:
+            logger.exception("Falha ao obter volumes EBS dos nodes EKS %s", lote)
+            continue
+        for volume in volumes:
+            arn = f"arn:aws:ec2:{region}:{account_id}:volume/{volume['VolumeId']}"
+            tags = tags_list_to_dict(volume.get("Tags", []))
+            out.append((arn, tags))
     return out
 
 
-def _load_balancers_for_cluster(
-    elbv2_client, cluster_name: str
-) -> list[tuple[str, dict]]:
-    """Heurística best-effort: identifica load balancers do AWS Load Balancer
-    Controller pelas tags de convenção `elbv2.k8s.aws/cluster` (ALB via
-    Ingress) e `kubernetes.io/cluster/<nome>` (NLB via Service, e também usado
-    pelo controlador legado in-tree)."""
-    matched: list[tuple[str, dict]] = []
-    marker = None
+def _list_region_load_balancers_with_tags(elbv2_client) -> list[tuple[str, dict]]:
+    """Lista TODOS os load balancers da região com suas tags, uma vez só —
+    reaproveitado por `_filter_load_balancers_for_cluster` para cada
+    cluster, em vez de relistar a região inteira a cada cluster (uma conta
+    com N clusters EKS fazia N varreduras completas da região antes desta
+    correção)."""
     all_arns: list[str] = []
+    marker = None
     try:
         while True:
             resp = _describe_load_balancers_page(elbv2_client, marker)
@@ -407,24 +447,36 @@ def _load_balancers_for_cluster(
             if not marker:
                 break
     except ClientError:
-        logger.exception("Falha ao listar load balancers para o cluster EKS %s", cluster_name)
-        return matched
+        logger.exception("Falha ao listar load balancers da região para descoberta EKS")
+        return []
 
-    for i in range(0, len(all_arns), 20):  # describe_tags aceita até 20 ARNs por chamada
-        batch = all_arns[i : i + 20]
+    resultado: list[tuple[str, dict]] = []
+    for batch in [all_arns[i : i + 20] for i in range(0, len(all_arns), 20)]:  # describe_tags aceita até 20 ARNs
         try:
             resp = _describe_lb_tags(elbv2_client, batch)
         except ClientError:
             logger.exception("Falha ao obter tags de load balancers (batch %s)", batch)
             continue
         for desc in resp.get("TagDescriptions", []):
-            tags = tags_list_to_dict(desc.get("Tags", []))
-            is_cluster_lb = tags.get("elbv2.k8s.aws/cluster") == cluster_name or tags.get(
-                f"kubernetes.io/cluster/{cluster_name}"
-            ) in ("owned", "shared")
-            if is_cluster_lb:
-                matched.append((desc["ResourceArn"], tags))
-    return matched
+            resultado.append((desc["ResourceArn"], tags_list_to_dict(desc.get("Tags", []))))
+    return resultado
+
+
+def _filter_load_balancers_for_cluster(
+    region_load_balancers: list[tuple[str, dict]], cluster_name: str
+) -> list[tuple[str, dict]]:
+    """Heurística best-effort, sem nenhuma chamada de API (filtro puro sobre
+    o resultado já coletado por `_list_region_load_balancers_with_tags`):
+    identifica load balancers do AWS Load Balancer Controller pelas tags de
+    convenção `elbv2.k8s.aws/cluster` (ALB via Ingress) e
+    `kubernetes.io/cluster/<nome>` (NLB via Service, e também usado pelo
+    controlador legado in-tree)."""
+    return [
+        (arn, tags)
+        for arn, tags in region_load_balancers
+        if tags.get("elbv2.k8s.aws/cluster") == cluster_name
+        or tags.get(f"kubernetes.io/cluster/{cluster_name}") in ("owned", "shared")
+    ]
 
 
 def discover_eks_resources(
@@ -446,6 +498,12 @@ def discover_eks_resources(
     except ClientError:
         logger.exception("Falha ao listar clusters EKS em %s", region)
         return results
+
+    # Uma varredura só de load balancers da região para todos os clusters
+    # (ver docstring de `_list_region_load_balancers_with_tags`) — só roda
+    # se houver pelo menos um cluster, para não pagar o custo em contas sem
+    # EKS.
+    region_load_balancers = _list_region_load_balancers_with_tags(elbv2_client) if cluster_names else []
 
     for cluster_name in cluster_names:
         try:
@@ -521,7 +579,7 @@ def discover_eks_resources(
                 )
             )
 
-        for arn, tags in _load_balancers_for_cluster(elbv2_client, cluster_name):
+        for arn, tags in _filter_load_balancers_for_cluster(region_load_balancers, cluster_name):
             results.append(
                 _build_resource(
                     arn,
