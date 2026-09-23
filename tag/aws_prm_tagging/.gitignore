@@ -11,6 +11,12 @@ venv/
 # reais, nunca devem ser versionados
 relatorio*.json
 prm_mapping_report.json
+prm_decision_report.json
+prm_apply_report.json
+# Convencao para saida de testes manuais/smoke contra sandbox (--output
+# qualquer_nome_teste.json) — nomes customizados nao cabem num padrao fixo,
+# entao a convencao e usar sempre o sufixo "_teste.json"
+*_teste.json
 
 # SO / editor
 .DS_Store

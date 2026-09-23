@@ -192,11 +192,36 @@ decidir, mesmo que isso gere entradas de `falhas_descoberta` para regiões
 onde Bedrock de fato não está disponível (ruído aceitável perto do risco de
 esconder uma falha de permissão real).
 
-**O que destrava:** testar em sandbox (1) uma região onde Bedrock realmente
-não está disponível e (2) uma role sem `bedrock:ListInferenceProfiles`,
-comparando os erros exatos devolvidos — se houver uma diferença confiável
-(código, mensagem, ou outro sinal), reintroduzir uma exceção mais criteriosa
-no código.
+**Teste em sandbox (2026-09-23) — achado real, mas não conclusivo:** rodando
+`map` contra uma conta AWS real (role `AdministratorAccess`, 17 regiões),
+apareceu `AccessDeniedException` em 14 regiões ao mesmo tempo para
+`bedrock:ListInferenceProfiles`, `tag:GetResources` E `eks:ListClusters` —
+as 3 etapas de descoberta, todas com a mesma causa exata:
+
+```
+... with an explicit deny in a service control policy:
+arn:aws:organizations::<org-id>:policy/<ou-id>/service_control_policy/<policy-id>
+```
+
+Ou seja, nesse caso específico o `AccessDenied` não era NEM "região sem
+Bedrock" NEM "falta de permissão IAM na role" (a role tinha
+`AdministratorAccess`) — era uma SCP da Organization restringindo região
+(só liberando as 3 regiões onde a descoberta trouxe dados: `us-east-1`,
+`us-east-2`, `us-west-2`), uma terceira causa que nem tinha sido cogitada
+antes. Isso reforça que a decisão de sempre reportar (em vez de tentar
+adivinhar a causa) foi a certa — uma exceção "esperta" baseada só nas 2
+hipóteses originais teria classificado esse caso errado. Mas não resolve a
+pergunta original: esse teste não isolou os 2 cenários hipotéticos (região
+genuinamente sem Bedrock vs. permissão faltando sozinha, sem SCP no meio) —
+segue em aberto.
+
+**O que destrava:** testar em sandbox, isoladamente (sem uma SCP de região
+no caminho): (1) uma região onde Bedrock realmente não está disponível e
+(2) uma role sem `bedrock:ListInferenceProfiles` mas sem nenhuma SCP
+bloqueando — comparando os erros exatos devolvidos. Se houver uma diferença
+confiável (código, mensagem, ou outro sinal) entre os 2 e também frente ao
+caso de SCP já observado, reintroduzir uma exceção mais criteriosa no
+código.
 
 ## Falhas granulares dentro da descoberta de EKS ainda só ficam no log
 

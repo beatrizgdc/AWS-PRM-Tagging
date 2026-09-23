@@ -1,0 +1,13 @@
+# O CLI (aws_prm_tagging.main) precisa rodar a partir deste diretório (ver
+# aws_prm_tagging/README.md#onde-rodar-os-comandos) — os relatórios de saída
+# (--output) são gerados aqui, não dentro de aws_prm_tagging/. Mesmos
+# padrões do .gitignore de dentro do pacote: contêm ARNs, contas e
+# estrutura de OU reais, nunca devem ser versionados.
+relatorio*.json
+prm_mapping_report.json
+prm_decision_report.json
+prm_apply_report.json
+# Convenção para saída de testes manuais/smoke contra sandbox (--output
+# qualquer_nome_teste.json) — nomes customizados não cabem num padrão fixo,
+# então a convenção é usar sempre o sufixo "_teste.json"
+*_teste.json
