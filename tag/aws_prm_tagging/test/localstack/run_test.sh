@@ -57,9 +57,9 @@ echo "== Criando recursos de teste =="
 bash "$SCRIPT_DIR/setup_test_resources.sh"
 
 echo
-echo "== Rodando aws_prm_tagging.main contra o LocalStack =="
+echo "== Rodando aws_prm_tagging.main (subcomando 'map') contra o LocalStack =="
 cd "$IMPORT_ROOT"
-python3 -m aws_prm_tagging.main \
+python3 -m aws_prm_tagging.main map \
   --expected-tag-value pc:test123 \
   --profile localstack \
   --output "$OUTPUT_FILE"

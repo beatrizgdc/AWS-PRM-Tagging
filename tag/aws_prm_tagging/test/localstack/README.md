@@ -81,7 +81,7 @@ O script:
    não valida credenciais).
 3. Sobe o LocalStack (`localstack start -d`) e aguarda o healthcheck.
 4. Roda `setup_test_resources.sh` para criar o cenário acima.
-5. Executa `python3 -m aws_prm_tagging.main --expected-tag-value pc:test123
+5. Executa `python3 -m aws_prm_tagging.main map --expected-tag-value pc:test123
    --profile localstack` contra o LocalStack.
 6. Imprime o resumo (`resumo`) do relatório gerado.
 
@@ -92,7 +92,7 @@ repositório (`python3 -m aws_prm_tagging.main` exige isso — ver
 ```bash
 localstack start -d
 bash aws_prm_tagging/test/localstack/setup_test_resources.sh
-python3 -m aws_prm_tagging.main \
+python3 -m aws_prm_tagging.main map \
   --expected-tag-value pc:test123 \
   --profile localstack \
   --output aws_prm_tagging/test/localstack/relatorio_teste.json

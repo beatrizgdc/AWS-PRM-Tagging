@@ -98,6 +98,89 @@ desejada. Em uma conta-membro, essas chamadas falham com
 prossegue normalmente sem a árvore (ver `ou_tree.py`) — a permissão pode ser
 omitida em contas-membro sem quebrar a execução.
 
+## Permissões IAM para a Etapa 2a (`decide`)
+
+Nenhuma. `decision.py` é uma função pura — não instancia sessão boto3, não
+faz nenhuma chamada de API. O subcomando `decide` só lê o JSON da Etapa 1 do
+disco e escreve o relatório de decisão, também no disco.
+
+## Permissões IAM para a Etapa 2b (`apply`, dry-run)
+
+O subcomando `apply` (`tag_execution.run_stage2b`) nunca chama uma API de
+escrita — o `DryRunExecutor`, único executor que existe até a Etapa 2c, só
+loga a ação que seria tomada. As únicas chamadas reais que a Etapa 2b faz
+são de **leitura**, para a revalidação do estado atual da tag imediatamente
+antes de decidir se simula ou pula cada recurso (ver
+[arquitetura.md](arquitetura.md#tag_executionpy); pode ser desligada com
+`--no-revalidate`, mas então o relatório de dry-run deixa de refletir
+mudanças feitas na conta depois da Etapa 1/2a).
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PRMStage2bRevalidationReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "tag:GetResources",
+        "eks:ListTagsForResource",
+        "bedrock:ListTagsForResource",
+        "elasticloadbalancing:DescribeTags"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Com `--no-revalidate`, nem essa política é necessária — o subcomando `apply`
+não faz nenhuma chamada AWS.
+
+## Permissões IAM para a Etapa 2c (execução real — ainda não implementada)
+
+**Não aplicar esta política ainda** — é a lista de permissões que a Etapa 2c
+(quando implementada, trocando `DryRunExecutor` por um `LiveExecutor`) vai
+precisar, documentada aqui com antecedência para revisão. Deve viver numa
+política **separada** da política de leitura acima, nunca anexada à mesma
+role usada para descoberta/dry-run — escrita é uma superfície de risco
+diferente de leitura.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PRMStage2cGenericTagWrite",
+      "Effect": "Allow",
+      "Action": ["tag:TagResources"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PRMStage2cDedicatedTagWrite",
+      "Effect": "Allow",
+      "Action": [
+        "eks:TagResource",
+        "bedrock:TagResource",
+        "elasticloadbalancing:AddTags"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+**Isso não é suficiente sozinho.** A AWS documenta explicitamente que
+`tag:TagResources` exige, além de si mesma, a permissão de tagging nativa
+de cada serviço dono do recurso — ex., para taguear uma instância EC2 via
+`tag:TagResources`, é preciso `tag:TagResources` **e** `ec2:CreateTags`
+([referência](https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_TagResources.html)).
+Como o escopo cobre ~80 serviços do CSV oficial, a política real da Etapa 2c
+precisa de uma ação de tagging nativa por serviço (`ec2:CreateTags`,
+`lambda:TagResource`, `s3:PutBucketTagging`, `rds:AddTagsToResource` etc.) —
+essa lista completa, serviço a serviço, é levantamento pendente para quando
+a Etapa 2c for implementada, não algo a assumir aqui.
+
 ## Passo a passo
 
 1. Confirmar o valor esperado da tag para o cliente/produto/OU em questão
@@ -106,7 +189,7 @@ omitida em contas-membro sem quebrar a execução.
 3. Rodar:
 
    ```bash
-   python3 -m aws_prm_tagging.main \
+   python3 -m aws_prm_tagging.main map \
      --expected-tag-value pc:<PRODUCT_CODE_DO_CLIENTE> \
      --profile cliente-x-prm-readonly \
      --output relatorio-<cliente>-<data>.json

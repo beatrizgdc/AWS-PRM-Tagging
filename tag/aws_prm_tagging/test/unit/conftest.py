@@ -64,3 +64,73 @@ def relatorio_etapa1_factory():
         }
 
     return _build
+
+
+@pytest.fixture
+def decisao_factory():
+    """Fábrica de dicts de recurso no formato produzido pela Etapa 2a
+    (`decision.classify_resource`) — usada pelos testes de `tag_execution.py`
+    (Etapa 2b), que consomem o relatório de decisão, não o da Etapa 1."""
+
+    def _build(
+        arn: str = "arn:aws:ec2:us-east-1:000000000000:instance/i-abc123",
+        servico: str = "Amazon EC2",
+        regiao: str = "us-east-1",
+        tipo_recurso: str | None = None,
+        decisao: str = "taguear",
+        valor_tag_atual: str | None = None,
+        motivo: str = "",
+    ) -> dict:
+        return {
+            "arn": arn,
+            "servico": servico,
+            "regiao": regiao,
+            "tipo_recurso": tipo_recurso,
+            "valor_tag_atual": valor_tag_atual,
+            "decisao": decisao,
+            "motivo": motivo,
+            "tag_similar_encontrada": False,
+            "tag_similar_chaves": [],
+            "iac": {"tipo": "desconhecido", "detectado": False, "stack_name": None},
+        }
+
+    return _build
+
+
+@pytest.fixture
+def relatorio_decisao_factory():
+    """Fábrica do relatório-container da Etapa 2a
+    (`decision.build_decision_report`) — o teste só precisa informar a lista
+    de `recursos` (dicts de `decisao_factory`)."""
+
+    def _build(recursos: list[dict], conta_id: str = "000000000000") -> dict:
+        return {
+            "conta_id": conta_id,
+            "executado_em": "2026-01-01T00:00:00Z",
+            "valor_tag_esperado": "pc:placeholder",
+            "resumo": {},
+            "recursos": recursos,
+            "erros": [],
+        }
+
+    return _build
+
+
+@pytest.fixture
+def fake_session_factory():
+    """Fábrica de uma sessão boto3 falsa, sem nenhuma chamada de rede real —
+    usada pelos testes de `tag_execution.py` que exercitam a revalidação
+    (que usa `session.client(...)`). `clients` é um dict
+    `{nome_do_client_boto3: objeto_stub_com_os_metodos_usados}`."""
+
+    class _FakeSession:
+        def __init__(self, clients: dict):
+            self._clients = clients
+
+        def client(self, service_name: str, region_name: str | None = None):
+            return self._clients[service_name]
+
+    def _build(clients: dict):
+        return _FakeSession(clients)
+
+    return _build

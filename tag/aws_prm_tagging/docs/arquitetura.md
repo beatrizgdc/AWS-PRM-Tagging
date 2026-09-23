@@ -22,20 +22,24 @@ exclusivamente operações `Describe*`/`List*`/`Get*`.
 
 Todo módulo no nível raiz do pacote (`services.py`, `regions.py`,
 `resource_discovery.py`, `tag_status.py`, `iac_detection.py`, `decision.py`,
-`ou_tree.py`, `report.py`, `retry.py`) é **núcleo compartilhado**: pode ser
-importado por qualquer um dos 4 estágios sem saber qual estágio está
-chamando. `decision.py` (Etapa 2a) está aqui pelo mesmo motivo que
-`resource_discovery.py` está — a Etapa 3 (automação contínua) e a Etapa 4
-(varredura recorrente) também vão precisar classificar `taguear` /
-`pular_iac` / `ja_ok` / `conflito`, não só a Etapa 2.
+`tag_execution.py`, `ou_tree.py`, `report.py`, `retry.py`) é **núcleo
+compartilhado**: pode ser importado por qualquer um dos 4 estágios sem saber
+qual estágio está chamando. `decision.py` (Etapa 2a) e `tag_execution.py`
+(Etapas 2b/2c) estão aqui pelo mesmo motivo que `resource_discovery.py`
+está — a Etapa 3 (automação contínua) e a Etapa 4 (varredura recorrente)
+também vão precisar classificar e aplicar a tag, não só a Etapa 2.
 
-Só `main.py` é **entrypoint de estágio**: orquestra I/O específico de um
-estágio (hoje, CLI args + escrita de arquivo para a Etapa 1). Quando as
-Etapas 2-4 ganharem seus próprios entrypoints (handlers Lambda, ver
+Só `main.py` é **entrypoint de estágio**: hoje um único CLI com 3
+subcomandos, um por estágio implementado (`map`, `decide`, `apply` — ver
+[README.md](../README.md#uso)), cada um orquestrando só o I/O específico
+daquele estágio (CLI args + leitura/escrita de arquivo). Quando as Etapas
+3-4 ganharem seus próprios entrypoints (handlers Lambda, ver
 [arquitetura-multicliente.md](arquitetura-multicliente.md)), eles seguem o
-mesmo padrão: importam os módulos do núcleo em vez de duplicar lógica, e são
-o único lugar com I/O que muda estado (a Etapa 1 e a Etapa 2a continuam
-100% sem escrita).
+mesmo padrão: importam os módulos do núcleo em vez de duplicar lógica. Só
+`apply` (Etapa 2b) faz alguma chamada de API na conta do cliente além de
+leitura pura — e mesmo assim só chamadas de **leitura** (revalidação); a
+Etapa 2b em si nunca escreve (ver `tag_execution.py` abaixo). A primeira
+escrita de fato só existe na Etapa 2c, ainda não implementada.
 
 ## Módulos
 
@@ -246,8 +250,74 @@ derrubar o processamento do restante do lote.
 
 `build_decision_report` monta o relatório de saída no mesmo estilo de
 `report.build_report` (mesmas chaves de topo, agregação via `Counter`,
-`por_servico` ordenado) — é o contrato de entrada da Etapa 2b (execução em
-dry-run, ainda não implementada).
+`por_servico` ordenado) — é o contrato de entrada da Etapa 2b, coberta a
+seguir.
+
+### `tag_execution.py`
+
+Etapa 2b (dry-run) e base para a Etapa 2c (execução real, ainda não
+implementada) — consome `decision.build_decision_report` (Etapa 2a) e
+decide, para cada recurso `taguear`, qual API chamar e com qual
+agrupamento. Ao contrário dos módulos anteriores, **não** é 100%
+sem-efeito: faz chamadas de leitura reais na conta (revalidação, ver
+abaixo) — mas nunca de escrita nesta etapa. Docstring completo do módulo
+cobre o raciocínio em detalhe; resumo:
+
+**Garantia estrutural (não por convenção) de que só `"taguear"` gera uma
+chamada** — `select_taggable()` é o único ponto de entrada aceito pelo
+resto do módulo. Ela converte cada recurso em um `TaggableResource`, um
+tipo que **não tem campo `decisao`**. Toda função downstream recebe
+`TaggableResource`, nunca o dict bruto da Etapa 2a — não existe caminho de
+código que aceite `pular_iac`/`ja_ok`/`conflito` como parâmetro.
+
+**Roteamento de API** (`route_strategy`), confirmado contra a documentação
+oficial de cada API (não só a página-índice de "supported services", que é
+renderizada via JS e não dá para extrair):
+
+| Recurso | API | Batch? |
+|---|---|---|
+| Genérico (maioria do CSV, + nodes/volumes EBS de EKS) | `tag:TagResources` | até 20 ARNs/chamada (limite documentado) |
+| EKS cluster / node group | `eks:TagResource` | não — `resourceArn` singular |
+| Bedrock application inference profile | `bedrock:TagResource` | não — `resourceARN` singular |
+| Load balancer de EKS | `elasticloadbalancing:AddTags` | tratado como não (parâmetro aceita array, mas sem confirmação oficial de múltiplos ARNs por chamada — decisão conservadora até validar em sandbox) |
+
+Nodes e volumes EBS de EKS usam o caminho genérico de propósito: são
+instância/volume EC2 comuns por baixo do capô, sem necessidade de API
+dedicada — só cluster, node group e load balancer entram na tabela de
+estratégia dedicada.
+
+**Revalidação e idempotência**: antes de agir sobre cada recurso (real ou
+simulado), o orquestrador relê o estado atual da tag na AWS
+(`revalidate=True` por padrão, `--no-revalidate` desliga). Se a tag já
+estiver com o valor esperado — porque uma execução anterior já aplicou, ou
+outra automação aplicou por fora —, o recurso é reportado como
+`"ja_tagueado"` e nenhuma chamada de escrita é feita. É isso que torna
+reexecuções do mesmo relatório de decisão idempotentes por construção, sem
+nenhum arquivo de progresso: o estado da tag na AWS *é* a fonte da verdade
+de "já foi feito ou não" — combinado com o fato de que toda API de tagging
+usada aqui é uma operação de conjunto (aplicar o mesmo valor duas vezes é
+no-op). A leitura de revalidação usa `tag:GetResources` com
+`TagFilters=[{"Key": "aws-apn-id"}]` (uma varredura por região cobre todos
+os recursos genéricos de uma vez) para o caminho genérico, e
+`eks:ListTagsForResource` / `bedrock:ListTagsForResource` /
+`elasticloadbalancing:DescribeTags` para os caminhos dedicados — mesmos
+clients já usados por `resource_discovery.py` na Etapa 1. Falha na leitura
+de revalidação (ex.: `AccessDenied`) não bloqueia a tentativa principal —
+só perde o benefício da revalidação para aquele recurso.
+
+**`Executor`**: único ponto de decisão entre "logar o que seria feito" e
+"fazer de verdade". `DryRunExecutor` (único que existe até a Etapa 2c) nunca
+chama uma API de escrita — só loga, no mesmo formato estruturado que vira o
+relatório de saída. Todo o roteamento/agrupamento/revalidação acima é
+comum às duas etapas; a Etapa 2c só precisa adicionar um `LiveExecutor` que
+implementa o mesmo `Protocol` chamando boto3 de verdade (incluindo o
+parsing de `FailedResourcesMap` para falha parcial de lote, que o dry-run
+não precisa simular — sempre assume sucesso, já que não há chamada real).
+
+**Formato do relatório de saída**: mesmo estilo de `report.py`/`decision.py`
+(`conta_id`, `executado_em`, `valor_tag_esperado`, `resumo` agregado via
+`Counter`, lista `recursos` com `resultado` por item) — base direta para a
+Etapa 2c e para o dashboard.
 
 ### `retry.py`
 
@@ -261,11 +331,30 @@ sentido re-tentar um erro de permissão.
 
 ### `main.py`
 
-Único módulo com efeito de I/O (leitura de argumentos de linha de comando e
-escrita do JSON de saída). Toda a lógica de negócio vive nos módulos acima,
-então os próximos estágios podem importar `resource_discovery`,
-`tag_status`, `iac_detection` etc. diretamente em um handler Lambda sem
-depender do CLI.
+Único módulo com efeito de I/O de CLI (leitura de argumentos de linha de
+comando e leitura/escrita de arquivo JSON). Toda a lógica de negócio vive
+nos módulos acima, então os próximos estágios podem importar
+`resource_discovery`, `tag_status`, `iac_detection`, `decision`,
+`tag_execution` etc. diretamente em um handler Lambda sem depender do CLI.
+
+Três subcomandos (`argparse` com `add_subparsers`), um por estágio
+implementado — encadeados manualmente por quem roda o CLI (a saída em
+arquivo de um é a entrada em arquivo do próximo), não por um orquestrador
+único:
+
+- `map` — Etapa 1. Comportamento idêntico ao script original de estágio
+  único (mesmos argumentos `--expected-tag-value`/`--profile`/`--output`).
+- `decide` — Etapa 2a. Lê `--input` (saída de `map`), escreve o relatório de
+  decisão. Não usa boto3.
+- `apply` — Etapa 2b. Lê `--input` (saída de `decide`) e reaproveita
+  `valor_tag_esperado` de dentro desse relatório para a chamada a
+  `tag_execution.run_stage2b` — de propósito, **não** aceita um
+  `--expected-tag-value` próprio: aplicar um valor diferente do que foi
+  usado para classificar os recursos como `taguear` seria inconsistente
+  com a própria decisão que está sendo executada. `--no-revalidate`
+  desliga a revalidação (seção `tag_execution.py` acima); `--live` existe
+  só para dar um erro explícito ("Etapa 2c ainda não implementada") em vez
+  de a flag ser silenciosamente ignorada.
 
 ## Por que não há arquivo de variáveis de ambiente
 
