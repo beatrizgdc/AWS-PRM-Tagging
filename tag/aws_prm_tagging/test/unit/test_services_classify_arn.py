@@ -42,3 +42,25 @@ def test_ec2_vpc_ainda_classificado_como_transit_gateway():
 
 def test_namespace_desconhecido_devolve_none():
     assert services.classify_arn("arn:aws:namespace-inexistente:us-east-1:000000000000:algo/x", _service_list()) is None
+
+
+def test_ssm_opsitem_classificado_como_systems_manager():
+    """CSV: "OpsCenter only" — o único tipo de recurso SSM em escopo."""
+    svc = services.classify_arn(
+        "arn:aws:ssm:us-east-1:000000000000:opsitem/oi-0123456789abcdef0", _service_list()
+    )
+    assert svc is not None
+    assert svc.name == "AWS Systems Manager"
+
+
+def test_ssm_parameter_fora_de_escopo_devolve_none():
+    """Parameter Store não é "OpsCenter" — não deve ser tagueado."""
+    assert services.classify_arn(
+        "arn:aws:ssm:us-east-1:000000000000:parameter/meu-parametro", _service_list()
+    ) is None
+
+
+def test_ssm_maintenance_window_fora_de_escopo_devolve_none():
+    assert services.classify_arn(
+        "arn:aws:ssm:us-east-1:000000000000:maintenancewindow/mw-0123456789abcdef0", _service_list()
+    ) is None

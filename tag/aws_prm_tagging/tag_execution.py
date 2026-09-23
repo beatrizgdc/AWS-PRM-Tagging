@@ -69,7 +69,7 @@ recurso imediatamente antes de agir sobre ele — controlável via
 **A revalidação reaplica a MESMA regra de precedência de `decision.py`**
 (`_classificar_estado_revalidado`, usada tanto pelo caminho genérico quanto
 pelos dedicados) — não só confere se a tag já está com o valor esperado.
-Três desfechos possíveis, nesta ordem (idêntica à de `decision._decidir`):
+Quatro desfechos possíveis, nesta ordem (idêntica à de `decision._decidir`):
 
 1. Valor atual == valor esperado → `"ja_tagueado"`. Nenhuma chamada de
    escrita.
@@ -82,12 +82,21 @@ Três desfechos possíveis, nesta ordem (idêntica à de `decision._decidir`):
    ausente — ver item 2) → `"iac_detectado_na_revalidacao"`. Nenhuma
    chamada de escrita — cobre o recurso que passou a ser gerenciado por
    IaC depois da Etapa 1/2a e antes desta execução.
-4. Nenhum dos três → segue para a tentativa de escrita normal.
+4. Tag ausente, sem IaC, mas uma tag de grafia parecida (ex.: `AWS-APN-ID`)
+   apareceu entre a Etapa 2a e esta execução →
+   `"tag_similar_encontrada_na_revalidacao"`. Nenhuma chamada de escrita —
+   mesma razão de `decision.py`: aplicar `aws-apn-id` por cima criaria uma
+   segunda chave quase-duplicada em vez de corrigir o erro original.
+5. Nenhum dos quatro → segue para a tentativa de escrita normal.
 
 (Uma versão anterior deste módulo só verificava o item 1, tratando "sem
 tag" e "tag com valor diferente" da mesma forma — o que faria uma execução
 real tentar sobrescrever um valor conflitante encontrado só no momento da
-escrita. Corrigido: a checagem agora é sempre de 3 vias, nunca só 2.)
+escrita. Corrigido: a checagem agora é sempre de 4 vias, nunca só 2. O item
+4 acima foi adicionado depois — uma versão anterior revalidava IaC mas não
+tag similar, então um `AWS-APN-ID` criado depois da Etapa 2a passava
+despercebido e o `--live` aplicava `aws-apn-id` por cima, gerando duas
+chaves quase-duplicadas no recurso.)
 
 A leitura de revalidação busca o conjunto COMPLETO de tags de cada
 recurso (não só a `aws-apn-id`) — precisa disso para o item 3 acima —, por
@@ -178,6 +187,7 @@ misturado com sucesso real na mesma categoria) / `falhou` /
   `_categoria_final_do_resultado` — inclui os pulados na revalidação:
   `ja_tagueado` vira `ja_ok`, `conflito_na_revalidacao` vira `conflito`,
   `iac_detectado_na_revalidacao` vira `pulado_iac`,
+  `tag_similar_encontrada_na_revalidacao` vira `revisar_tag_similar`,
   `revalidacao_falhou` vira `falhou`).
 - Os `pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` que a própria
   Etapa 2a já decidiu — nunca passam por este módulo, nunca geram chamada
@@ -215,7 +225,7 @@ from .decision import (
 )
 from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO, detect_iac
 from .retry import with_backoff
-from .tag_status import TAG_KEY, tags_list_to_dict
+from .tag_status import TAG_KEY, find_similar_tag_keys, tags_list_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +277,7 @@ RESULTADO_TAGUEADO_SUCESSO = "tagueado_sucesso"
 RESULTADO_JA_TAGUEADO = "ja_tagueado"
 RESULTADO_CONFLITO_NA_REVALIDACAO = "conflito_na_revalidacao"
 RESULTADO_IAC_DETECTADO_NA_REVALIDACAO = "iac_detectado_na_revalidacao"
+RESULTADO_TAG_SIMILAR_NA_REVALIDACAO = "tag_similar_encontrada_na_revalidacao"
 RESULTADO_REVALIDACAO_FALHOU = "revalidacao_falhou"
 RESULTADO_ERRO_PERMISSAO = "erro_permissao"
 RESULTADO_RECURSO_NAO_ENCONTRADO = "recurso_nao_encontrado"
@@ -348,13 +359,14 @@ def _classificar_erro_aws(codigo: str, mensagem: str) -> ResourceOutcome:
 class _RevalidatedState:
     """Estado atual de um recurso, apurado com SUCESSO imediatamente antes
     de agir sobre ele — a MESMA checagem de precedência de `decision.py`
-    (valor presente sempre decide antes de olhar IaC; IaC só importa quando
-    a tag está ausente), reaplicada no momento da escrita, não só no
-    momento da decisão original da Etapa 2a. Ver
-    `_classificar_estado_revalidado`."""
+    (valor presente sempre decide antes de olhar IaC/tag similar; IaC tem
+    precedência sobre tag similar; os dois só importam quando a tag está
+    ausente), reaplicada no momento da escrita, não só no momento da
+    decisão original da Etapa 2a. Ver `_classificar_estado_revalidado`."""
 
     valor_atual: str | None
     iac_tipo: str
+    tag_similar_encontrada: bool
 
 
 @dataclass(frozen=True)
@@ -457,7 +469,9 @@ def _revalidate_generic(
                     continue
                 tags = tags_list_to_dict(mapping.get("Tags", []))
                 encontrados[arn] = _RevalidatedState(
-                    valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"]
+                    valor_atual=tags.get(tag_key),
+                    iac_tipo=detect_iac(tags)["tipo"],
+                    tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
                 )
                 pendentes.discard(arn)
             token = resp.get("PaginationToken")
@@ -481,7 +495,9 @@ def _revalidate_generic(
         if erro_leitura is not None:
             resultado[arn] = _RevalidationFailure(detalhe_erro=erro_leitura)
         else:
-            resultado[arn] = _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO)
+            resultado[arn] = _RevalidatedState(
+                valor_atual=None, iac_tipo=IAC_DESCONHECIDO, tag_similar_encontrada=False
+            )
     return resultado
 
 
@@ -511,7 +527,11 @@ def _revalidate_eks_or_bedrock(
         else:
             resp = _bedrock_list_tags(client, resource.arn)
             tags = tags_list_to_dict(resp.get("tags", []))
-        return _RevalidatedState(valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"])
+        return _RevalidatedState(
+            valor_atual=tags.get(tag_key),
+            iac_tipo=detect_iac(tags)["tipo"],
+            tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
+        )
     except ClientError as exc:
         erro = exc.response.get("Error", {})
         logger.exception(
@@ -523,32 +543,63 @@ def _revalidate_eks_or_bedrock(
         return _RevalidationFailure(detalhe_erro={"codigo": erro.get("Code", ""), "mensagem": erro.get("Message", "")})
 
 
+def _revalidated_state_from_tags(tags: dict[str, str], tag_key: str) -> _RevalidatedState:
+    return _RevalidatedState(
+        valor_atual=tags.get(tag_key),
+        iac_tipo=detect_iac(tags)["tipo"],
+        tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
+    )
+
+
 def _revalidate_elb(
     session: boto3.Session, regiao: str, resources: list[TaggableResource], tag_key: str
 ) -> dict[str, _RevalidatedState | _RevalidationFailure]:
     client = session.client("elbv2", region_name=regiao)
     resultado: dict[str, _RevalidatedState | _RevalidationFailure] = {
-        r.arn: _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO) for r in resources
+        r.arn: _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO, tag_similar_encontrada=False)
+        for r in resources
     }
     for lote in _chunk([r.arn for r in resources], 20):  # describe_tags aceita até 20 ARNs
         try:
             resp = _elb_describe_tags(client, lote)
-        except ClientError as exc:
-            erro = exc.response.get("Error", {})
-            detalhe = {"codigo": erro.get("Code", ""), "mensagem": erro.get("Message", "")}
-            logger.exception(
-                "Falha ao revalidar tags de load balancers %s — marcados como "
-                "revalidação falha, não prosseguem para tentativa de escrita",
+        except ClientError:
+            # A chamada do lote inteiro falhou — comportamento conhecido do
+            # DescribeTags de load balancers quando 1 ARN do lote não existe
+            # mais (ex.: apagado entre a Etapa 1 e esta execução):
+            # `LoadBalancerNotFound` derruba a chamada toda, não só o ARN
+            # ruim. Sem o retry abaixo, os outros ARNs do MESMO lote (que
+            # podem existir e estar OK) virariam `revalidacao_falhou` por
+            # causa de só 1 ruim, bloqueando a tentativa de escrita deles
+            # também. Repete 1 ARN por vez só quando o lote falha, para
+            # isolar qual ARN é o problema sem pagar esse custo no caminho
+            # feliz (lote inteiro válido).
+            logger.warning(
+                "Falha ao revalidar lote de load balancers %s — tentando 1 "
+                "ARN por vez para não bloquear os que ainda existem",
                 lote,
             )
             for arn in lote:
-                resultado[arn] = _RevalidationFailure(detalhe_erro=detalhe)
+                try:
+                    resp_individual = _elb_describe_tags(client, [arn])
+                except ClientError as exc_individual:
+                    erro = exc_individual.response.get("Error", {})
+                    logger.exception(
+                        "Falha ao revalidar tags do load balancer %s — marcado "
+                        "como revalidação falha, não prossegue para tentativa "
+                        "de escrita",
+                        arn,
+                    )
+                    resultado[arn] = _RevalidationFailure(
+                        detalhe_erro={"codigo": erro.get("Code", ""), "mensagem": erro.get("Message", "")}
+                    )
+                    continue
+                for desc in resp_individual.get("TagDescriptions", []):
+                    tags = tags_list_to_dict(desc.get("Tags", []))
+                    resultado[desc["ResourceArn"]] = _revalidated_state_from_tags(tags, tag_key)
             continue
         for desc in resp.get("TagDescriptions", []):
             tags = tags_list_to_dict(desc.get("Tags", []))
-            resultado[desc["ResourceArn"]] = _RevalidatedState(
-                valor_atual=tags.get(tag_key), iac_tipo=detect_iac(tags)["tipo"]
-            )
+            resultado[desc["ResourceArn"]] = _revalidated_state_from_tags(tags, tag_key)
     return resultado
 
 
@@ -710,11 +761,11 @@ def _classificar_estado_revalidado(
 ) -> ResourceOutcome | None:
     """Aplica ao estado revalidado a MESMA regra de precedência de
     `decision._decidir` (ver docstring de `decision.py`): valor de tag
-    presente sempre decide antes de olhar IaC — um conflito nunca vira
-    `pular_iac` só porque o recurso também é gerenciado por IaC; IaC só
-    importa quando a tag está ausente. Devolve o resultado já decidido
-    (nenhum dos casos abaixo nunca gera tentativa de escrita), ou `None` se
-    o recurso segue pendente de uma tentativa de escrita real.
+    presente sempre decide antes de olhar IaC/tag similar; IaC tem
+    precedência sobre tag similar; os dois só importam quando a tag está
+    ausente. Devolve o resultado já decidido (nenhum dos casos abaixo nunca
+    gera tentativa de escrita), ou `None` se o recurso segue pendente de
+    uma tentativa de escrita real.
 
     Uma leitura de revalidação que FALHOU (`_RevalidationFailure`) tem
     precedência sobre tudo — nunca prossegue para escrita, em nenhum dos
@@ -728,6 +779,8 @@ def _classificar_estado_revalidado(
         return ResourceOutcome(resultado=RESULTADO_CONFLITO_NA_REVALIDACAO)
     if estado.iac_tipo in _IAC_DETECTADO:
         return ResourceOutcome(resultado=RESULTADO_IAC_DETECTADO_NA_REVALIDACAO)
+    if estado.tag_similar_encontrada:
+        return ResourceOutcome(resultado=RESULTADO_TAG_SIMILAR_NA_REVALIDACAO)
     return None
 
 
@@ -901,6 +954,7 @@ _CATEGORIA_POR_RESULTADO = {
     RESULTADO_JA_TAGUEADO: (CATEGORIA_JA_OK, "revalidacao"),
     RESULTADO_CONFLITO_NA_REVALIDACAO: (CATEGORIA_CONFLITO, "revalidacao"),
     RESULTADO_IAC_DETECTADO_NA_REVALIDACAO: (CATEGORIA_PULADO_IAC, "revalidacao"),
+    RESULTADO_TAG_SIMILAR_NA_REVALIDACAO: (CATEGORIA_REVISAR_TAG_SIMILAR, "revalidacao"),
     RESULTADO_REVALIDACAO_FALHOU: (CATEGORIA_FALHOU, "revalidacao"),
 }
 

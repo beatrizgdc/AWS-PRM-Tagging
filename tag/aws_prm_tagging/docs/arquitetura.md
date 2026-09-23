@@ -17,10 +17,15 @@ seções `decision.py`/`tag_execution.py` abaixo.
 3. `regions.get_active_regions` para listar regiões comerciais ativas.
 4. `services.load_services` para carregar a lista oficial de serviços do CSV.
 5. Para cada região: `resource_discovery.discover_generic_resources`,
-   `discover_bedrock_resources` e `discover_eks_resources`, cada chamada
-   isolada em `try/except` — uma falha em uma etapa/região não aborta o
-   restante da execução, e é registrada em `falhas_descoberta` (ver
-   `report.py` abaixo), não só no log.
+   `discover_bedrock_resources` e `discover_eks_resources`. Cada uma devolve
+   `(recursos, falhas)` — uma falha de API (`ClientError`, ex.: `AccessDenied`,
+   throttling esgotado, falha no meio da paginação) é capturada DENTRO da
+   função e volta na segunda posição da tupla, sem abortar o restante da
+   descoberta nem daquela etapa/região nem das seguintes; `main.py` só
+   estende `falhas_descoberta` com o que recebe. O `try/except Exception`
+   que também existe em `main.py` ao redor de cada chamada é só um backstop
+   para bug de programação genuíno — a falha de API esperada nunca chega a
+   levantar exceção até ali.
 6. `ou_tree.discover_ou_tree` (uma vez, não por região).
 7. `report.build_report` monta o JSON final e `main.py` grava em disco.
 
@@ -66,8 +71,15 @@ correspondente do CSV via a tabela interna `_NAMESPACE_TO_CODE`. Essa tabela é
 construída a partir de convenções documentadas de nomenclatura de ARN da AWS,
 não do CSV (o CSV não traz essa correspondência).
 
-Duas ambiguidades conhecidas, documentadas em comentários no próprio arquivo:
+Três ambiguidades/restrições de escopo conhecidas, documentadas em
+comentários no próprio arquivo:
 
+- **`ssm`** — o CSV traz a nota "OpsCenter only" para "AWS Systems
+  Manager", mas o namespace `ssm` nos ARNs cobre muito mais que isso
+  (parameters, documents, maintenance windows, associations...).
+  `classify_arn` restringe pelo tipo de recurso do ARN (mesmo padrão do
+  `ec2` abaixo): só `opsitem` é classificado como Systems Manager; qualquer
+  outro tipo sob `ssm` devolve `None` e fica fora da descoberta.
 - **`ec2`** é usado tanto por Amazon EC2 quanto pelos recursos de rede
   faturados sob a linha "AWS Transit Gateway" do CSV (mesmo código de
   produto `AmazonVPC`). Desambiguado por tipo de recurso dentro do ARN
@@ -102,7 +114,13 @@ comerciais.
 
 ### `resource_discovery.py`
 
-Três funções públicas, cada uma isolada e reutilizável nos próximos estágios:
+Três funções públicas, cada uma isolada e reutilizável nos próximos
+estágios. Todas devolvem `(recursos, falhas)` — `falhas` é uma lista de
+dicts `{"regiao", "etapa", "erro"}` no mesmo formato que `main.py` grava em
+`falhas_descoberta` (ver `report.py` abaixo): uma `ClientError` capturada
+durante a descoberta (ex.: `AccessDenied`, throttling esgotado, falha no
+meio da paginação) volta como um item de `falhas`, não só um log — antes
+essas falhas eram só logadas aqui dentro e nunca chegavam ao JSON de saída.
 
 - **`discover_generic_resources`** — pagina `resourcegroupstaggingapi:GetResources`
   sem filtro de tipo (para não depender de uma lista de filtros mantida à
@@ -133,7 +151,13 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   `typeEquals=APPLICATION` (profiles de sistema/cross-region não suportam tag
   e são excluídos por construção, não por filtro posterior), depois
   `bedrock:ListTagsForResource` por profile. `tipo_recurso` do resultado:
-  `application_inference_profile`.
+  `application_inference_profile`. Se a leitura de tags de UM profile falhar,
+  o recurso ainda entra no relatório (com `tags={}`, para não ficar
+  invisível), mas a falha vira uma entrada em `falhas_descoberta` — sem
+  isso, o relatório diria "sem tag" com confiança quando na verdade o
+  estado real é desconhecido. Um `AccessDenied` geral ao listar profiles
+  (região sem Bedrock habilitado, comum) é tratado como esperado e NÃO vira
+  falha de descoberta — só um `ClientError` de outro tipo nesse nível vira.
 - **`discover_eks_resources`** — para cada cluster (`eks:ListClusters` +
   `DescribeCluster`): tags do cluster (`tipo_recurso="cluster"`); para cada
   node group (`ListNodegroups` + `DescribeNodegroup`): tags do node group
@@ -159,6 +183,17 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   Antes desta correção, uma conta com N clusters EKS relistava todos os
   load balancers da região N vezes.
 
+  Falha ao listar clusters, descrever um cluster específico, listar/descrever
+  um node group — cada um desses pontos "largos" vira uma entrada em
+  `falhas_descoberta` (com o cluster/node group envolvido continuando pulado,
+  não travando o resto da região). Falhas mais granulares dentro de um
+  cluster (um chunk de instâncias/volumes EC2, um Auto Scaling Group
+  isolado) continuam só logadas — o mesmo EC2/EBS ainda aparece no
+  relatório via `discover_generic_resources` mesmo que o enriquecimento
+  específico de EKS falhe, então o recurso em si não fica invisível, só
+  perde o `tipo_recurso` mais específico (registrado como limitação
+  conhecida em [melhorias-futuras.md](melhorias-futuras.md)).
+
   As instâncias EC2 e volumes EBS dos nodes **também** são descobertos pelo
   passo genérico (o namespace `ec2` não está em `_DEDICATED_SERVICE_CODES`),
   então o mesmo ARN pode aparecer duas vezes — uma com `servico="Amazon EC2"`
@@ -169,10 +204,11 @@ Três funções públicas, cada uma isolada e reutilizável nos próximos estág
   como a descoberta de EKS roda depois da genérica no loop de `main.py`, a
   entrada mais específica (a do EKS) é a que sobrevive.
 
-Toda chamada de API está envolvida em `try/except ClientError` com log e
-`continue`/retorno parcial — uma falha pontual (ex.: `AccessDenied` em uma
-região, serviço não disponível em uma região) nunca aborta a execução do
-restante do script.
+Toda chamada de API está envolvida em `try/except ClientError` com log,
+`continue`/retorno parcial e (nos pontos "largos" de cada função, ver acima)
+uma entrada na lista de `falhas` devolvida — uma falha pontual (ex.:
+`AccessDenied` em uma região, serviço não disponível em uma região) nunca
+aborta a execução do restante do script.
 
 Cada recurso do relatório tem um campo `tipo_recurso` (`str | None`) —
 `None` no passo genérico (onde `servico` já identifica o recurso sem
@@ -259,12 +295,15 @@ final no formato descrito no `README.md` do estágio 1. Ambas são funções
 puras, sem I/O.
 
 Recebe também `falhas_descoberta` (opcional, de `main.py`) — uma entrada
-`{"regiao", "etapa", "erro"}` por combinação região/etapa
-(genérico/bedrock/eks) em que a descoberta levantou uma exceção não
-tratada. Existe para que "0 recursos" e "a descoberta falhou nessa região"
-nunca fiquem indistinguíveis no único artefato que a Etapa 4/dashboard
-consome — antes, uma falha de descoberta só ia para o log da execução, que
-nunca chega no push para o dashboard central.
+`{"regiao", "etapa", "erro"}` por falha de API capturada durante a
+descoberta (genérico/bedrock/eks), devolvida pelas próprias funções de
+`resource_discovery.py` (ver seção acima); `main.py` só concatena o que
+recebe de volta, e continua com um `except Exception` próprio como backstop
+para bug de programação genuíno, não para `ClientError` esperado. Existe
+para que "0 recursos" e "a descoberta falhou nessa região" nunca fiquem
+indistinguíveis no único artefato que a Etapa 4/dashboard consome — antes,
+uma falha de descoberta só ia para o log da execução, que nunca chega no
+push para o dashboard central.
 
 ### `decision.py`
 
@@ -366,7 +405,10 @@ recurso, o orquestrador relê o estado atual dele na AWS (`revalidate=True`
 por padrão, `--no-revalidate` desliga — mas **nunca aceito junto de
 `dry_run=False`**, ver `RevalidacaoObrigatoriaError` abaixo) e reaplica a
 MESMA regra de precedência de `decision.py` — não só compara o valor da
-tag. Quatro desfechos, nesta ordem, nenhum gera chamada de escrita:
+tag (agora de verdade nos 3 caminhos de revalidação: genérico, EKS/Bedrock
+e ELB — uma versão anterior conferia IaC mas não tag similar, deixando um
+`AWS-APN-ID` criado entre a Etapa 2a e esta execução passar despercebido).
+Cinco desfechos, nesta ordem, nenhum gera chamada de escrita:
 
 1. **A leitura de revalidação FALHOU** (ex.: `AccessDenied`, throttling
    esgotado) → `"revalidacao_falhou"`. Tem precedência sobre tudo — sem
@@ -381,6 +423,10 @@ tag. Quatro desfechos, nesta ordem, nenhum gera chamada de escrita:
    nunca tem precedência sobre um conflito) → `"iac_detectado_na_revalidacao"`
    — cobre o recurso que passou a ser gerenciado por IaC entre a Etapa 1/2a
    e esta execução.
+5. Tag ausente, sem IaC, mas uma tag de grafia parecida apareceu entre a
+   Etapa 2a e esta execução → `"tag_similar_encontrada_na_revalidacao"` —
+   mesma razão de `decision.py`: aplicar `aws-apn-id` por cima criaria uma
+   segunda chave quase-duplicada em vez de corrigir o erro original.
 
 Isso é o que torna reexecuções idempotentes por construção, sem nenhum
 arquivo de progresso: o estado do recurso na AWS *é* a fonte da verdade de
@@ -393,6 +439,15 @@ ARNs pedidos são encontrados), e `eks:ListTagsForResource` /
 `bedrock:ListTagsForResource` / `elasticloadbalancing:DescribeTags` para os
 dedicados — mesmos clients já usados por `resource_discovery.py` na Etapa
 1, e já devolvem o conjunto completo sem custo extra.
+
+`elasticloadbalancing:DescribeTags` aceita até 20 ARNs por chamada, mas 1
+load balancer inexistente no lote (ex.: apagado entre a Etapa 1 e esta
+execução) derruba a chamada inteira (`LoadBalancerNotFound`) — sem
+tratamento especial, isso marcaria os outros até 19 ARNs do mesmo lote como
+`revalidacao_falhou` também, mesmo existindo e estando OK.
+`_revalidate_elb` trata isso: quando o lote falha, tenta de novo 1 ARN por
+vez só para aquele lote, isolando qual ARN é de fato o problema em vez de
+bloquear os demais.
 
 `RevalidacaoObrigatoriaError`: `run_tagging_execution` recusa
 `dry_run=False` junto de `revalidate=False` — em live, a proteção do item

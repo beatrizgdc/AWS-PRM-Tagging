@@ -107,12 +107,16 @@ def _run_map(args: argparse.Namespace) -> int:
         logger.info("Processando região %s (%d/%d)", region, idx, total_regions)
 
         try:
-            all_resources.extend(
-                resource_discovery.discover_generic_resources(
-                    session, region, service_list, args.expected_tag_value
-                )
+            recursos, falhas = resource_discovery.discover_generic_resources(
+                session, region, service_list, args.expected_tag_value
             )
+            all_resources.extend(recursos)
+            falhas_descoberta.extend(falhas)
         except Exception as exc:
+            # Backstop para falha inesperada (bug de programação) — as
+            # falhas de API já esperadas (ClientError) são capturadas
+            # dentro de resource_discovery.py e voltam na lista `falhas`
+            # acima, não chegam a levantar exceção até aqui.
             logger.exception(
                 "Falha inesperada na descoberta genérica em %s — pulando esta etapa "
                 "nesta região e continuando",
@@ -121,11 +125,11 @@ def _run_map(args: argparse.Namespace) -> int:
             falhas_descoberta.append({"regiao": region, "etapa": "generico", "erro": str(exc)})
 
         try:
-            all_resources.extend(
-                resource_discovery.discover_bedrock_resources(
-                    session, region, service_list, args.expected_tag_value
-                )
+            recursos, falhas = resource_discovery.discover_bedrock_resources(
+                session, region, service_list, args.expected_tag_value
             )
+            all_resources.extend(recursos)
+            falhas_descoberta.extend(falhas)
         except Exception as exc:
             logger.exception(
                 "Falha inesperada na descoberta de Bedrock em %s — pulando esta etapa "
@@ -135,11 +139,11 @@ def _run_map(args: argparse.Namespace) -> int:
             falhas_descoberta.append({"regiao": region, "etapa": "bedrock", "erro": str(exc)})
 
         try:
-            all_resources.extend(
-                resource_discovery.discover_eks_resources(
-                    session, region, account_id, args.expected_tag_value
-                )
+            recursos, falhas = resource_discovery.discover_eks_resources(
+                session, region, account_id, args.expected_tag_value
             )
+            all_resources.extend(recursos)
+            falhas_descoberta.extend(falhas)
         except Exception as exc:
             logger.exception(
                 "Falha inesperada na descoberta de EKS em %s — pulando esta etapa "

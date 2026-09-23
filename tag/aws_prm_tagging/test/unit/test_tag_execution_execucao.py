@@ -65,6 +65,38 @@ class _FakeEksClient:
         return {"tags": self._tags_por_arn.get(resourceArn, {})}
 
 
+class _FakeElbClient:
+    """Stub de `elbv2` — só `describe_tags`. `arns_invalidos` simula o
+    comportamento documentado da API real: pedir tags de um lote que
+    contém pelo menos 1 ARN inexistente derruba a chamada INTEIRA (não só
+    o ARN ruim) — usado para testar o fallback de retry 1-a-1 em
+    `_revalidate_elb`."""
+
+    def __init__(
+        self,
+        tags_completos: dict[str, dict[str, str]] | None = None,
+        arns_invalidos: set[str] | None = None,
+    ):
+        self._tags_por_arn: dict[str, dict[str, str]] = {
+            arn: dict(tags) for arn, tags in (tags_completos or {}).items()
+        }
+        self._arns_invalidos = arns_invalidos or set()
+        self.chamadas: list[list[str]] = []
+
+    def describe_tags(self, ResourceArns):
+        self.chamadas.append(list(ResourceArns))
+        if any(arn in self._arns_invalidos for arn in ResourceArns):
+            raise ClientError(
+                {"Error": {"Code": "LoadBalancerNotFoundException", "Message": "não encontrado"}}, "DescribeTags"
+            )
+        return {
+            "TagDescriptions": [
+                {"ResourceArn": arn, "Tags": [{"Key": k, "Value": v} for k, v in self._tags_por_arn.get(arn, {}).items()]}
+                for arn in ResourceArns
+            ]
+        }
+
+
 class _SpyExecutor:
     def __init__(self):
         self.arns_chamados: list[str] = []
@@ -209,6 +241,80 @@ def test_revalidacao_generica_conflito_tem_precedencia_sobre_iac(fake_session_fa
 
     assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
     assert spy.arns_chamados == []
+
+
+def test_revalidacao_generica_detecta_tag_similar_e_nunca_tenta_escrever(fake_session_factory):
+    """Regressão do bug corrigido: a revalidação já conferia IaC, mas nunca
+    checava tag similar — um `AWS-APN-ID` (case diferente) criado entre a
+    Etapa 2a e esta execução passava despercebido, e o `--live` aplicaria
+    `aws-apn-id` por cima, gerando uma segunda chave quase-duplicada no
+    recurso."""
+    arn = "arn:aws:s3:::bucket-tag-similar-surgiu-depois"
+    session = fake_session_factory(
+        {"resourcegroupstaggingapi": _FakeTaggingClient(tags_completos={arn: {"AWS-APN-ID": "pc:outro-parceiro"}})}
+    )
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_tagging_execution(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_TAG_SIMILAR_NA_REVALIDACAO
+    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR
+    assert spy.arns_chamados == []
+
+
+def test_revalidacao_generica_iac_tem_precedencia_sobre_tag_similar(fake_session_factory):
+    """Mesma regra de precedência de `decision.py`: quando a tag está
+    ausente e o recurso tem AMBOS os sinais (IaC e tag similar), IaC vence
+    — nunca vira `revisar_tag_similar` nesse caso."""
+    arn = "arn:aws:s3:::bucket-iac-e-tag-similar"
+    session = fake_session_factory(
+        {
+            "resourcegroupstaggingapi": _FakeTaggingClient(
+                tags_completos={arn: {_TAG_CLOUDFORMATION: "minha-stack", "AWS-APN-ID": "pc:outro-parceiro"}}
+            )
+        }
+    )
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_tagging_execution(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_IAC_DETECTADO_NA_REVALIDACAO
+    assert spy.arns_chamados == []
+
+
+def test_revalidacao_elb_lote_falha_isola_arn_invalido_dos_demais(
+    fake_session_factory, decisao_factory, relatorio_decisao_factory
+):
+    """Um load balancer apagado não pode derrubar a revalidação dos demais
+    do mesmo lote de até 20 ARNs — o módulo tenta de novo 1 ARN por vez
+    quando o lote inteiro falha, isolando qual ARN é de fato o problema."""
+    arn_ok = "arn:lb-ok"
+    arn_apagado = "arn:lb-apagado"
+    client = _FakeElbClient(tags_completos={arn_ok: {}}, arns_invalidos={arn_apagado})
+    session = fake_session_factory({"elbv2": client})
+    spy = _SpyExecutor()
+    relatorio = relatorio_decisao_factory(
+        [
+            decisao_factory(arn=arn_ok, servico="Amazon EKS", tipo_recurso="load_balancer"),
+            decisao_factory(arn=arn_apagado, servico="Amazon EKS", tipo_recurso="load_balancer"),
+        ]
+    )
+
+    resultado = tag_execution.run_tagging_execution(
+        relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    por_arn = {r["arn"]: r for r in resultado["recursos"]}
+    assert por_arn[arn_ok]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
+    assert por_arn[arn_apagado]["resultado"] == tag_execution.RESULTADO_REVALIDACAO_FALHOU
+    assert spy.arns_chamados == [arn_ok]
+    # Primeira chamada tenta o lote inteiro (falha); as 2 seguintes são o
+    # retry 1-a-1.
+    assert client.chamadas == [[arn_ok, arn_apagado], [arn_ok], [arn_apagado]]
 
 
 def test_revalidacao_dedicada_eks_detecta_conflito_e_nunca_tenta_escrever(

@@ -155,6 +155,76 @@ relacionamento do programa) qual versão é a vigente, e atualizar o CSV
 (nunca reescrito à mão, sempre substituído pelo arquivo oficial) se
 necessário.
 
+## Falhas granulares dentro da descoberta de EKS ainda só ficam no log
+
+**O quê:** `falhas_descoberta` agora cobre os pontos "largos" de
+`discover_eks_resources` (listar clusters, descrever um cluster, listar ou
+descrever um node group, listar load balancers da região). Falhas mais
+granulares dentro do processamento de um cluster — um chunk de
+`describe_instances`/`describe_volumes` (até 100 IDs por chamada), ou um
+Auto Scaling Group isolado (`describe_auto_scaling_groups`) — continuam só
+logadas, não aparecem em `falhas_descoberta`.
+
+**Por que não foi resolvido agora:** o impacto é menor que os outros casos:
+a mesma instância EC2/volume EBS de um node ainda aparece no relatório via
+`discover_generic_resources` (namespace `ec2` não é excluído do passo
+genérico) mesmo que o enriquecimento específico de EKS falhe — o recurso
+não fica invisível, só perde o `tipo_recurso="node"`/`"ebs_volume"` mais
+específico e a associação ao cluster. Instrumentar esses pontos também
+exigiria encadear o acumulador de falhas por mais 4 funções auxiliares
+(`_get_asg_instance_ids`, `_get_node_instance_ids_by_cluster_tags`,
+`_instances_arns_and_tags`, `_volumes_arns_and_tags`), custo desproporcional
+ao ganho nesse caso específico.
+
+**O que destrava:** se no futuro o rótulo `tipo_recurso`/associação a
+cluster desses casos passar a importar para alguma decisão automática (hoje
+só é informativo no relatório), vale fechar essa lacuna também.
+
+## Regex do valor esperado da tag aceita formato mais largo que o real
+
+**O quê:** `main._EXPECTED_TAG_VALUE_PATTERN` (`^pc:[A-Za-z0-9]+$`) aceita
+maiúsculas e qualquer tamanho depois do prefixo `pc:`. O único exemplo
+confirmado do guia oficial (`pc:xxxxxxxxxxxxxxxxxxxxxxxxx`) tem 25
+caracteres minúsculos — se esse for o formato real de todo product code da
+EMPRESAX, a regex deveria ser `^pc:[a-z0-9]{25}$`. O risco de deixar como
+está: como a comparação de valor é case-sensitive e exata
+(`tag_status.get_tag_status`), um erro de digitação em `--live` (ex.:
+maiúscula trocada, um caractere a mais/a menos) tagueia a conta inteira com
+um valor errado — e depois disso, toda tentativa de corrigir aparece como
+`conflito` para o valor certo, nunca sobrescrito automaticamente.
+
+**Por que não foi resolvido agora:** apertar a regex exige confirmar que
+TODO product code de billing usado pela EMPRESAX segue exatamente esse
+formato (25 caracteres, minúsculo) — um único exemplo do guia não é
+confirmação suficiente para travar a validação de um jeito que rejeitaria
+um formato válido não previsto.
+
+**O que destrava:** confirmação do gestor/PDM sobre o formato exato (e
+fixo) dos product codes usados pela EMPRESAX no PRM.
+
+## Namespaces de serviços mais novos ausentes do mapeamento genérico
+
+**O quê:** `services._NAMESPACE_TO_CODE` não tem entrada para
+`emr-serverless` (EMR Serverless), `s3express` (S3 Express One Zone),
+`mediapackagev2` (MediaPackage v2) nem `timestream-influxdb` (Timestream
+for InfluxDB) — o CSV oficial também não tem uma linha própria para nenhum
+dos 4, só para o serviço "pai" (Amazon EMR, Amazon S3, AWS Elemental
+MediaPackage, Amazon Timestream). Hoje qualquer recurso desses 4 namespaces
+é ignorado por completo pela descoberta genérica (`classify_arn` devolve
+`None`).
+
+**Por que não foi resolvido agora:** é plausível que esses 4 sejam
+faturados sob o mesmo Product Service Code da linha-mãe do CSV, mas não é
+garantido — a AWS pode faturar um serviço "v2"/"serverless" sob um código
+de produto próprio, diferente do original. Mapear errado aqui não é
+neutro: o recurso passaria a ser tagueado (então "descoberto" e contado)
+sob um Product Service Code que pode não ser o real, distorcendo a
+atribuição de receita em vez de só deixar o recurso de fora.
+
+**O que destrava:** confirmar com a AWS (ou a documentação de billing
+vigente) o Product Service Code real de cada um dos 4 antes de adicionar
+qualquer entrada nova em `_NAMESPACE_TO_CODE`.
+
 ## Refatorações de código (sem risco de comportamento)
 
 Dívida técnica pura — nenhuma delas muda o que o código faz, só como está
@@ -164,12 +234,15 @@ organizado. Baixa prioridade, sem prazo:
   arquivo é docstring). Vale dividir em módulos menores (revalidação,
   executores, relatório) quando o arquivo crescer mais — hoje ainda é
   navegável.
-- **Duplicação de constantes entre módulos** — `"Amazon EKS"`/`"Amazon
-  Bedrock"` como string literal, o conjunto de tipos de IaC "detectado"
-  (`_IAC_DETECTADO`), os `tipo_recurso` de EKS/Bedrock — repetidos em
-  `decision.py`, `tag_execution.py` e `resource_discovery.py`. Um
-  `constants.py` compartilhado resolveria, mas é uma mudança que toca os 3
-  módulos de uma vez.
+- **Duplicação de constantes E de funções entre módulos** — `"Amazon
+  EKS"`/`"Amazon Bedrock"` como string literal, o conjunto de tipos de IaC
+  "detectado" (`_IAC_DETECTADO`), os `tipo_recurso` de EKS/Bedrock —
+  repetidos em `decision.py`, `tag_execution.py` e `resource_discovery.py`.
+  Um `constants.py` compartilhado resolveria, mas é uma mudança que toca os
+  3 módulos de uma vez. Além das constantes, `_chunk` (idêntica) e
+  `_get_resources_page` (praticamente idêntica) existem hoje tanto em
+  `resource_discovery.py` quanto em `tag_execution.py` — mesmo caso, um
+  módulo utilitário compartilhado resolveria as duas coisas juntas.
 - **`retry.py` é um retry próprio** — o botocore já oferece
   `Config(retries={"mode": "adaptive"})` nativamente. Trocar exigiria
   reavaliar se a diferenciação atual entre "erro retryable" (throttling) e
