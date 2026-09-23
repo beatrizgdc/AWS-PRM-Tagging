@@ -236,11 +236,21 @@ def discover_bedrock_resources(
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
         if error_code in ("AccessDeniedException", "UnrecognizedClientException"):
-            # Deliberadamente NÃO vira falha de descoberta: Bedrock não está
-            # disponível/habilitado em todas as regiões, então esse acesso
-            # negado é esperado com frequência, não um sinal de problema.
+            # NÃO é tratado como benigno silenciosamente: `AccessDenied`
+            # tipicamente indica falta de permissão IAM, não "região sem
+            # Bedrock" — as duas coisas não dão pra distinguir com certeza
+            # só pelo código do erro (precisaria de confirmação em sandbox,
+            # ver melhorias-futuras.md). Uma versão anterior assumia que era
+            # sempre benigno e não registrava falha — testado e comprovado
+            # errado: uma role sem `bedrock:ListInferenceProfiles` produz
+            # exatamente esse erro em TODAS as regiões, e o relatório
+            # mostraria "0 profiles" com confiança total, escondendo um
+            # problema de permissão real na conta inteira. Por isso sempre
+            # vira falha agora, só com um nível de log mais baixo.
             logger.warning(
-                "Sem acesso ao Bedrock em %s (%s) — pulando região para este serviço",
+                "Falha ao listar Bedrock application inference profiles em %s (%s) — "
+                "pode ser região sem Bedrock ou falta de permissão IAM, não dá para "
+                "distinguir com certeza só pelo código de erro",
                 region,
                 error_code,
             )
@@ -248,14 +258,14 @@ def discover_bedrock_resources(
             logger.exception(
                 "Falha ao listar Bedrock application inference profiles em %s", region
             )
-            erro = exc.response.get("Error", {})
-            falhas.append(
-                {
-                    "regiao": region,
-                    "etapa": "bedrock",
-                    "erro": f"list_inference_profiles: {erro.get('Code', '')}: {erro.get('Message', str(exc))}",
-                }
-            )
+        erro = exc.response.get("Error", {})
+        falhas.append(
+            {
+                "regiao": region,
+                "etapa": "bedrock",
+                "erro": f"list_inference_profiles: {erro.get('Code', '')}: {erro.get('Message', str(exc))}",
+            }
+        )
     logger.info(
         "Região %s: %d Bedrock application inference profiles encontrados",
         region,

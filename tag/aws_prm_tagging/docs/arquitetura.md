@@ -155,9 +155,17 @@ essas falhas eram só logadas aqui dentro e nunca chegavam ao JSON de saída.
   o recurso ainda entra no relatório (com `tags={}`, para não ficar
   invisível), mas a falha vira uma entrada em `falhas_descoberta` — sem
   isso, o relatório diria "sem tag" com confiança quando na verdade o
-  estado real é desconhecido. Um `AccessDenied` geral ao listar profiles
-  (região sem Bedrock habilitado, comum) é tratado como esperado e NÃO vira
-  falha de descoberta — só um `ClientError` de outro tipo nesse nível vira.
+  estado real é desconhecido. Qualquer `ClientError` ao listar profiles
+  (`AccessDenied` incluso) também vira `falhas_descoberta` — uma versão
+  anterior tratava `AccessDenied`/`UnrecognizedClientException` como "região
+  sem Bedrock, esperado" e não registrava nada; testado e comprovado errado:
+  `AccessDenied` tipicamente indica falta de permissão IAM, não região sem
+  suporte, e as duas coisas não dão pra distinguir com segurança só pelo
+  código do erro (precisa de confirmação em sandbox, ver
+  [melhorias-futuras.md](melhorias-futuras.md)) — sem essa falha registrada,
+  uma role sem `bedrock:ListInferenceProfiles` produzia "0 profiles" com
+  confiança total em toda região, escondendo um problema de permissão real
+  na conta inteira.
 - **`discover_eks_resources`** — para cada cluster (`eks:ListClusters` +
   `DescribeCluster`): tags do cluster (`tipo_recurso="cluster"`); para cada
   node group (`ListNodegroups` + `DescribeNodegroup`): tags do node group
@@ -410,12 +418,19 @@ e ELB — uma versão anterior conferia IaC mas não tag similar, deixando um
 `AWS-APN-ID` criado entre a Etapa 2a e esta execução passar despercebido).
 Cinco desfechos, nesta ordem, nenhum gera chamada de escrita:
 
-1. **A leitura de revalidação FALHOU** (ex.: `AccessDenied`, throttling
-   esgotado) → `"revalidacao_falhou"`. Tem precedência sobre tudo — sem
+1. **A leitura de revalidação FALHOU** → tem precedência sobre tudo — sem
    saber o estado atual do recurso, a resposta segura é não arriscar
    sobrescrever um conflito que a leitura falhou em enxergar. (Uma versão
    anterior deixava a tentativa prosseguir nesse caso — corrigido: em modo
-   live isso significava tentar `tag:TagResources`/etc. às cegas.)
+   live isso significava tentar `tag:TagResources`/etc. às cegas.) Dentro
+   desse caso, o código do erro decide o resultado exato: se for um dos
+   códigos de "recurso não encontrado" (ex.: um load balancer apagado entre
+   a Etapa 1 e esta execução) → `"recurso_nao_encontrado_na_revalidacao"` —
+   mesma distinção que já existe na classificação de erro de escrita
+   (`_classificar_erro_aws`), "recurso sumiu" é o relatório da Etapa 1 estar
+   desatualizado, não deveria disparar o mesmo alerta que uma falha real;
+   qualquer outro erro (`AccessDenied`, throttling esgotado etc.) →
+   `"revalidacao_falhou"`, genérico.
 2. Valor já bate com o esperado → `"ja_tagueado"`.
 3. Valor presente e diferente do esperado → `"conflito_na_revalidacao"` —
    nunca sobrescreve um conflito só porque ele apareceu depois da Etapa 2a.

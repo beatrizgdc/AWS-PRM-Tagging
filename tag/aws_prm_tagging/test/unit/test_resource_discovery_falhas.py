@@ -99,16 +99,24 @@ class _FakeBedrockClientAccessDeniedGeral:
         )
 
 
-def test_discover_bedrock_resources_access_denied_geral_nao_vira_falha_descoberta():
-    """Bedrock não está disponível/habilitado em toda região — esse
-    `AccessDenied` específico é esperado com frequência, não deveria poluir
-    `falhas_descoberta` (ver comentário no código)."""
+def test_discover_bedrock_resources_access_denied_geral_tambem_vira_falha_descoberta():
+    """Regressão do bug corrigido: uma versão anterior tratava
+    `AccessDeniedException`/`UnrecognizedClientException` ao listar profiles
+    como "região sem Bedrock, esperado" e NÃO registrava falha — testado e
+    comprovado errado (ver melhorias-futuras.md): `AccessDenied` tipicamente
+    é falta de permissão IAM, não ausência regional do serviço, e as duas
+    coisas não dão pra distinguir com segurança só pelo código do erro. Sem
+    registrar a falha, uma role sem `bedrock:ListInferenceProfiles` produzia
+    "0 profiles" com confiança total em toda região, escondendo um problema
+    de permissão real na conta inteira."""
     session = _FakeSession({"bedrock": _FakeBedrockClientAccessDeniedGeral()})
     recursos, falhas = resource_discovery.discover_bedrock_resources(
         session, "us-east-1", _service_list(), "pc:teste"
     )
     assert recursos == []
-    assert falhas == []
+    assert len(falhas) == 1
+    assert falhas[0]["etapa"] == "bedrock"
+    assert "AccessDeniedException" in falhas[0]["erro"]
 
 
 class _FakeBedrockClientErroGenerico:

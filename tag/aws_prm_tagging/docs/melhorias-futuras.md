@@ -155,6 +155,49 @@ relacionamento do programa) qual versão é a vigente, e atualizar o CSV
 (nunca reescrito à mão, sempre substituído pelo arquivo oficial) se
 necessário.
 
+## Códigos de erro "não encontrado" do ELBv2 sem confirmação em sandbox
+
+**O quê:** `tag_execution._CODIGOS_RECURSO_NAO_ENCONTRADO` usa
+`LoadBalancerNotFoundException`/`TargetGroupNotFoundException`/
+`ListenerNotFoundException`/`RuleNotFoundException`/
+`TrustStoreNotFoundException` (com sufixo `Exception`) — corrigido a partir
+de uma versão anterior que tinha esses 5 códigos sem o sufixo, inconsistente
+com os outros 3 códigos do mesmo conjunto (`ResourceNotFoundException`,
+`ClusterNotFoundException`, `NodegroupNotFoundException`, todos com
+sufixo) e com o padrão de API modelada do ELBv2 (shape name == Code).
+
+**Por que não foi resolvido com confirmação total:** é uma aposta de alta
+confiança baseada no padrão da API, não uma confirmação contra a AWS real —
+não há acesso a uma conta com um load balancer/target group/listener/regra
+apagado para testar contra o serviço de verdade.
+
+**O que destrava:** testar em sandbox (apagar um load balancer referenciado
+num relatório de decisão e rodar `apply --live`) e conferir o `Code` exato
+que `elasticloadbalancing:DescribeTags`/`AddTags` devolve.
+
+## Sinal mais preciso de "região sem Bedrock" (reduzir ruído de falhas_descoberta)
+
+**O quê:** `discover_bedrock_resources` hoje trata QUALQUER `ClientError` ao
+listar profiles (`AccessDenied` incluso) como falha de descoberta — corrigido
+de uma versão anterior que assumia `AccessDeniedException`/
+`UnrecognizedClientException` como "região sem Bedrock, esperado" e não
+registrava nada (testado e comprovado errado: esconde falta de permissão
+IAM real em todas as regiões, ver commit que introduziu esta correção).
+
+**Por que não foi resolvido com mais precisão:** não há como confirmar sem
+sandbox se existe um código de erro (ou outro sinal) que distinga com
+segurança "região sem Bedrock habilitado" de "falta de permissão IAM" — por
+ora, a resposta mais segura é reportar sempre e deixar a revisão humana
+decidir, mesmo que isso gere entradas de `falhas_descoberta` para regiões
+onde Bedrock de fato não está disponível (ruído aceitável perto do risco de
+esconder uma falha de permissão real).
+
+**O que destrava:** testar em sandbox (1) uma região onde Bedrock realmente
+não está disponível e (2) uma role sem `bedrock:ListInferenceProfiles`,
+comparando os erros exatos devolvidos — se houver uma diferença confiável
+(código, mensagem, ou outro sinal), reintroduzir uma exceção mais criteriosa
+no código.
+
 ## Falhas granulares dentro da descoberta de EKS ainda só ficam no log
 
 **O quê:** `falhas_descoberta` agora cobre os pontos "largos" de

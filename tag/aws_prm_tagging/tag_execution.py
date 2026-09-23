@@ -122,16 +122,28 @@ estratégia:
   `resource_discovery.discover_eks_resources`, também já completo.
 
 **Se a leitura de revalidação falhar** (ex.: `AccessDenied` na permissão de
-leitura, throttling esgotado), o recurso é marcado `"revalidacao_falhou"` e
-NUNCA prossegue para a tentativa de escrita — nem em dry-run, nem em live.
-(Uma versão anterior deste módulo deixava a tentativa prosseguir quando a
-revalidação falhava — o que, em modo live, significava tentar
-`tag:TagResources`/etc. sobre um recurso cujo estado atual era desconhecido,
-arriscando sobrescrever um conflito que a leitura de revalidação falhou em
-enxergar. Corrigido: falha de leitura vira o mesmo tipo de "não escrever"
-que um conflito genuíno.) Por isso `dry_run=False` (live) nunca aceita
-`revalidate=False` — ver `RevalidacaoObrigatoriaError` — sem a revalidação
-ligada, a escrita real perderia essa proteção inteira.
+leitura, throttling esgotado), o recurso NUNCA prossegue para a tentativa de
+escrita — nem em dry-run, nem em live. (Uma versão anterior deste módulo
+deixava a tentativa prosseguir quando a revalidação falhava — o que, em modo
+live, significava tentar `tag:TagResources`/etc. sobre um recurso cujo
+estado atual era desconhecido, arriscando sobrescrever um conflito que a
+leitura de revalidação falhou em enxergar. Corrigido: falha de leitura vira
+o mesmo tipo de "não escrever" que um conflito genuíno.) Por isso
+`dry_run=False` (live) nunca aceita `revalidate=False` — ver
+`RevalidacaoObrigatoriaError` — sem a revalidação ligada, a escrita real
+perderia essa proteção inteira.
+
+Dentro desse caso, o resultado se divide em dois, pelo código do erro
+(`_classificar_estado_revalidado`): se for um dos códigos de "recurso não
+encontrado" (`_CODIGOS_RECURSO_NAO_ENCONTRADO` — ex.: um load balancer
+apagado entre a Etapa 1 e esta execução) →
+`"recurso_nao_encontrado_na_revalidacao"`; qualquer outro erro (permissão,
+throttling esgotado, etc.) → `"revalidacao_falhou"`, genérico. Mesma
+distinção operacional que já existe na classificação de erro de ESCRITA
+(`_classificar_erro_aws`): "recurso sumiu" é o relatório da Etapa 1 estar
+desatualizado, esperado ocasionalmente — não deveria disparar o mesmo alerta
+que uma falha de permissão ou throttling esgotado, que geralmente exige
+ação.
 
 ## Classificação de erro na escrita real (`LiveExecutor`)
 
@@ -188,7 +200,7 @@ misturado com sucesso real na mesma categoria) / `falhou` /
   `ja_tagueado` vira `ja_ok`, `conflito_na_revalidacao` vira `conflito`,
   `iac_detectado_na_revalidacao` vira `pulado_iac`,
   `tag_similar_encontrada_na_revalidacao` vira `revisar_tag_similar`,
-  `revalidacao_falhou` vira `falhou`).
+  `revalidacao_falhou`/`recurso_nao_encontrado_na_revalidacao` viram `falhou`).
 - Os `pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` que a própria
   Etapa 2a já decidiu — nunca passam por este módulo, nunca geram chamada
   nenhuma, entram carregados direto no relatório final com a mesma
@@ -278,6 +290,7 @@ RESULTADO_JA_TAGUEADO = "ja_tagueado"
 RESULTADO_CONFLITO_NA_REVALIDACAO = "conflito_na_revalidacao"
 RESULTADO_IAC_DETECTADO_NA_REVALIDACAO = "iac_detectado_na_revalidacao"
 RESULTADO_TAG_SIMILAR_NA_REVALIDACAO = "tag_similar_encontrada_na_revalidacao"
+RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO = "recurso_nao_encontrado_na_revalidacao"
 RESULTADO_REVALIDACAO_FALHOU = "revalidacao_falhou"
 RESULTADO_ERRO_PERMISSAO = "erro_permissao"
 RESULTADO_RECURSO_NAO_ENCONTRADO = "recurso_nao_encontrado"
@@ -325,11 +338,14 @@ _CODIGOS_RECURSO_NAO_ENCONTRADO = frozenset(
         "NoSuchEntity",
         "ClusterNotFoundException",
         "NodegroupNotFoundException",
-        "LoadBalancerNotFound",
-        "TargetGroupNotFound",
-        "ListenerNotFound",
-        "RuleNotFound",
-        "TrustStoreNotFound",
+        # Códigos do ELBv2 — API modelada (shape name == Code), não estilo
+        # legado sem sufixo. Alta confiança, mas não confirmado em sandbox
+        # (ver melhorias-futuras.md).
+        "LoadBalancerNotFoundException",
+        "TargetGroupNotFoundException",
+        "ListenerNotFoundException",
+        "RuleNotFoundException",
+        "TrustStoreNotFoundException",
     }
 )
 
@@ -770,8 +786,28 @@ def _classificar_estado_revalidado(
     Uma leitura de revalidação que FALHOU (`_RevalidationFailure`) tem
     precedência sobre tudo — nunca prossegue para escrita, em nenhum dos
     dois modos: sem saber o estado atual, a resposta segura é não
-    arriscar sobrescrever um conflito que a leitura falhou em enxergar."""
+    arriscar sobrescrever um conflito que a leitura falhou em enxergar.
+
+    Dentro desse caso, o código do erro ainda é olhado uma vez: se for um
+    dos `_CODIGOS_RECURSO_NAO_ENCONTRADO` (ex.: o recurso foi apagado entre
+    a Etapa 1 e esta execução), o resultado é
+    `RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO` em vez do genérico
+    `RESULTADO_REVALIDACAO_FALHOU` — mesma distinção que já existe na
+    classificação de erro de ESCRITA (`_classificar_erro_aws`): "recurso
+    sumiu" é o relatório da Etapa 1 estar desatualizado (esperado
+    ocasionalmente), não uma falha operacional que precise do mesmo alerta
+    de um `AccessDenied`/throttling esgotado. Não reusa
+    `_classificar_erro_aws` diretamente porque essa função devolve
+    resultados sem entrada em `_CATEGORIA_POR_RESULTADO` (assumem
+    `origem="execucao"` por padrão) — usar um resultado próprio aqui
+    preserva `origem="revalidacao"`, que é a informação real de quando essa
+    classificação aconteceu."""
     if isinstance(estado, _RevalidationFailure):
+        codigo = (estado.detalhe_erro or {}).get("codigo", "")
+        if codigo in _CODIGOS_RECURSO_NAO_ENCONTRADO:
+            return ResourceOutcome(
+                resultado=RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO, detalhe_erro=estado.detalhe_erro
+            )
         return ResourceOutcome(resultado=RESULTADO_REVALIDACAO_FALHOU, detalhe_erro=estado.detalhe_erro)
     if estado.valor_atual == tag_value:
         return ResourceOutcome(resultado=RESULTADO_JA_TAGUEADO)
@@ -955,6 +991,7 @@ _CATEGORIA_POR_RESULTADO = {
     RESULTADO_CONFLITO_NA_REVALIDACAO: (CATEGORIA_CONFLITO, "revalidacao"),
     RESULTADO_IAC_DETECTADO_NA_REVALIDACAO: (CATEGORIA_PULADO_IAC, "revalidacao"),
     RESULTADO_TAG_SIMILAR_NA_REVALIDACAO: (CATEGORIA_REVISAR_TAG_SIMILAR, "revalidacao"),
+    RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO: (CATEGORIA_FALHOU, "revalidacao"),
     RESULTADO_REVALIDACAO_FALHOU: (CATEGORIA_FALHOU, "revalidacao"),
 }
 

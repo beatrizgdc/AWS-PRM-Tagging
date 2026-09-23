@@ -310,7 +310,13 @@ def test_revalidacao_elb_lote_falha_isola_arn_invalido_dos_demais(
 
     por_arn = {r["arn"]: r for r in resultado["recursos"]}
     assert por_arn[arn_ok]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
-    assert por_arn[arn_apagado]["resultado"] == tag_execution.RESULTADO_REVALIDACAO_FALHOU
+    # LoadBalancerNotFoundException é um código de "recurso não encontrado"
+    # (ver _CODIGOS_RECURSO_NAO_ENCONTRADO) — resultado próprio, distinto do
+    # `revalidacao_falhou` genérico (ex.: AccessDenied), mesma distinção que
+    # já existe na classificação de erro de escrita.
+    assert por_arn[arn_apagado]["resultado"] == tag_execution.RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO
+    assert por_arn[arn_apagado]["categoria_final"] == tag_execution.CATEGORIA_FALHOU
+    assert por_arn[arn_apagado]["origem"] == "revalidacao"
     assert spy.arns_chamados == [arn_ok]
     # Primeira chamada tenta o lote inteiro (falha); as 2 seguintes são o
     # retry 1-a-1.
