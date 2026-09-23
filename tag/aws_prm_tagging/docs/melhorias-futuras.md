@@ -239,21 +239,37 @@ junto.
 **O que destrava:** mesma decisão do buffer SQS acima — se/quando uma fila
 for adicionada à arquitetura, o DLQ vem natural junto dela.
 
-### `sam validate`/`cfn-lint`/deploy em sandbox não executados
+### `sam validate`/`cfn-lint`/`sam build`/`sam local invoke` — feitos; deploy em sandbox real, não
 
-**O quê:** `infra/template.yaml` foi validado só por parsing YAML e por um
-teste que confirma que os blocos `EventPattern` batem com os arquivos
-gerados — nunca rodou `sam validate`, `cfn-lint`, nem foi implantado contra
-uma conta AWS real.
+**Atualizado.** `cfn-lint`, `sam validate --lint`, `sam build` e
+`sam local invoke` (contra um evento sintético fora de escopo, dentro de um
+container `public.ecr.aws/lambda/python:3.12` real via Docker) rodaram
+nesta sessão — nenhum precisa de credencial AWS. Todos passam limpos. Esse
+processo **achou e corrigiu um bug real**: `.samignore` não é suportado
+pelo SAM CLI instalado (confirmado no código-fonte — nenhuma referência a
+isso em `samcli`); o build empacotava `test/`/`docs/`/`infra/`/`reference/`
+inteiros dentro da Lambda sem ninguém perceber. Corrigido com
+`Metadata.BuildMethod: makefile` + `Makefile` (ver
+[infra/README.md](../infra/README.md#build-e-deploy)).
 
-**Por que não foi resolvido agora:** este ambiente de desenvolvimento não
-tem AWS SAM CLI nem `cfn-lint` instalados, e implantar contra uma conta
-real está fora do escopo desta tarefa (só criar os arquivos).
+O que continua fora: **implantar de verdade contra uma conta sandbox**
+(`sam deploy`) — exige credenciais AWS reais, fora do que dá para fazer
+sem acesso a uma conta. Roteiro elaborado (não executado) em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md),
+cobrindo: captura de evento CloudTrail real para os ~9 serviços de
+protocolo `query`/`ec2`/`rest-xml` (capitalização incerta), smoke test de
+ponta a ponta (EventBridge → Step Functions → Lambda → SNS), e investigação
+da ação de tag do CodeBuild.
 
-**O que destrava:** rodar `sam validate` e `cfn-lint` localmente (ou em CI),
-e implantar contra a conta sandbox mencionada em
-[producao.md](producao.md) antes de considerar este template pronto para
-qualquer cliente real — mesma disciplina já seguida para a Etapa 2c.
+**Por que não foi resolvido 100% agora:** implantar contra uma conta real
+exige credenciais que este ambiente de desenvolvimento não tem — é
+trabalho que só quem tem acesso à conta sandbox pode rodar (ou autorizar
+explicitamente).
+
+**O que destrava:** rodar o roteiro em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)
+contra a conta sandbox — mesma disciplina já seguida para a Etapa 2c
+(`test/manual-live/README.md`).
 
 ## Cobertura de recursos que nunca tiveram tag nenhuma
 

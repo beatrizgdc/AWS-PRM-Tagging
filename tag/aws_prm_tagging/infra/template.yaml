@@ -212,13 +212,23 @@ Resources:
 
   Etapa3Function:
     Type: AWS::Serverless::Function
+    Metadata:
+      # `.samignore` NÃO é um mecanismo suportado pelo SAM CLI (confirmado
+      # lendo o código-fonte instalado — nenhuma referência a "samignore"
+      # em lugar nenhum do pacote `samcli`; uma versão anterior deste
+      # template dependia disso e empacotava test/docs/infra/reference (e
+      # qualquer JSON solto de smoke test manual) dentro da Lambda sem
+      # ninguém perceber). `BuildMethod: makefile` é o mecanismo real —
+      # ver `Makefile` na raiz de `CodeUri` (alvo `build-Etapa3Function`),
+      # que copia só os módulos .py do pacote + o CSV oficial em `data/`.
+      BuildMethod: makefile
     Properties:
       # CodeUri aponta para o diretório PAI de aws_prm_tagging/ (mesma
       # exigência de "Onde rodar os comandos" do README raiz) — para que
       # `aws_prm_tagging.handler_continuous_tagging.handler` seja
-      # importável como pacote dentro da Lambda. Ver .samignore ao lado
-      # deste diretório para o que fica de fora do pacote de deploy
-      # (test/, docs/, reference/, infra/, caches).
+      # importável como pacote dentro da Lambda. O QUE de fato entra no
+      # artefato é decidido pelo Makefile acima, não por tudo que existe
+      # neste diretório.
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_continuous_tagging.handler
       Role: !GetAtt Etapa3ExecutionRole.Arn

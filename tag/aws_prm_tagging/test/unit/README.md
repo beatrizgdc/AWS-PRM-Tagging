@@ -114,11 +114,20 @@ Para a Etapa 3 (`event_mapping.py`/`event_parser.py`/`single_resource.py`/
   sinaliza), já tagueado corretamente (`ja_ok` sem erro), evento duplicado
   (idempotência), evento fora do escopo do CSV (ignorado).
 
-Para `infra/template.yaml`:
+Para `infra/`:
 
 - `test_infra_event_patterns.py` — os blocos `EventPattern` do template
   (colados manualmente, já que o CloudFormation não inclui JSON externo
   nessa propriedade) batem com `infra/event_pattern.*.generated.json`.
+- `test_infra_template_cfn_lint.py` — `infra/template.yaml` sem findings do
+  `cfn-lint` (via `cfnlint.api.lint_all`, sem Docker nem AWS) — pula
+  silenciosamente se `cfn-lint` não estiver instalado (`pytest.importorskip`).
+- `test_infra_statemachine.py` — a definição do Step Functions
+  (`infra/statemachine/etapa3_delay_e_execucao.asl.json`) é uma Amazon
+  States Language válida depois da substituição dos placeholders
+  (`${DebounceSeconds}`/`${LambdaArn}`): `StartAt` existe, todo `Next`/
+  `Default` aponta para um estado real, todo estado é terminal ou tem
+  `Next`.
 
 Ao adicionar um módulo novo (Etapa 4 em diante), crie um novo grupo de
 arquivos `test_<módulo>_<área>.py` seguindo o mesmo padrão, em vez de

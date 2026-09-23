@@ -99,20 +99,45 @@ tags de projeto parecem ser geridas via `UpdateProject` (todo o objeto,
 sem uma ação `TagResource` dedicada), mas isso não foi confirmado. Até
 resolver, um `CreateProject` do CodeBuild vai gerar uma tentativa de escrita
 que falha (`erro_permissao` ou `ValidationException`, dependendo do
-mecanismo real) — comportamento seguro, registrado em
-[docs/melhorias-futuras.md](../docs/melhorias-futuras.md).
+mecanismo real) — comportamento seguro. Roteiro de investigação em conta
+sandbox (não executado ainda) em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-3--investigar-a-ação-de-tag-do-codebuild).
 
-## Build e deploy (referência — não validado em sandbox ainda)
+## Build e deploy
 
 ```bash
-# do diretório uso-geral/tag/ (contém .samignore e aws_prm_tagging/)
+# do diretório uso-geral/tag/ (contém o Makefile e aws_prm_tagging/)
 sam build --template-file aws_prm_tagging/infra/template.yaml
 sam deploy --guided
 ```
 
-Nenhum `sam build`/`sam deploy`/`sam validate` foi executado contra uma
-conta AWS real neste trabalho — só a validação de sintaxe YAML e a checagem
-de que os `EventPattern` batem com os arquivos gerados (ver testes acima).
-Antes de implantar contra qualquer conta real: rodar `sam validate` e
-`cfn-lint`, e testar em sandbox — mesma disciplina já seguida para a Etapa
-2c (`apply --live`) no restante do projeto.
+**Validado nesta sessão, sem tocar em nenhuma conta AWS real** (`cfn-lint`,
+`sam validate --lint`, `sam build` e `sam local invoke` contra um evento
+sintético fora de escopo, todos rodados localmente — o `sam local invoke`
+sobe o runtime Lambda real via Docker, mas não chama nenhuma API AWS de
+verdade nesse caminho de teste):
+
+- `cfn-lint`/`sam validate --lint` — zero findings. Também roda como teste
+  automatizado (`test/unit/test_infra_template_cfn_lint.py`, pula
+  silenciosamente se `cfn-lint` não estiver instalado).
+- `sam build` — **achou e corrigiu um bug real**: `.samignore` não é um
+  mecanismo suportado pelo SAM CLI (confirmado lendo o código-fonte
+  instalado — nenhuma referência a isso em `samcli`). O build estava
+  empacotando `test/`/`docs/`/`infra/`/`reference/` inteiros dentro da
+  Lambda, sem ninguém perceber. Corrigido com `Metadata.BuildMethod:
+  makefile` + o `Makefile` na raiz de `CodeUri` (`uso-geral/tag/Makefile`)
+  — copia só os módulos `.py` do pacote e o CSV em `data/`. Confirmado
+  inspecionando o diretório de build: só os arquivos esperados entram.
+- `sam local invoke` — a função importa e executa corretamente dentro de um
+  container `public.ecr.aws/lambda/python:3.12` real (mesma imagem que a
+  AWS usa), processando um evento fora de escopo do CSV de ponta a ponta
+  sem erro.
+
+**O que isso ainda NÃO valida** — precisa de conta AWS real (roteiro
+elaborado, não executado, em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)):
+se a regra do EventBridge de fato casa um evento real, se o Step Functions
+invoca a Lambda corretamente, se a tag chega de verdade no recurso, e a
+capitalização exata do CloudTrail para os ~9 serviços de protocolo
+`query`/`ec2`/`rest-xml` onde isso é incerto (ver docstring de
+`event_parser.py`).
