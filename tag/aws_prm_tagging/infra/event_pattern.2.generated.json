@@ -5,6 +5,57 @@
   "$or": [
     {
       "source": [
+        "aws.medical-imaging"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDatastore"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.memorydb"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mq"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBroker"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.network-firewall"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFirewall"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.networkmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCoreNetwork",
+          "CreateGlobalNetwork"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.payment-cryptography"
       ],
       "detail": {
@@ -126,7 +177,20 @@
     },
     {
       "source": [
-        "aws.timestream-write"
+        "aws.storagegateway"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCachediSCSIVolume",
+          "CreateNFSFileShare",
+          "CreateSMBFileShare",
+          "CreateStorediSCSIVolume"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.timestream"
       ],
       "detail": {
         "eventName": [

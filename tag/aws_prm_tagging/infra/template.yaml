@@ -120,32 +120,87 @@ Resources:
                   - bedrock:TagResource
                   - elasticloadbalancing:AddTags
                 Resource: "*"
-        - PolicyName: PrmEtapa3NativeTagWriteLoteInicial
+        - PolicyName: PrmEtapa3NativeTagWrite
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  # Uma ação nativa por serviço do lote inicial (ver
-                  # event_parser.py) — tag:TagResources exige essa permissão
-                  # ALÉM de si mesma (confirmado na doc oficial, ver
-                  # docs/producao.md).
-                  - ec2:CreateTags
-                  - s3:PutBucketTagging
-                  - lambda:TagResource
+                  # Uma ação nativa por serviço mapeado (ver event_parser.py
+                  # e event_mapping.py) — tag:TagResources exige essa
+                  # permissão ALÉM de si mesma para o caminho genérico
+                  # (confirmado na doc oficial, ver docs/producao.md). Nomes
+                  # verificados contra o botocore instalado (não vem de
+                  # memória) — ver "Permissões IAM — cobertura real" em
+                  # infra/README.md, inclusive o único serviço mapeado sem
+                  # ação de tag encontrada (CodeBuild — ver melhorias-futuras.md).
+                  - acm:TagResource
+                  - acm-pca:TagCertificateAuthority
+                  - apigateway:TagResource
+                  - appsync:TagResource
+                  - athena:TagResource
+                  - backup:TagResource
+                  - cassandra:TagResource
+                  - clouddirectory:TagResource
+                  - cloudfront:TagResource
+                  - cloudhsm:AddTagsToResource
+                  - codepipeline:TagResource
+                  - cognito-identity:TagResource
+                  - cognito-idp:TagResource
+                  - connect:TagResource
+                  - datapipeline:AddTags
+                  - directconnect:TagResource
+                  - dms:AddTagsToResource
+                  - ds:AddTagsToResource
+                  - dsql:TagResource
                   - dynamodb:TagResource
-                  - rds:AddTagsToResource
-                  - sns:TagResource
-                  - sqs:TagQueue
+                  - ec2:CreateTags
                   - ecr:TagResource
                   - ecs:TagResource
-                  - elasticfilesystem:TagResource
                   - elasticache:AddTagsToResource
+                  - elasticbeanstalk:UpdateTagsForResource
+                  - elasticfilesystem:TagResource
+                  - elasticmapreduce:AddTags
+                  - es:AddTags
+                  - finspace:TagResource
+                  - firehose:TagDeliveryStream
+                  - fsx:TagResource
+                  - gamelift:TagResource
+                  - glacier:AddTagsToVault
+                  - healthlake:TagResource
+                  - kafka:TagResource
+                  - kendra:TagResource
+                  - kinesis:TagResource
+                  - kinesisanalytics:TagResource
+                  - kinesisvideo:TagResource
                   - kms:TagResource
-                  - cloudfront:TagResource
+                  - lambda:TagResource
+                  - logs:TagLogGroup
+                  - m2:TagResource
+                  - mediaconvert:TagResource
+                  - medialive:CreateTags
+                  - mediapackage:TagResource
+                  - medical-imaging:TagResource
+                  - memorydb:TagResource
+                  - mq:CreateTags
+                  - network-firewall:TagResource
+                  - networkmanager:TagResource
+                  - payment-cryptography:TagResource
+                  - rds:AddTagsToResource
+                  - redshift:CreateTags
+                  - redshift-serverless:TagResource
                   - route53:ChangeTagsForResource
+                  - s3:PutBucketTagging
                   - secretsmanager:TagResource
+                  - sns:TagResource
+                  - sqs:TagQueue
+                  - ssm:AddTagsToResource
                   - states:TagResource
+                  - storagegateway:AddTagsToResource
+                  - timestream:TagResource
+                  - transfer:TagResource
+                  - vpc-lattice:TagResource
+                  - workspaces:CreateTags
                 Resource: "*"
         - PolicyName: PrmEtapa3PublishReport
           PolicyDocument:
@@ -242,6 +297,8 @@ Resources:
             detail: {eventName: ["CreateCertificateAuthority"]}
           - source: ["aws.acm"]
             detail: {eventName: ["RequestCertificate"]}
+          - source: ["aws.apigateway"]
+            detail: {eventName: ["CreateApi", "CreateRestApi"]}
           - source: ["aws.appsync"]
             detail: {eventName: ["CreateGraphqlApi"]}
           - source: ["aws.athena"]
@@ -250,11 +307,13 @@ Resources:
             detail: {eventName: ["CreateBackupPlan", "CreateBackupVault"]}
           - source: ["aws.bedrock"]
             detail: {eventName: ["CreateInferenceProfile"]}
+          - source: ["aws.cassandra"]
+            detail: {eventName: ["CreateKeyspace", "CreateTable"]}
           - source: ["aws.clouddirectory"]
             detail: {eventName: ["CreateDirectory"]}
           - source: ["aws.cloudfront"]
             detail: {eventName: ["CreateDistribution"]}
-          - source: ["aws.cloudhsmv2"]
+          - source: ["aws.cloudhsm"]
             detail: {eventName: ["CreateCluster"]}
           - source: ["aws.codebuild"]
             detail: {eventName: ["CreateProject"]}
@@ -266,24 +325,22 @@ Resources:
             detail: {eventName: ["CreateUserPool"]}
           - source: ["aws.connect"]
             detail: {eventName: ["CreateInstance"]}
+          - source: ["aws.datapipeline"]
+            detail: {eventName: ["CreatePipeline"]}
           - source: ["aws.directconnect"]
             detail: {eventName: ["CreateConnection", "CreateDirectConnectGateway"]}
           - source: ["aws.dms"]
             detail: {eventName: ["CreateReplicationInstance", "CreateReplicationTask"]}
           - source: ["aws.ds"]
             detail: {eventName: ["CreateDirectory", "CreateMicrosoftAD"]}
+          - source: ["aws.dsql"]
+            detail: {eventName: ["CreateCluster"]}
           - source: ["aws.dynamodb"]
             detail: {eventName: ["CreateTable"]}
           - source: ["aws.ec2"]
             detail: {eventName: ["CreateTransitGateway", "CreateVolume", "CreateVpc", "RunInstances"]}
           - source: ["aws.ecr"]
             detail: {eventName: ["CreateRepository"]}
-          - source: ["aws.ecs"]
-            detail: {eventName: ["CreateCluster", "CreateService"]}
-          - source: ["aws.eks"]
-            detail: {eventName: ["CreateCluster", "CreateNodegroup"]}
-          - source: ["aws.elasticache"]
-            detail: {eventName: ["CreateCacheCluster"]}
       Targets:
         - Id: Etapa3StateMachineTarget
           Arn: !Ref Etapa3StateMachine
@@ -302,6 +359,12 @@ Resources:
         detail-type:
           - "AWS API Call via CloudTrail"
         $or:
+          - source: ["aws.ecs"]
+            detail: {eventName: ["CreateCluster", "CreateService"]}
+          - source: ["aws.eks"]
+            detail: {eventName: ["CreateCluster", "CreateNodegroup"]}
+          - source: ["aws.elasticache"]
+            detail: {eventName: ["CreateCacheCluster"]}
           - source: ["aws.elasticbeanstalk"]
             detail: {eventName: ["CreateApplication", "CreateEnvironment"]}
           - source: ["aws.elasticfilesystem"]
@@ -311,7 +374,7 @@ Resources:
           - source: ["aws.elasticmapreduce"]
             detail: {eventName: ["RunJobFlow"]}
           - source: ["aws.es"]
-            detail: {eventName: ["CreateDomain"]}
+            detail: {eventName: ["CreateDomain", "CreateElasticsearchDomain"]}
           - source: ["aws.finspace"]
             detail: {eventName: ["CreateEnvironment"]}
           - source: ["aws.firehose"]
@@ -330,30 +393,24 @@ Resources:
             detail: {eventName: ["CreateIndex"]}
           - source: ["aws.kinesis"]
             detail: {eventName: ["CreateStream"]}
-          - source: ["aws.kinesisanalyticsv2"]
+          - source: ["aws.kinesisanalytics"]
             detail: {eventName: ["CreateApplication"]}
           - source: ["aws.kinesisvideo"]
             detail: {eventName: ["CreateStream"]}
           - source: ["aws.kms"]
             detail: {eventName: ["CreateKey"]}
           - source: ["aws.lambda"]
-            detail: {eventName: ["CreateFunction20150331v2"]}
+            detail: {eventName: ["CreateFunction"]}
           - source: ["aws.logs"]
             detail: {eventName: ["CreateLogGroup"]}
+          - source: ["aws.m2"]
+            detail: {eventName: ["CreateApplication", "CreateEnvironment"]}
+          - source: ["aws.mediaconvert"]
+            detail: {eventName: ["CreateQueue"]}
           - source: ["aws.medialive"]
             detail: {eventName: ["CreateChannel"]}
           - source: ["aws.mediapackage"]
             detail: {eventName: ["CreateChannel"]}
-          - source: ["aws.medical-imaging"]
-            detail: {eventName: ["CreateDatastore"]}
-          - source: ["aws.memorydb"]
-            detail: {eventName: ["CreateCluster"]}
-          - source: ["aws.mq"]
-            detail: {eventName: ["CreateBroker"]}
-          - source: ["aws.network-firewall"]
-            detail: {eventName: ["CreateFirewall"]}
-          - source: ["aws.networkmanager"]
-            detail: {eventName: ["CreateCoreNetwork", "CreateGlobalNetwork"]}
       Targets:
         - Id: Etapa3StateMachineTarget
           Arn: !Ref Etapa3StateMachine
@@ -372,6 +429,16 @@ Resources:
         detail-type:
           - "AWS API Call via CloudTrail"
         $or:
+          - source: ["aws.medical-imaging"]
+            detail: {eventName: ["CreateDatastore"]}
+          - source: ["aws.memorydb"]
+            detail: {eventName: ["CreateCluster"]}
+          - source: ["aws.mq"]
+            detail: {eventName: ["CreateBroker"]}
+          - source: ["aws.network-firewall"]
+            detail: {eventName: ["CreateFirewall"]}
+          - source: ["aws.networkmanager"]
+            detail: {eventName: ["CreateCoreNetwork", "CreateGlobalNetwork"]}
           - source: ["aws.payment-cryptography"]
             detail: {eventName: ["CreateKey"]}
           - source: ["aws.rds"]
@@ -396,7 +463,9 @@ Resources:
             detail: {eventName: ["CreateOpsItem"]}
           - source: ["aws.states"]
             detail: {eventName: ["CreateStateMachine"]}
-          - source: ["aws.timestream-write"]
+          - source: ["aws.storagegateway"]
+            detail: {eventName: ["CreateCachediSCSIVolume", "CreateNFSFileShare", "CreateSMBFileShare", "CreateStorediSCSIVolume"]}
+          - source: ["aws.timestream"]
             detail: {eventName: ["CreateDatabase"]}
           - source: ["aws.transfer"]
             detail: {eventName: ["CreateServer"]}

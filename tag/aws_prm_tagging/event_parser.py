@@ -16,26 +16,43 @@ instâncias numa única chamada (`responseElements.instancesSet.items` é uma
 lista), `workspaces:CreateWorkspaces` idem. Um único evento de CloudTrail
 pode então corresponder a N recursos, não só 1 — o handler da Etapa 3 (ver
 `handler_continuous_tagging.py`) itera sobre essa lista e processa cada
-recurso independentemente (cada um com sua própria leitura de estado,
-decisão e publicação de resultado).
+recurso independentemente.
 
-## Dois níveis de confiança na extração
+## Dois níveis de confiança na extração — e por que existe um terceiro, mais
+## fino, dentro do próprio nível "dedicado"
 
-1. **Extractors dedicados** (`_REGISTRY` abaixo) — só para os serviços onde
-   eu tenho confiança razoável na forma exata do `responseElements`/
-   `requestParameters` (baseado em documentação pública das APIs, não em
-   evento real capturado — ver ressalva em `event_mapping.py`).
-2. **Fallback genérico best-effort** (`_extract_generic`) — para qualquer
-   evento mapeado em `event_mapping.py` SEM extractor dedicado: procura
-   recursivamente por uma chave terminando em "arn" (case-insensitive) cujo
-   valor pareça um ARN (`arn:aws...`) dentro de `responseElements`. Cobre
-   corretamente uma fração real das APIs mais novas da AWS (que tendem a
-   devolver o ARN direto na resposta), mas é deliberadamente conservador:
-   qualquer incerteza devolve `None`/lista vazia, nunca inventa um ARN.
+1. **Extractors dedicados** (`_REGISTRY` abaixo) — para os serviços mapeados
+   em `event_mapping.py`. Cada campo/caminho usado foi checado contra o
+   shape real da operação no `botocore` instalado localmente (não vem só de
+   memória) — ver `event_mapping.py` para o processo de verificação.
+2. **Fallback genérico best-effort** (`_extract_generic`) — só para o raro
+   caso de um evento mapeado sem entrada em `_REGISTRY` (não deveria
+   acontecer com a tabela atual, mas existe como rede de segurança):
+   procura recursivamente por uma chave terminando em "arn" dentro de
+   `responseElements`; nunca inventa um ARN.
 
-Nenhum dos dois níveis foi validado contra uma conta AWS real ainda — ver
-"Extractors da Etapa 3 ainda não validados em sandbox" em
-[docs/melhorias-futuras.md](docs/melhorias-futuras.md).
+Dentro do nível "dedicado", uma distinção adicional importa: o *protocolo*
+de API de cada serviço determina se a capitalização exata do shape do
+botocore é uma boa aposta para o `responseElements` real do CloudTrail.
+
+- **Serviços `json`/`rest-json`/`smithy-rpc-v2-cbor`** (a grande maioria
+  dos mapeados): a experiência documentada é que o CloudTrail preserva os
+  nomes de campo tal como a própria API os devolve — usamos `_direct`/
+  `_constructed` com a capitalização exata do botocore, alta confiança.
+- **Serviços `query`/`ec2`/`rest-xml`** (`ec2`, `rds`, `elasticache`,
+  `redshift`, `elasticbeanstalk`, `sns`, `s3`, `route53`, `cloudfront`,
+  `elasticloadbalancing`/elbv2): o CloudTrail historicamente aplica uma
+  conversão XML→JSON com convenção própria (tipicamente primeira letra
+  minúscula) — usamos `_direct_ci`/`_constructed_ci` (tenta a capitalização
+  exata E a variante com a primeira letra minúscula) para esses, ou, onde
+  possível, preferimos construir o ARN a partir de `requestParameters`
+  (mais simples, menos superfície de erro) em vez de confiar num campo de
+  resposta com capitalização incerta. `ec2` especificamente tem uma
+  estrutura própria adicional bem conhecida (`"instancesSet": {"items":
+  [...]}`) tratada em extractors dedicados, não pelos helpers genéricos.
+
+**Nenhum extractor foi validado contra um evento CloudTrail real capturado
+em sandbox** — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md).
 """
 from __future__ import annotations
 
@@ -72,11 +89,87 @@ def _svc_name(services: list[Service], product_service_code: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Extractors dedicados — um por (eventSource, eventName) de alta confiança.
+# Helpers genéricos — cobrem a maioria dos extractors dedicados: ler um
+# campo (direto ou construindo o ARN a partir de um ID) em um caminho fixo
+# dentro de responseElements/requestParameters.
+# ---------------------------------------------------------------------------
+
+
+def _read_path(node: dict, path: tuple[str, ...], tolerant_casing: bool) -> object:
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        if tolerant_casing:
+            alt = (key[0].lower() + key[1:]) if key else key
+            node = node.get(key, node.get(alt))
+        else:
+            node = node.get(key)
+    return node
+
+
+@dataclass(frozen=True)
+class _DirectPath:
+    """ARN já vem pronto em `responseElements`, no `path` dado. Uma classe
+    (não uma closure) de propósito: `path`/`tolerant_casing` ficam
+    inspecionáveis por fora — é o que permite `test_event_parser_botocore.py`
+    verificar cada extractor dedicado contra o shape real da operação no
+    botocore instalado, sem precisar reimplementar a leitura em cada teste."""
+
+    path: tuple[str, ...]
+    tolerant_casing: bool = False
+
+    def __call__(self, detail: dict, account_id: str, region: str) -> list[str]:
+        val = _read_path(detail.get("responseElements") or {}, self.path, self.tolerant_casing)
+        return [val] if isinstance(val, str) and val.startswith("arn:") else []
+
+
+@dataclass(frozen=True)
+class _ConstructedPath:
+    """ARN não vem pronto — construído a partir de um `template` (com
+    `{region}`/`{account_id}`/`{value}`) usando um valor lido de `source`
+    ("responseElements" ou "requestParameters") no `path` dado."""
+
+    template: str
+    source: str
+    path: tuple[str, ...]
+    tolerant_casing: bool = False
+
+    def __call__(self, detail: dict, account_id: str, region: str) -> list[str]:
+        val = _read_path(detail.get(self.source) or {}, self.path, self.tolerant_casing)
+        if not val:
+            return []
+        return [self.template.format(region=region, account_id=account_id, value=val)]
+
+
+def _direct(*path: str, tolerant_casing: bool = False) -> ArnBuilder:
+    return _DirectPath(path, tolerant_casing)
+
+
+def _direct_ci(*path: str) -> ArnBuilder:
+    """Como `_direct`, mas tolerante à capitalização (ver docstring do
+    módulo — serviços de protocolo query/ec2/rest-xml)."""
+    return _direct(*path, tolerant_casing=True)
+
+
+def _constructed(template: str, source: str, *path: str, tolerant_casing: bool = False) -> ArnBuilder:
+    return _ConstructedPath(template, source, path, tolerant_casing)
+
+
+def _constructed_ci(template: str, source: str, *path: str) -> ArnBuilder:
+    return _constructed(template, source, *path, tolerant_casing=True)
+
+
+# ---------------------------------------------------------------------------
+# Extractors com lógica própria — batch (EC2, WorkSpaces), pré-processamento
+# do valor (Route 53 tira o prefixo "/hostedzone/"), ou estrutura de
+# CloudTrail conhecida e diferente do shape "lógico" do botocore (EC2).
 # ---------------------------------------------------------------------------
 
 
 def _ext_ec2_run_instances(detail: dict, account_id: str, region: str) -> list[str]:
+    # Estrutura conhecida de eventos reais de CloudTrail para EC2 (protocolo
+    # "ec2", com o empacotamento "xSet"/"items" herdado da API XML antiga) —
+    # não é o shape "lógico" que o botocore expõe para o SDK.
     items = (detail.get("responseElements") or {}).get("instancesSet", {}).get("items") or []
     return [
         f"arn:aws:ec2:{region}:{account_id}:instance/{item['instanceId']}"
@@ -101,201 +194,242 @@ def _ext_ec2_create_transit_gateway(detail: dict, account_id: str, region: str) 
 
 
 def _ext_s3_create_bucket(detail: dict, account_id: str, region: str) -> list[str]:
+    # S3 (rest-xml) tem, em versões recentes da API, um campo BucketArn
+    # direto na resposta — mas construir a partir do nome pedido
+    # (requestParameters, sempre presente, sem incerteza de capitalização)
+    # é mais robusto contra variação de versão de API/SDK do chamador.
     bucket = (detail.get("requestParameters") or {}).get("bucketName")
     return [f"arn:aws:s3:::{bucket}"] if bucket else []
-
-
-def _ext_lambda_create_function(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("functionArn")
-    return [arn] if arn else []
-
-
-def _ext_dynamodb_create_table(detail: dict, account_id: str, region: str) -> list[str]:
-    resp = detail.get("responseElements") or {}
-    arn = resp.get("tableDescription", {}).get("tableArn")
-    if arn:
-        return [arn]
-    table_name = (detail.get("requestParameters") or {}).get("tableName")
-    return [f"arn:aws:dynamodb:{region}:{account_id}:table/{table_name}"] if table_name else []
-
-
-def _ext_rds_create_db_instance(detail: dict, account_id: str, region: str) -> list[str]:
-    resp = detail.get("responseElements") or {}
-    arn = resp.get("dBInstanceArn")
-    if arn:
-        return [arn]
-    identifier = (detail.get("requestParameters") or {}).get("dBInstanceIdentifier")
-    return [f"arn:aws:rds:{region}:{account_id}:db:{identifier}"] if identifier else []
-
-
-def _ext_rds_create_db_cluster(detail: dict, account_id: str, region: str) -> list[str]:
-    # Ver docstring de event_mapping.py: este evento também é disparado por
-    # criações de Aurora/DocumentDB/Neptune (mesmo namespace "rds") — o
-    # recurso resultante é sempre rotulado "Amazon RDS" (mesma limitação já
-    # documentada para o passo genérico da Etapa 1 em services.py).
-    resp = detail.get("responseElements") or {}
-    arn = resp.get("dBClusterArn")
-    if arn:
-        return [arn]
-    identifier = (detail.get("requestParameters") or {}).get("dBClusterIdentifier")
-    return [f"arn:aws:rds:{region}:{account_id}:cluster:{identifier}"] if identifier else []
-
-
-def _ext_eks_create_cluster(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("cluster", {}).get("arn")
-    return [arn] if arn else []
-
-
-def _ext_eks_create_nodegroup(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("nodegroup", {}).get("nodegroupArn")
-    return [arn] if arn else []
-
-
-def _ext_bedrock_create_inference_profile(detail: dict, account_id: str, region: str) -> list[str]:
-    # bedrock:CreateInferenceProfile só cria profiles do tipo APPLICATION —
-    # profiles de sistema (cross-region) são pré-existentes, não criados
-    # pelo cliente via esta API. Por isso não é preciso checar o tipo aqui
-    # (ao contrário de resource_discovery.discover_bedrock_resources, que
-    # lista TODOS os profiles e precisa filtrar).
-    arn = (detail.get("responseElements") or {}).get("inferenceProfileArn")
-    return [arn] if arn else []
-
-
-def _ext_sns_create_topic(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("topicArn")
-    return [arn] if arn else []
 
 
 def _ext_sqs_create_queue(detail: dict, account_id: str, region: str) -> list[str]:
     # CreateQueue só devolve QueueUrl na resposta, nunca o ARN — construído
     # a partir do nome pedido na requisição (sempre presente).
-    queue_name = (detail.get("requestParameters") or {}).get("queueName")
+    queue_name = (detail.get("requestParameters") or {}).get("QueueName")
     return [f"arn:aws:sqs:{region}:{account_id}:{queue_name}"] if queue_name else []
-
-
-def _ext_ecr_create_repository(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("repository", {}).get("repositoryArn")
-    return [arn] if arn else []
-
-
-def _ext_ecs_create_cluster(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("cluster", {}).get("clusterArn")
-    return [arn] if arn else []
-
-
-def _ext_ecs_create_service(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("service", {}).get("serviceArn")
-    return [arn] if arn else []
-
-
-def _ext_efs_create_file_system(detail: dict, account_id: str, region: str) -> list[str]:
-    resp = detail.get("responseElements") or {}
-    arn = resp.get("fileSystemArn")
-    if arn:
-        return [arn]
-    fs_id = resp.get("fileSystemId")
-    return [f"arn:aws:elasticfilesystem:{region}:{account_id}:file-system/{fs_id}"] if fs_id else []
-
-
-def _ext_elasticache_create_cache_cluster(detail: dict, account_id: str, region: str) -> list[str]:
-    # API clássica do ElastiCache não devolve ARN na resposta — construído
-    # a partir do identificador pedido na requisição.
-    cluster_id = (detail.get("requestParameters") or {}).get("cacheClusterId")
-    return [f"arn:aws:elasticache:{region}:{account_id}:cluster:{cluster_id}"] if cluster_id else []
-
-
-def _ext_kms_create_key(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("keyMetadata", {}).get("arn")
-    return [arn] if arn else []
-
-
-def _ext_cloudfront_create_distribution(detail: dict, account_id: str, region: str) -> list[str]:
-    # ARNs de CloudFront não têm região — construído a partir do Id, mais
-    # confiável do que confiar no campo (pouco documentado) de ARN direto
-    # na resposta.
-    dist_id = (detail.get("responseElements") or {}).get("distribution", {}).get("id")
-    return [f"arn:aws:cloudfront::{account_id}:distribution/{dist_id}"] if dist_id else []
 
 
 def _ext_route53_create_hosted_zone(detail: dict, account_id: str, region: str) -> list[str]:
     # ARNs de Route 53 não têm região nem conta no formato usual — o "Id"
-    # devolvido às vezes já vem prefixado com "/hostedzone/".
-    zone_id = (detail.get("responseElements") or {}).get("hostedZone", {}).get("id")
+    # devolvido às vezes já vem prefixado com "/hostedzone/". Tolerante a
+    # capitalização (route53 é protocolo rest-xml).
+    zone_id = _read_path(detail.get("responseElements") or {}, ("HostedZone", "Id"), tolerant_casing=True)
     if not zone_id:
         return []
-    zone_id = zone_id.rsplit("/", 1)[-1]
+    zone_id = str(zone_id).rsplit("/", 1)[-1]
     return [f"arn:aws:route53:::hostedzone/{zone_id}"]
 
 
-def _ext_secretsmanager_create_secret(detail: dict, account_id: str, region: str) -> list[str]:
-    resp = detail.get("responseElements") or {}
-    arn = resp.get("aRN") or resp.get("ARN")
-    return [arn] if arn else []
+def _ext_elbv2_create_load_balancer(detail: dict, account_id: str, region: str) -> list[str]:
+    # elbv2 é protocolo "query" (tolerante a capitalização); CreateLoadBalancer
+    # normalmente cria só 1 load balancer por chamada — usamos o primeiro.
+    lbs = _read_path(detail.get("responseElements") or {}, ("LoadBalancers",), tolerant_casing=True) or []
+    if not lbs or not isinstance(lbs, list):
+        return []
+    arn = lbs[0].get("LoadBalancerArn", lbs[0].get("loadBalancerArn")) if isinstance(lbs[0], dict) else None
+    return [arn] if isinstance(arn, str) and arn.startswith("arn:") else []
 
 
-def _ext_states_create_state_machine(detail: dict, account_id: str, region: str) -> list[str]:
-    arn = (detail.get("responseElements") or {}).get("stateMachineArn")
-    return [arn] if arn else []
-
-
-def _ext_elb_create_load_balancer(detail: dict, account_id: str, region: str) -> list[str]:
-    lbs = (detail.get("responseElements") or {}).get("loadBalancers") or []
-    return [lbs[0]["loadBalancerArn"]] if lbs and lbs[0].get("loadBalancerArn") else []
+def _ext_workspaces_create_workspaces(detail: dict, account_id: str, region: str) -> list[str]:
+    # CreateWorkspaces é uma API de LOTE (cria N workspaces numa chamada) —
+    # cada item pendente vira um recurso próprio.
+    pending = (detail.get("responseElements") or {}).get("PendingRequests") or []
+    return [
+        f"arn:aws:workspaces:{region}:{account_id}:workspace/{item['WorkspaceId']}"
+        for item in pending
+        if isinstance(item, dict) and item.get("WorkspaceId")
+    ]
 
 
 _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
+    # --- EC2 (protocolo "ec2" — estrutura de CloudTrail conhecida à parte) ---
     ("ec2.amazonaws.com", "RunInstances"): _SpecificExtractor("AmazonEC2", _ext_ec2_run_instances),
     ("ec2.amazonaws.com", "CreateVolume"): _SpecificExtractor("AmazonEC2", _ext_ec2_create_volume),
     ("ec2.amazonaws.com", "CreateVpc"): _SpecificExtractor("AmazonVPC", _ext_ec2_create_vpc),
     ("ec2.amazonaws.com", "CreateTransitGateway"): _SpecificExtractor("AmazonVPC", _ext_ec2_create_transit_gateway),
+    # --- S3 (rest-xml — construído a partir de requestParameters) ---
     ("s3.amazonaws.com", "CreateBucket"): _SpecificExtractor("AmazonS3", _ext_s3_create_bucket),
-    ("lambda.amazonaws.com", "CreateFunction20150331v2"): _SpecificExtractor(
-        "AWSLambda", _ext_lambda_create_function
-    ),
-    ("dynamodb.amazonaws.com", "CreateTable"): _SpecificExtractor("AmazonDynamoDB", _ext_dynamodb_create_table),
-    ("rds.amazonaws.com", "CreateDBInstance"): _SpecificExtractor("AmazonRDS", _ext_rds_create_db_instance),
-    ("rds.amazonaws.com", "CreateDBCluster"): _SpecificExtractor("AmazonRDS", _ext_rds_create_db_cluster),
-    ("eks.amazonaws.com", "CreateCluster"): _SpecificExtractor(
-        "AmazonEKS", _ext_eks_create_cluster, tipo_recurso="cluster"
-    ),
-    ("eks.amazonaws.com", "CreateNodegroup"): _SpecificExtractor(
-        "AmazonEKS", _ext_eks_create_nodegroup, tipo_recurso="node_group"
-    ),
-    ("bedrock.amazonaws.com", "CreateInferenceProfile"): _SpecificExtractor(
-        "AmazonBedrock", _ext_bedrock_create_inference_profile, tipo_recurso="application_inference_profile"
-    ),
-    ("sns.amazonaws.com", "CreateTopic"): _SpecificExtractor("AmazonSNS", _ext_sns_create_topic),
-    ("sqs.amazonaws.com", "CreateQueue"): _SpecificExtractor("AWSQueueService", _ext_sqs_create_queue),
-    ("ecr.amazonaws.com", "CreateRepository"): _SpecificExtractor("AmazonECR", _ext_ecr_create_repository),
-    ("ecs.amazonaws.com", "CreateCluster"): _SpecificExtractor("AmazonECS", _ext_ecs_create_cluster),
-    ("ecs.amazonaws.com", "CreateService"): _SpecificExtractor("AmazonECS", _ext_ecs_create_service),
-    ("elasticfilesystem.amazonaws.com", "CreateFileSystem"): _SpecificExtractor(
-        "AmazonEFS", _ext_efs_create_file_system
-    ),
+    # --- Protocolo query/ec2/rest-xml — leitura tolerante a capitalização ---
+    ("rds.amazonaws.com", "CreateDBInstance"): _SpecificExtractor("AmazonRDS", _direct_ci("DBInstance", "DBInstanceArn")),
+    ("rds.amazonaws.com", "CreateDBCluster"): _SpecificExtractor("AmazonRDS", _direct_ci("DBCluster", "DBClusterArn")),
     ("elasticache.amazonaws.com", "CreateCacheCluster"): _SpecificExtractor(
-        "AmazonElastiCache", _ext_elasticache_create_cache_cluster
+        "AmazonElastiCache", _direct_ci("CacheCluster", "ARN")
     ),
-    ("kms.amazonaws.com", "CreateKey"): _SpecificExtractor("awskms", _ext_kms_create_key),
+    ("redshift.amazonaws.com", "CreateCluster"): _SpecificExtractor(
+        "AmazonRedshift",
+        _constructed_ci("arn:aws:redshift:{region}:{account_id}:cluster:{value}", "requestParameters", "ClusterIdentifier"),
+    ),
+    ("elasticbeanstalk.amazonaws.com", "CreateApplication"): _SpecificExtractor(
+        "AWSElasticBeanstalk", _direct_ci("Application", "ApplicationArn")
+    ),
+    ("elasticbeanstalk.amazonaws.com", "CreateEnvironment"): _SpecificExtractor(
+        "AWSElasticBeanstalk", _direct_ci("EnvironmentArn")
+    ),
+    ("sns.amazonaws.com", "CreateTopic"): _SpecificExtractor("AmazonSNS", _direct_ci("TopicArn")),
+    ("route53.amazonaws.com", "CreateHostedZone"): _SpecificExtractor("AmazonRoute53", _ext_route53_create_hosted_zone),
     ("cloudfront.amazonaws.com", "CreateDistribution"): _SpecificExtractor(
-        "AmazonCloudFront", _ext_cloudfront_create_distribution
-    ),
-    ("route53.amazonaws.com", "CreateHostedZone"): _SpecificExtractor(
-        "AmazonRoute53", _ext_route53_create_hosted_zone
-    ),
-    ("secretsmanager.amazonaws.com", "CreateSecret"): _SpecificExtractor(
-        "AWSSecretsManager", _ext_secretsmanager_create_secret
-    ),
-    ("states.amazonaws.com", "CreateStateMachine"): _SpecificExtractor(
-        "AmazonStates", _ext_states_create_state_machine
+        "AmazonCloudFront",
+        _constructed_ci("arn:aws:cloudfront::{account_id}:distribution/{value}", "responseElements", "Distribution", "Id"),
     ),
     ("elasticloadbalancing.amazonaws.com", "CreateLoadBalancer"): _SpecificExtractor(
-        "AWSELB", _ext_elb_create_load_balancer
+        "AWSELB", _ext_elbv2_create_load_balancer
     ),
+    ("sqs.amazonaws.com", "CreateQueue"): _SpecificExtractor("AWSQueueService", _ext_sqs_create_queue),
+    ("workspaces.amazonaws.com", "CreateWorkspaces"): _SpecificExtractor("AmazonWorkSpaces", _ext_workspaces_create_workspaces),
+    # --- Protocolo json/rest-json/smithy — capitalização do botocore confiável ---
+    ("lambda.amazonaws.com", "CreateFunction"): _SpecificExtractor("AWSLambda", _direct("FunctionArn")),
+    ("dynamodb.amazonaws.com", "CreateTable"): _SpecificExtractor("AmazonDynamoDB", _direct("TableDescription", "TableArn")),
+    ("eks.amazonaws.com", "CreateCluster"): _SpecificExtractor(
+        "AmazonEKS", _direct("cluster", "arn"), tipo_recurso="cluster"
+    ),
+    ("eks.amazonaws.com", "CreateNodegroup"): _SpecificExtractor(
+        "AmazonEKS", _direct("nodegroup", "nodegroupArn"), tipo_recurso="node_group"
+    ),
+    ("bedrock.amazonaws.com", "CreateInferenceProfile"): _SpecificExtractor(
+        "AmazonBedrock", _direct("inferenceProfileArn"), tipo_recurso="application_inference_profile"
+    ),
+    ("ecr.amazonaws.com", "CreateRepository"): _SpecificExtractor("AmazonECR", _direct("repository", "repositoryArn")),
+    ("ecs.amazonaws.com", "CreateCluster"): _SpecificExtractor("AmazonECS", _direct("cluster", "clusterArn")),
+    ("ecs.amazonaws.com", "CreateService"): _SpecificExtractor("AmazonECS", _direct("service", "serviceArn")),
+    ("elasticfilesystem.amazonaws.com", "CreateFileSystem"): _SpecificExtractor("AmazonEFS", _direct("FileSystemArn")),
+    ("kms.amazonaws.com", "CreateKey"): _SpecificExtractor("awskms", _direct("KeyMetadata", "Arn")),
+    ("secretsmanager.amazonaws.com", "CreateSecret"): _SpecificExtractor("AWSSecretsManager", _direct("ARN")),
+    ("states.amazonaws.com", "CreateStateMachine"): _SpecificExtractor("AmazonStates", _direct("stateMachineArn")),
+    ("appsync.amazonaws.com", "CreateGraphqlApi"): _SpecificExtractor("AWSAppSync", _direct("graphqlApi", "arn")),
+    ("backup.amazonaws.com", "CreateBackupVault"): _SpecificExtractor("AWSBackup", _direct("BackupVaultArn")),
+    ("backup.amazonaws.com", "CreateBackupPlan"): _SpecificExtractor("AWSBackup", _direct("BackupPlanArn")),
+    ("acm.amazonaws.com", "RequestCertificate"): _SpecificExtractor("AWSCertificateManager", _direct("CertificateArn")),
+    ("acm-pca.amazonaws.com", "CreateCertificateAuthority"): _SpecificExtractor(
+        "AWSCertificateManager", _direct("CertificateAuthorityArn")
+    ),
+    ("networkmanager.amazonaws.com", "CreateCoreNetwork"): _SpecificExtractor(
+        "AWSCloudWAN", _direct("CoreNetwork", "CoreNetworkArn")
+    ),
+    ("networkmanager.amazonaws.com", "CreateGlobalNetwork"): _SpecificExtractor(
+        "AWSCloudWAN", _direct("GlobalNetwork", "GlobalNetworkArn")
+    ),
+    ("medialive.amazonaws.com", "CreateChannel"): _SpecificExtractor("AWSElementalMediaLive", _direct("Channel", "Arn")),
+    ("mediapackage.amazonaws.com", "CreateChannel"): _SpecificExtractor("AWSElementalMediaPackage", _direct("Arn")),
+    ("network-firewall.amazonaws.com", "CreateFirewall"): _SpecificExtractor(
+        "AWSNetworkFirewall", _direct("Firewall", "FirewallArn")
+    ),
+    ("resiliencehub.amazonaws.com", "CreateApp"): _SpecificExtractor("AWSResilienceHub", _direct("app", "appArn")),
+    ("ssm.amazonaws.com", "CreateOpsItem"): _SpecificExtractor("AWSSystemsManager", _direct("OpsItemArn")),
+    ("clouddirectory.amazonaws.com", "CreateDirectory"): _SpecificExtractor("AmazonCloudDirectory", _direct("DirectoryArn")),
+    ("connect.amazonaws.com", "CreateInstance"): _SpecificExtractor("AmazonConnect", _direct("Arn")),
+    ("fsx.amazonaws.com", "CreateFileSystem"): _SpecificExtractor("AmazonFSx", _direct("FileSystem", "ResourceARN")),
+    ("finspace.amazonaws.com", "CreateEnvironment"): _SpecificExtractor("AmazonFinSpace", _direct("environmentArn")),
+    ("gamelift.amazonaws.com", "CreateFleet"): _SpecificExtractor("AmazonGameLift", _direct("FleetAttributes", "FleetArn")),
+    ("healthlake.amazonaws.com", "CreateFHIRDatastore"): _SpecificExtractor("AmazonHealthLake", _direct("DatastoreArn")),
+    ("kinesisanalytics.amazonaws.com", "CreateApplication"): _SpecificExtractor(
+        "AmazonKinesisAnalytics", _direct("ApplicationDetail", "ApplicationARN")
+    ),
+    ("firehose.amazonaws.com", "CreateDeliveryStream"): _SpecificExtractor("AmazonKinesisFirehose", _direct("DeliveryStreamARN")),
+    ("kinesisvideo.amazonaws.com", "CreateStream"): _SpecificExtractor("AmazonKinesisVideo", _direct("StreamARN")),
+    ("mq.amazonaws.com", "CreateBroker"): _SpecificExtractor("AmazonMQ", _direct("BrokerArn")),
+    ("kafka.amazonaws.com", "CreateClusterV2"): _SpecificExtractor("AmazonMSK", _direct("ClusterArn")),
+    ("memorydb.amazonaws.com", "CreateCluster"): _SpecificExtractor("AmazonMemoryDB", _direct("Cluster", "ARN")),
+    ("timestream.amazonaws.com", "CreateDatabase"): _SpecificExtractor("AmazonTimestream", _direct("Database", "Arn")),
+    ("vpc-lattice.amazonaws.com", "CreateServiceNetwork"): _SpecificExtractor("AmazonVPC", _direct("arn")),
+    ("payment-cryptography.amazonaws.com", "CreateKey"): _SpecificExtractor("PaymentCryptography", _direct("Key", "KeyArn")),
+    ("codebuild.amazonaws.com", "CreateProject"): _SpecificExtractor("CodeBuild", _direct("project", "arn")),
+    ("es.amazonaws.com", "CreateDomain"): _SpecificExtractor("AmazonES", _direct("DomainStatus", "ARN")),
+    ("es.amazonaws.com", "CreateElasticsearchDomain"): _SpecificExtractor("AmazonES", _direct("DomainStatus", "ARN")),
+    ("redshift-serverless.amazonaws.com", "CreateWorkgroup"): _SpecificExtractor(
+        "AmazonRedshift", _direct("workgroup", "workgroupArn")
+    ),
+    ("dsql.amazonaws.com", "CreateCluster"): _SpecificExtractor("AuroraDSQL", _direct("arn")),
+    ("datapipeline.amazonaws.com", "CreatePipeline"): _SpecificExtractor(
+        "datapipeline", _constructed("arn:aws:datapipeline:{region}:{account_id}:pipeline/{value}", "responseElements", "pipelineId")
+    ),
+    ("cassandra.amazonaws.com", "CreateKeyspace"): _SpecificExtractor("AmazonMCS", _direct("resourceArn")),
+    ("cassandra.amazonaws.com", "CreateTable"): _SpecificExtractor("AmazonMCS", _direct("resourceArn")),
+    ("apigateway.amazonaws.com", "CreateRestApi"): _SpecificExtractor(
+        "AmazonApiGateway", _constructed("arn:aws:apigateway:{region}::/restapis/{value}", "responseElements", "id")
+    ),
+    ("apigateway.amazonaws.com", "CreateApi"): _SpecificExtractor(
+        "AmazonApiGateway", _constructed("arn:aws:apigateway:{region}::/apis/{value}", "responseElements", "ApiId")
+    ),
+    ("storagegateway.amazonaws.com", "CreateNFSFileShare"): _SpecificExtractor("AWSStorageGateway", _direct("FileShareARN")),
+    ("storagegateway.amazonaws.com", "CreateSMBFileShare"): _SpecificExtractor("AWSStorageGateway", _direct("FileShareARN")),
+    ("storagegateway.amazonaws.com", "CreateStorediSCSIVolume"): _SpecificExtractor("AWSStorageGateway", _direct("VolumeARN")),
+    ("storagegateway.amazonaws.com", "CreateCachediSCSIVolume"): _SpecificExtractor("AWSStorageGateway", _direct("VolumeARN")),
+    ("m2.amazonaws.com", "CreateEnvironment"): _SpecificExtractor(
+        "AWSM2", _constructed("arn:aws:m2:{region}:{account_id}:environment/{value}", "responseElements", "environmentId")
+    ),
+    ("m2.amazonaws.com", "CreateApplication"): _SpecificExtractor("AWSM2", _direct("applicationArn")),
+    ("mediaconvert.amazonaws.com", "CreateQueue"): _SpecificExtractor("AWSElementalMediaConvert", _direct("Queue", "Arn")),
+    ("cognito-idp.amazonaws.com", "CreateUserPool"): _SpecificExtractor("AmazonCognito", _direct("UserPool", "Arn")),
+    ("cognito-identity.amazonaws.com", "CreateIdentityPool"): _SpecificExtractor(
+        "AmazonCognito",
+        _constructed("arn:aws:cognito-identity:{region}:{account_id}:identitypool/{value}", "responseElements", "IdentityPoolId"),
+    ),
+    ("dms.amazonaws.com", "CreateReplicationInstance"): _SpecificExtractor(
+        "AWSDatabaseMigrationSvc", _direct("ReplicationInstance", "ReplicationInstanceArn")
+    ),
+    ("dms.amazonaws.com", "CreateReplicationTask"): _SpecificExtractor(
+        "AWSDatabaseMigrationSvc", _direct("ReplicationTask", "ReplicationTaskArn")
+    ),
+    ("directconnect.amazonaws.com", "CreateConnection"): _SpecificExtractor(
+        "AWSDirectConnect",
+        _constructed("arn:aws:directconnect:{region}:{account_id}:dxcon/{value}", "responseElements", "connectionId"),
+    ),
+    ("directconnect.amazonaws.com", "CreateDirectConnectGateway"): _SpecificExtractor(
+        "AWSDirectConnect",
+        _constructed(
+            "arn:aws:directconnect::{account_id}:dx-gateway/{value}",
+            "responseElements",
+            "directConnectGateway",
+            "directConnectGatewayId",
+        ),
+    ),
+    ("ds.amazonaws.com", "CreateDirectory"): _SpecificExtractor(
+        "AWSDirectoryService", _constructed("arn:aws:ds:{region}:{account_id}:directory/{value}", "responseElements", "DirectoryId")
+    ),
+    ("ds.amazonaws.com", "CreateMicrosoftAD"): _SpecificExtractor(
+        "AWSDirectoryService", _constructed("arn:aws:ds:{region}:{account_id}:directory/{value}", "responseElements", "DirectoryId")
+    ),
+    ("transfer.amazonaws.com", "CreateServer"): _SpecificExtractor(
+        "AWSTransfer", _constructed("arn:aws:transfer:{region}:{account_id}:server/{value}", "responseElements", "ServerId")
+    ),
+    ("athena.amazonaws.com", "CreateWorkGroup"): _SpecificExtractor(
+        "AmazonAthena", _constructed("arn:aws:athena:{region}:{account_id}:workgroup/{value}", "requestParameters", "Name")
+    ),
+    ("athena.amazonaws.com", "CreateDataCatalog"): _SpecificExtractor(
+        "AmazonAthena", _constructed("arn:aws:athena:{region}:{account_id}:datacatalog/{value}", "requestParameters", "Name")
+    ),
+    ("logs.amazonaws.com", "CreateLogGroup"): _SpecificExtractor(
+        "AmazonCloudWatch",
+        _constructed("arn:aws:logs:{region}:{account_id}:log-group:{value}", "requestParameters", "logGroupName"),
+    ),
+    ("glacier.amazonaws.com", "CreateVault"): _SpecificExtractor(
+        "AmazonGlacier", _constructed("arn:aws:glacier:{region}:{account_id}:vaults/{value}", "requestParameters", "vaultName")
+    ),
+    ("kendra.amazonaws.com", "CreateIndex"): _SpecificExtractor(
+        "AmazonKendra", _constructed("arn:aws:kendra:{region}:{account_id}:index/{value}", "responseElements", "Id")
+    ),
+    ("kinesis.amazonaws.com", "CreateStream"): _SpecificExtractor(
+        "AmazonKinesis", _constructed("arn:aws:kinesis:{region}:{account_id}:stream/{value}", "requestParameters", "StreamName")
+    ),
+    ("medical-imaging.amazonaws.com", "CreateDatastore"): _SpecificExtractor(
+        "AmazonMedicalImaging",
+        _constructed("arn:aws:medical-imaging:{region}:{account_id}:datastore/{value}", "responseElements", "datastoreId"),
+    ),
+    ("codepipeline.amazonaws.com", "CreatePipeline"): _SpecificExtractor(
+        "AWSCodePipeline",
+        _constructed("arn:aws:codepipeline:{region}:{account_id}:{value}", "requestParameters", "pipeline", "name"),
+    ),
+    ("cloudhsm.amazonaws.com", "CreateCluster"): _SpecificExtractor(
+        "CloudHSM", _constructed("arn:aws:cloudhsm:{region}:{account_id}:cluster/{value}", "responseElements", "Cluster", "ClusterId")
+    ),
+    ("elasticmapreduce.amazonaws.com", "RunJobFlow"): _SpecificExtractor("ElasticMapReduce", _direct("ClusterArn")),
 }
 
 
 # ---------------------------------------------------------------------------
-# Fallback genérico best-effort — para eventos mapeados sem extractor dedicado.
+# Fallback genérico best-effort — rede de segurança para um evento mapeado
+# em event_mapping.py sem entrada em _REGISTRY (não deveria acontecer com a
+# tabela atual, mas defensivo).
 # ---------------------------------------------------------------------------
 
 

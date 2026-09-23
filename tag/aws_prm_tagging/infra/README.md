@@ -83,17 +83,24 @@ documentados aqui de propósito para serem revisitados com dado real:
 
 ## Permissões IAM — cobertura real
 
-A política `PrmEtapa3NativeTagWriteLoteInicial` só tem a ação de tagging
-NATIVA (exigida além de `tag:TagResources`, ver
+A política `PrmEtapa3NativeTagWrite` tem a ação de tagging NATIVA (exigida
+além de `tag:TagResources` para o caminho genérico, ver
 [docs/producao.md](../docs/producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real))
-para os serviços do **lote inicial** com extractor dedicado em
-`event_parser.py` (EC2, S3, Lambda, DynamoDB, RDS, EKS, Bedrock, SNS, SQS,
-ECR, ECS, EFS, ElastiCache, KMS, CloudFront, Route 53, Secrets Manager, Step
-Functions, ELB). Os demais serviços mapeados em `event_mapping.py` (cobertos
-só pelo extractor genérico best-effort) vão falhar com `AccessDenied` ao
-tentar taguear até a permissão nativa correspondente ser adicionada aqui —
-isso é **esperado e seguro** (reportado como `erro_permissao`, nunca uma
-ação incorreta), não uma lacuna silenciosa.
+para **67 ações**, uma por serviço mapeado em `event_mapping.py` — cobre
+praticamente todos os ~69 serviços mapeados (EKS/Bedrock/ELB já têm sua
+permissão via `PrmEtapa3TagWrite`, que usa a API dedicada, não o caminho
+genérico). Cada nome de ação foi confirmado contra o botocore instalado
+(`session.get_service_model(...).operation_names`), não veio de memória —
+mesmo processo de verificação de `event_parser.py`.
+
+**Único serviço mapeado sem ação de tag encontrada**: `CodeBuild` — o
+pacote `codebuild` do botocore não tem nenhuma operação com "tag" no nome;
+tags de projeto parecem ser geridas via `UpdateProject` (todo o objeto,
+sem uma ação `TagResource` dedicada), mas isso não foi confirmado. Até
+resolver, um `CreateProject` do CodeBuild vai gerar uma tentativa de escrita
+que falha (`erro_permissao` ou `ValidationException`, dependendo do
+mecanismo real) — comportamento seguro, registrado em
+[docs/melhorias-futuras.md](../docs/melhorias-futuras.md).
 
 ## Build e deploy (referência — não validado em sandbox ainda)
 

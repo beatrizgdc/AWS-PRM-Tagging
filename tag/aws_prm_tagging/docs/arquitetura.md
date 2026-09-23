@@ -542,13 +542,21 @@ recurso (`eventSource`/`eventName` do CloudTrail), indexada pela mesma
 com o CSV (testada em `test_event_mapping.py`): toda entrada do CSV precisa
 ter uma linha aqui, mesmo que `None` (ainda não mapeada).
 
-**Cobertura parcial de propósito**: hoje cobre um **lote inicial de ~25**
-dos ~85 serviços do CSV — os de alta confiança na forma do evento de
-criação. Os demais estão `None`, documentados com o motivo (múltiplos tipos
-de recurso sem "o" recurso óbvio, serviço muito novo, API não-REST, etc.) —
-ver docstring do módulo e
-[docs/melhorias-futuras.md](melhorias-futuras.md). Estender essa tabela é
-trabalho incremental esperado, não uma correção pontual.
+**Cobertura**: hoje cobre **69 dos ~85** serviços do CSV (92 eventos) —
+`eventSource`/`eventName` de cada linha checados contra o `botocore`
+instalado (`session.get_service_model(...)`, que dá o nome exato de cada
+operação e o `signingName`/`endpointPrefix` real de cada serviço), não só
+de memória — esse processo já corrigiu 3 erros reais numa versão anterior
+deste módulo (fonte errada para `AmazonKinesisAnalytics`,
+`AmazonTimestream` e `CloudHSM`) e confirmou (não só supôs) que
+`AmazonDocDB`/`AmazonNeptune` genuinamente não são distinguíveis por evento
+(mesmo `endpointPrefix`/`signingName` do RDS). Os 16 que ficam `None` têm o
+motivo documentado linha a linha (contagem real de operações `Create*` via
+botocore — `AmazonSageMaker` tem 72(!), `AmazonQuickSight` 34, `AWSGlue`
+31, sem "o" recurso óbvio para PRM em nenhum dos três) — ver docstring do
+módulo e [docs/melhorias-futuras.md](melhorias-futuras.md). Estender essa
+tabela é trabalho incremental esperado quando houver prioridade de negócio
+para um dos 16 restantes, não uma correção pontual.
 
 `build_event_patterns()` monta o(s) event pattern(s) do EventBridge a
 partir da tabela, agrupados por `event_source` via `$or` (evita o
@@ -571,16 +579,27 @@ do EventBridge — puro, nenhuma chamada de API. Devolve lista (não um único
 valor) porque algumas APIs de criação são de lote (`ec2:RunInstances` pode
 criar várias instâncias numa única chamada).
 
-Dois níveis de confiança: **extractors dedicados** (`_REGISTRY`, um por
-`(eventSource, eventName)` de alta confiança — EC2, S3, Lambda, DynamoDB,
-RDS, EKS, Bedrock, SNS, SQS, ECR, ECS, EFS, ElastiCache, KMS, CloudFront,
-Route 53, Secrets Manager, Step Functions, ELB) e um **fallback genérico
-best-effort** (`_extract_generic`) para qualquer evento mapeado sem
-extractor dedicado — procura recursivamente uma chave terminando em "arn"
-dentro de `responseElements`; nunca inventa um ARN, devolve lista vazia na
-menor incerteza. **Nenhum dos dois foi validado contra um evento CloudTrail
-real capturado em sandbox** — ver
-[docs/melhorias-futuras.md](melhorias-futuras.md).
+**Praticamente todo evento mapeado tem extractor dedicado** (`_REGISTRY`,
+91 dos 92 eventos — só `elasticmapreduce:RunJobFlow` ficou fora por
+descuido numa revisão e já foi coberto também; o fallback genérico
+(`_extract_generic`) existe como rede de segurança, não como caminho
+principal). Cada extractor é um `_DirectPath`/`_ConstructedPath` (dataclasses
+inspecionáveis, não closures) com um `path` explícito — verificado por
+`test_event_parser_botocore.py` contra o shape real da operação no
+botocore instalado (ver seção de testes abaixo). Dentro dos extractors
+dedicados, uma distinção de confiança adicional importa: serviços de
+protocolo `json`/`rest-json` (a maioria) usam a capitalização exata do
+botocore (`_direct`/`_constructed`, alta confiança — o wire format real
+geralmente bate com o shape do SDK); os poucos de protocolo `query`/`ec2`/
+`rest-xml` (`ec2`, `rds`, `elasticache`, `redshift`, `elasticbeanstalk`,
+`sns`, `s3`, `route53`, `cloudfront`, `elasticloadbalancing`) usam leitura
+tolerante a capitalização (`_direct_ci`/`_constructed_ci`) ou construção a
+partir de `requestParameters` (mais simples, menos superfície de erro) —
+ver docstring do módulo para o raciocínio completo. **Nenhum extractor foi
+validado contra um evento CloudTrail real capturado em sandbox** — a
+verificação contra o botocore prova que os campos existem na API, não a
+capitalização exata que o CloudTrail grava para esses serviços específicos
+— ver [docs/melhorias-futuras.md](melhorias-futuras.md).
 
 ### `single_resource.py` (Etapa 3)
 

@@ -27,31 +27,64 @@ registrado como melhoria futura em
 SNS/e-mail apontando o(s) `product_service_code` sem mapeamento). Por ora, o
 comportamento é silencioso: um serviço sem mapeamento simplesmente não gera
 nenhum evento de criação observado pela Etapa 3 (o event pattern do
-EventBridge, construído por `build_event_pattern()`, só cobre os serviços
+EventBridge, construído por `build_event_patterns()`, só cobre os serviços
 mapeados) — a Etapa 4 (varredura periódica, fora do escopo deste módulo)
 continua sendo o backstop para qualquer lacuna de cobertura aqui.
 
-## Confiabilidade dos mapeamentos abaixo
+## Como `eventSource`/`eventName` foram verificados
 
-**Importante, para quem for revisar/estender esta tabela**: os `eventName`/
-`eventSource` abaixo vêm do conhecimento de documentação pública das APIs da
-AWS, não de um evento CloudTrail real capturado em sandbox. A maioria tem
-alta confiança (operações de criação bem estabelecidas e estáveis: EC2, S3,
-Lambda, DynamoDB, RDS, EKS, Bedrock, SNS, SQS, etc.), mas **nenhuma foi
-validada contra uma conta AWS real ainda** — mesma ressalva que já existe em
-outros pontos do projeto (ver, por exemplo, "Códigos de erro 'não
-encontrado' do ELBv2 sem confirmação em sandbox" em
-[docs/melhorias-futuras.md](docs/melhorias-futuras.md)). Recomendação:
-validar cada entrada contra um evento real antes de habilitar aquele
-serviço em produção.
+Ao contrário de uma primeira versão deste módulo (que vinha só de memória),
+`eventSource` e `eventName` abaixo foram checados contra os modelos de
+serviço reais do `botocore` instalado localmente (`botocore.session.
+get_service_model(...)`) — que dá o nome exato de cada operação de API e o
+`signingName`/`endpointPrefix` real de cada serviço (a base do `eventSource`
+que o CloudTrail usa). Isso já corrigiu 3 erros reais que a versão anterior
+tinha (fonte errada para `AmazonKinesisAnalytics`, `AmazonTimestream` e
+`CloudHSM` — os três agora corrigidos) e confirmou que `AmazonDocDB`/
+`AmazonNeptune` genuinamente não são distinguíveis por evento (os pacotes
+`docdb`/`neptune` do botocore têm `endpointPrefix`/`signingName` = `rds` —
+usam o MESMO endpoint que RDS/Aurora, não um serviço à parte).
 
-Serviços deliberadamente deixados como `None` (não é preguiça — é porque
-mapear errado aqui tem custo real, ver `services.py`/`melhorias-futuras.md`
-sobre o mesmo princípio para `_NAMESPACE_TO_CODE`): serviços muito novos
-(pouca confiança na API pública), serviços com múltiplos tipos de recurso
-sem um "recurso principal" óbvio para fins de tagueamento PRM, serviços
-descontinuados/legados, e serviços cujo modelo de API não é o REST/CloudTrail
-management-event padrão (ex.: Keyspaces/Cassandra, que usa API CQL).
+**O que o botocore NÃO confirma**: a forma exata de `responseElements`/
+`requestParameters` que o CloudTrail de fato grava — o modelo do botocore
+descreve o shape "lógico" da API (usado pelos SDKs), não necessariamente a
+serialização exata que aparece no evento do CloudTrail. Para a maioria dos
+serviços (protocolo `json`/`rest-json` — a maioria dos mapeados aqui), a
+experiência documentada é que o CloudTrail preserva os nomes de campo tal
+como a própria API os devolve, e nesses casos o shape do botocore é uma
+fonte confiável. Para os poucos serviços de protocolo `query`/`ec2`/
+`rest-xml` (`ec2`, `rds`, `elasticache`, `redshift`, `elasticbeanstalk`,
+`sns`, `s3`, `route53`, `cloudfront`), o CloudTrail historicamente aplica
+uma conversão XML→JSON com convenções próprias (ex.: primeira letra
+minúscula, e no caso específico do EC2 um empacotamento adicional
+`"xSet": {"items": [...]}` para listas) — `event_parser.py` documenta,
+extractor por extractor, onde essa incerteza extra se aplica e usa uma
+leitura tolerante a variação de capitalização nesses casos específicos.
+**Nenhum extractor foi validado contra um evento CloudTrail real capturado
+em sandbox** — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md).
+
+## Cobertura
+
+Hoje cobre ~69 dos 85 `product_service_code` distintos do CSV. Os que
+ficam `None` têm o motivo documentado inline — quase todos por terem um
+número grande de operações `Create*` sem "o" recurso óbvio para fins de
+tagueamento PRM (contagem real, verificada via botocore, não estimativa):
+`AmazonAppStream` (17), `AmazonBedrockAgentCore` (29),
+`AmazonSageMaker` (72!), `AmazonQuickSight` (34), `AWSGlue` (31),
+`AWSIoT` (32), `AWSDataSync` (13), `AWSDeadlineCloud` (13),
+`AWSSecurityHub` (11, operações de nível de conta, não "criação de
+recurso" no sentido usual), `AmazonOmics` (12),
+`AWSElasticDisasterRecovery` (6, nenhuma é uma criação de recurso "normal"
+— é replicação contínua), `comprehend` (5, mas jobs/endpoints, sem recurso
+persistente óbvio) e `AWSCodeStar` (serviço descontinuado, sem definição no
+botocore instalado).
+
+Três achados que ENTRARAM na cobertura, ao contrário do que uma versão
+anterior deste módulo assumia sem checar: `AmazonMCS` (Amazon Keyspaces) —
+o control-plane é uma API REST normal (`CreateKeyspace`/`CreateTable`), não
+CQL como a versão anterior deste módulo assumia por engano; `AuroraDSQL` e
+`AWSM2` — ambos têm um número pequeno de operações `Create*` com ARN
+direto na resposta.
 """
 from __future__ import annotations
 
@@ -80,20 +113,23 @@ class CreationEventRule:
 # pelo mesmo princípio de desambiguação por namespace que
 # `services.classify_arn` já usa.
 _EVENT_MAPPING: dict[str, tuple[CreationEventRule, ...] | None] = {
-    "AmazonApiGateway": None,  # REST API (v1) e HTTP/WebSocket API (v2) são recursos distintos — mapear os dois com cuidado depois
-    "AmazonAppStream": None,  # múltiplos tipos de recurso (Stack/Fleet/ImageBuilder), sem "o" recurso óbvio
+    "AmazonApiGateway": (
+        CreationEventRule("apigateway.amazonaws.com", "CreateRestApi"),
+        CreationEventRule("apigateway.amazonaws.com", "CreateApi"),  # HTTP/WebSocket API (v2) — mesma fonte que REST API
+    ),
+    "AmazonAppStream": None,  # 17 operações Create* (verificado via botocore), sem "o" recurso óbvio
     "AWSAppSync": (CreationEventRule("appsync.amazonaws.com", "CreateGraphqlApi"),),
     "AmazonAthena": (
         CreationEventRule("athena.amazonaws.com", "CreateWorkGroup"),
         CreationEventRule("athena.amazonaws.com", "CreateDataCatalog"),
     ),
-    "AuroraDSQL": None,  # serviço novo (2025); API ainda não bem estabelecida na minha base de conhecimento
+    "AuroraDSQL": (CreationEventRule("dsql.amazonaws.com", "CreateCluster"),),
     "AWSBackup": (
         CreationEventRule("backup.amazonaws.com", "CreateBackupVault"),
         CreationEventRule("backup.amazonaws.com", "CreateBackupPlan"),
     ),
     "AmazonBedrock": (CreationEventRule("bedrock.amazonaws.com", "CreateInferenceProfile"),),
-    "AmazonBedrockAgentCore": None,  # múltiplos sub-recursos novos (Runtime/Gateway/Memory/...), baixa confiança
+    "AmazonBedrockAgentCore": None,  # 29 operações Create* (verificado via botocore), múltiplos sub-recursos novos
     "AWSCertificateManager": (
         CreationEventRule("acm.amazonaws.com", "RequestCertificate"),
         CreationEventRule("acm-pca.amazonaws.com", "CreateCertificateAuthority"),
@@ -104,24 +140,27 @@ _EVENT_MAPPING: dict[str, tuple[CreationEventRule, ...] | None] = {
         CreationEventRule("networkmanager.amazonaws.com", "CreateGlobalNetwork"),
     ),
     "AmazonCloudFront": (CreationEventRule("cloudfront.amazonaws.com", "CreateDistribution"),),
-    "CloudHSM": (CreationEventRule("cloudhsmv2.amazonaws.com", "CreateCluster"),),
+    # CORRIGIDO: fonte real é "cloudhsm" (confirmado via signingName do
+    # botocore) — uma versão anterior deste módulo usava
+    # "cloudhsmv2.amazonaws.com", errado (esse é só o nome do pacote SDK).
+    "CloudHSM": (CreationEventRule("cloudhsm.amazonaws.com", "CreateCluster"),),
     "AmazonCloudWatch": (CreationEventRule("logs.amazonaws.com", "CreateLogGroup"),),  # CSV: "Logs only"
     "CodeBuild": (CreationEventRule("codebuild.amazonaws.com", "CreateProject"),),
     "AWSCodePipeline": (CreationEventRule("codepipeline.amazonaws.com", "CreatePipeline"),),
-    "AWSCodeStar": None,  # serviço descontinuado pela AWS (sem novos clientes) — baixa prioridade
+    "AWSCodeStar": None,  # serviço descontinuado pela AWS (sem novos clientes) e sem definição no botocore instalado
     "AmazonCognito": (
         CreationEventRule("cognito-idp.amazonaws.com", "CreateUserPool"),
         CreationEventRule("cognito-identity.amazonaws.com", "CreateIdentityPool"),
     ),
-    "comprehend": None,  # recursos são majoritariamente jobs/endpoints, sem "o" recurso persistente óbvio
+    "comprehend": None,  # 5 operações Create* (verificado via botocore), mas jobs/endpoints, sem recurso persistente óbvio
     "AmazonConnect": (CreationEventRule("connect.amazonaws.com", "CreateInstance"),),
-    "datapipeline": None,  # serviço legado/baixo uso, sem prioridade de mapear agora
+    "datapipeline": (CreationEventRule("datapipeline.amazonaws.com", "CreatePipeline"),),
     "AWSDatabaseMigrationSvc": (
         CreationEventRule("dms.amazonaws.com", "CreateReplicationInstance"),
         CreationEventRule("dms.amazonaws.com", "CreateReplicationTask"),
     ),
-    "AWSDataSync": None,  # múltiplos tipos de "Location" (S3/NFS/SMB/...), sem recurso único óbvio
-    "AWSDeadlineCloud": None,  # serviço novo, baixa confiança na API
+    "AWSDataSync": None,  # 13 operações Create* (verificado via botocore), quase todas "Location*", sem recurso único óbvio
+    "AWSDeadlineCloud": None,  # 13 operações Create* (verificado via botocore), múltiplos sub-recursos
     "AWSDirectConnect": (
         CreationEventRule("directconnect.amazonaws.com", "CreateConnection"),
         CreationEventRule("directconnect.amazonaws.com", "CreateDirectConnectGateway"),
@@ -130,11 +169,11 @@ _EVENT_MAPPING: dict[str, tuple[CreationEventRule, ...] | None] = {
         CreationEventRule("ds.amazonaws.com", "CreateDirectory"),
         CreationEventRule("ds.amazonaws.com", "CreateMicrosoftAD"),
     ),
-    # DocumentDB e Neptune usam rds:CreateDBCluster (mesma ambiguidade de
-    # namespace "rds" já documentada em services.py) — deixados `None` aqui
-    # de propósito: mapear via este evento também dispararia para
-    # AmazonRDS/AmazonNeptune, sem forma de diferenciar sem uma chamada de
-    # API extra (mesmo problema, mesma decisão de não resolver agora).
+    # DocumentDB e Neptune: CONFIRMADO via botocore (não só suposto) que os
+    # pacotes SDK "docdb"/"neptune" têm endpointPrefix/signingName = "rds" —
+    # usam o MESMO endpoint/eventSource que RDS/Aurora. Não há como
+    # diferenciar por evento sem uma chamada de API extra (mesma ambiguidade
+    # documentada em services.py para o passo genérico da Etapa 1).
     "AmazonDocDB": None,
     "AmazonDynamoDB": (CreationEventRule("dynamodb.amazonaws.com", "CreateTable"),),
     "AmazonEC2": (
@@ -154,48 +193,71 @@ _EVENT_MAPPING: dict[str, tuple[CreationEventRule, ...] | None] = {
         CreationEventRule("elasticbeanstalk.amazonaws.com", "CreateApplication"),
         CreationEventRule("elasticbeanstalk.amazonaws.com", "CreateEnvironment"),
     ),
-    "AWSElasticDisasterRecovery": None,  # fluxo de "recurso criado" não mapeia bem ao modelo de replicação contínua do DRS
+    "AWSElasticDisasterRecovery": None,  # 6 operações Create* (verificado via botocore), nenhuma é "criar recurso" no sentido usual — é replicação contínua
     "AmazonEFS": (CreationEventRule("elasticfilesystem.amazonaws.com", "CreateFileSystem"),),
     "AmazonElastiCache": (CreationEventRule("elasticache.amazonaws.com", "CreateCacheCluster"),),
-    "AWSElementalMediaConvert": None,  # recurso taggável mais relevante (Queue/JobTemplate) ambíguo, baixa prioridade
+    "AWSElementalMediaConvert": (CreationEventRule("mediaconvert.amazonaws.com", "CreateQueue"),),
     "AWSElementalMediaLive": (CreationEventRule("medialive.amazonaws.com", "CreateChannel"),),
     "AWSElementalMediaPackage": (CreationEventRule("mediapackage.amazonaws.com", "CreateChannel"),),
     "ElasticMapReduce": (CreationEventRule("elasticmapreduce.amazonaws.com", "RunJobFlow"),),
     "AmazonFinSpace": (CreationEventRule("finspace.amazonaws.com", "CreateEnvironment"),),
     "AmazonFSx": (CreationEventRule("fsx.amazonaws.com", "CreateFileSystem"),),
     "AmazonGameLift": (CreationEventRule("gamelift.amazonaws.com", "CreateFleet"),),
-    "AWSGlue": None,  # muitos tipos de recurso (Job/Crawler/Database/...), sem "o" recurso óbvio para PRM
+    "AWSGlue": None,  # 31 operações Create* (verificado via botocore), sem "o" recurso óbvio para PRM
     "AmazonMedicalImaging": (CreationEventRule("medical-imaging.amazonaws.com", "CreateDatastore"),),
     "AmazonHealthLake": (CreationEventRule("healthlake.amazonaws.com", "CreateFHIRDatastore"),),
-    "AWSIoT": None,  # IoT Core tem muitos tipos de recurso, sem prioridade clara para o lote inicial
-    "AWSIoTSiteWise": None,  # idem — AssetModel/Asset/Gateway, sem prioridade clara ainda
+    "AWSIoT": None,  # 32 operações Create* (verificado via botocore), sem prioridade clara para o lote inicial
+    "AWSIoTSiteWise": None,  # AssetModel/Asset/Gateway, sem prioridade clara ainda
     "AmazonKendra": (CreationEventRule("kendra.amazonaws.com", "CreateIndex"),),
     "awskms": (CreationEventRule("kms.amazonaws.com", "CreateKey"),),
-    "AmazonMCS": None,  # Keyspaces usa API CQL (Cassandra), não segue o modelo de CloudTrail management event padrão
-    "AmazonKinesisAnalytics": (CreationEventRule("kinesisanalyticsv2.amazonaws.com", "CreateApplication"),),
+    # CORRIGIDO: Amazon Keyspaces (Cassandra) tem sim um control-plane REST
+    # normal (achado verificando o botocore) — uma versão anterior deste
+    # módulo assumia, sem checar, que só existia a API CQL (data-plane) e
+    # por isso não tinha como gerar evento CloudTrail; errado. A fonte é
+    # "cassandra.amazonaws.com" (confirmado via signingName/endpointPrefix
+    # do pacote "keyspaces" do botocore — o nome do pacote SDK não bate com
+    # o nome real do serviço no CloudTrail, mesmo padrão de armadilha que
+    # já pegou CloudHSM acima).
+    "AmazonMCS": (
+        CreationEventRule("cassandra.amazonaws.com", "CreateKeyspace"),
+        CreationEventRule("cassandra.amazonaws.com", "CreateTable"),
+    ),
+    # CORRIGIDO: fonte real é "kinesisanalytics" (confirmado via
+    # signingName do botocore), não "kinesisanalyticsv2.amazonaws.com" como
+    # uma versão anterior deste módulo tinha — o "v2" é só o nome do pacote
+    # SDK que expõe a API mais nova, o serviço/eventSource no CloudTrail é
+    # o mesmo de sempre.
+    "AmazonKinesisAnalytics": (CreationEventRule("kinesisanalytics.amazonaws.com", "CreateApplication"),),
     "AmazonKinesisFirehose": (CreationEventRule("firehose.amazonaws.com", "CreateDeliveryStream"),),
     "AmazonKinesis": (CreationEventRule("kinesis.amazonaws.com", "CreateStream"),),
     "AmazonKinesisVideo": (CreationEventRule("kinesisvideo.amazonaws.com", "CreateStream"),),
-    "AWSLambda": (CreationEventRule("lambda.amazonaws.com", "CreateFunction20150331v2"),),
+    "AWSLambda": (CreationEventRule("lambda.amazonaws.com", "CreateFunction"),),
     "AWSELB": (CreationEventRule("elasticloadbalancing.amazonaws.com", "CreateLoadBalancer"),),
-    "AWSM2": None,  # serviço de nicho (mainframe modernization), baixa prioridade para o lote inicial
+    "AWSM2": (
+        CreationEventRule("m2.amazonaws.com", "CreateEnvironment"),
+        CreationEventRule("m2.amazonaws.com", "CreateApplication"),
+    ),
     "AmazonMemoryDB": (CreationEventRule("memorydb.amazonaws.com", "CreateCluster"),),
     "AmazonMQ": (CreationEventRule("mq.amazonaws.com", "CreateBroker"),),
     "AmazonMSK": (CreationEventRule("kafka.amazonaws.com", "CreateClusterV2"),),
-    "AmazonNeptune": None,  # mesma ambiguidade de namespace "rds" que AmazonDocDB, ver acima
+    "AmazonNeptune": None,  # mesma ambiguidade CONFIRMADA de "AmazonDocDB" acima (endpointPrefix/signingName = "rds")
     "AWSNetworkFirewall": (CreationEventRule("network-firewall.amazonaws.com", "CreateFirewall"),),
-    "AmazonOmics": None,  # serviço de nicho, múltiplos tipos de recurso, baixa prioridade
-    "AmazonES": (CreationEventRule("es.amazonaws.com", "CreateDomain"),),  # inclui OpenSearch Service
+    "AmazonOmics": None,  # 12 operações Create* (verificado via botocore), múltiplos tipos de recurso
+    # Amazon OpenSearch Service (inclui o legado "Elasticsearch Service" —
+    # dois nomes de operação diferentes, mesma fonte "es.amazonaws.com"
+    # (confirmado: os pacotes botocore "es" e "opensearch" têm o mesmo
+    # endpointPrefix "es") — cobre chamadas feitas com SDK antigo
+    # (CreateElasticsearchDomain) e novo (CreateDomain).
+    "AmazonES": (
+        CreationEventRule("es.amazonaws.com", "CreateDomain"),
+        CreationEventRule("es.amazonaws.com", "CreateElasticsearchDomain"),
+    ),
     "PaymentCryptography": (CreationEventRule("payment-cryptography.amazonaws.com", "CreateKey"),),
-    "AmazonQuickSight": None,  # muitos tipos de recurso (dashboard/dataset/analysis/...), ambíguo para PRM
+    "AmazonQuickSight": None,  # 34 operações Create* (verificado via botocore) — de longe a mais ambígua depois do SageMaker
     "AmazonRedshift": (
         CreationEventRule("redshift.amazonaws.com", "CreateCluster"),
         CreationEventRule("redshift-serverless.amazonaws.com", "CreateWorkgroup"),
     ),
-    # CreateDBCluster também é usado por DocumentDB/Neptune (ver acima) —
-    # aqui o evento SEMPRE é rotulado como "Amazon RDS" na extração, mesma
-    # limitação de rótulo já documentada em services.py/melhorias-futuras.md
-    # (não afeta a tag aplicada, só o campo "servico" do relatório).
     "AmazonRDS": (
         CreationEventRule("rds.amazonaws.com", "CreateDBInstance"),
         CreationEventRule("rds.amazonaws.com", "CreateDBCluster"),
@@ -204,15 +266,23 @@ _EVENT_MAPPING: dict[str, tuple[CreationEventRule, ...] | None] = {
     "AmazonRoute53": (CreationEventRule("route53.amazonaws.com", "CreateHostedZone"),),
     "AmazonS3": (CreationEventRule("s3.amazonaws.com", "CreateBucket"),),
     "AmazonGlacier": (CreationEventRule("glacier.amazonaws.com", "CreateVault"),),
-    "AmazonSageMaker": None,  # superfície de recurso enorme (notebook/endpoint/model/training job/...), sem prioridade clara ainda
+    "AmazonSageMaker": None,  # 72(!) operações Create* (verificado via botocore) — a mais ambígua de todo o CSV
     "AWSSecretsManager": (CreationEventRule("secretsmanager.amazonaws.com", "CreateSecret"),),
-    "AWSSecurityHub": None,  # habilitação em nível de conta, não um fluxo de "recurso criado" no sentido usual
+    "AWSSecurityHub": None,  # 11 operações Create* (verificado via botocore), nível de conta, não "criação de recurso" no sentido usual
     "AmazonSNS": (CreationEventRule("sns.amazonaws.com", "CreateTopic"),),
     "AWSQueueService": (CreationEventRule("sqs.amazonaws.com", "CreateQueue"),),
     "AmazonStates": (CreationEventRule("states.amazonaws.com", "CreateStateMachine"),),
-    "AWSStorageGateway": None,  # múltiplos tipos de recurso (gateway/volume/share), ambíguo, baixa prioridade
+    "AWSStorageGateway": (
+        CreationEventRule("storagegateway.amazonaws.com", "CreateNFSFileShare"),
+        CreationEventRule("storagegateway.amazonaws.com", "CreateSMBFileShare"),
+        CreationEventRule("storagegateway.amazonaws.com", "CreateStorediSCSIVolume"),
+        CreationEventRule("storagegateway.amazonaws.com", "CreateCachediSCSIVolume"),
+    ),
     "AWSSystemsManager": (CreationEventRule("ssm.amazonaws.com", "CreateOpsItem"),),  # CSV: "OpsCenter only"
-    "AmazonTimestream": (CreationEventRule("timestream-write.amazonaws.com", "CreateDatabase"),),
+    # CORRIGIDO: fonte real é "timestream" (confirmado via signingName do
+    # botocore), não "timestream-write.amazonaws.com" como uma versão
+    # anterior deste módulo tinha.
+    "AmazonTimestream": (CreationEventRule("timestream.amazonaws.com", "CreateDatabase"),),
     "AWSTransfer": (CreationEventRule("transfer.amazonaws.com", "CreateServer"),),
     "AmazonVPC": (
         CreationEventRule("ec2.amazonaws.com", "CreateTransitGateway"),
@@ -250,6 +320,19 @@ def validate_against_csv(services: list[Service] | None = None) -> list[str]:
     return sorted(csv_codes - set(_EVENT_MAPPING.keys()))
 
 
+def build_event_pattern() -> dict:
+    """Monta um ÚNICO event pattern (todos os serviços mapeados, agrupados
+    por `event_source` via `$or` — cada alternativa exige `source` +
+    `eventName` correlacionados, evitando o falso-positivo teórico de um
+    pattern "achatado" com dois arrays soltos).
+
+    **Só para referência/debug** — o pattern único já ultrapassa a quota
+    padrão de 2.048 caracteres com o conjunto atual de serviços mapeados.
+    Para gerar o(s) pattern(s) de verdade usado(s) pela(s) regra(s) do
+    EventBridge, use `build_event_patterns()` (plural)."""
+    return {"detail-type": [_DETAIL_TYPE], "$or": _alternativas_por_fonte()}
+
+
 _DETAIL_TYPE = "AWS API Call via CloudTrail"
 
 # Limite PADRÃO de tamanho de event pattern do EventBridge é 2.048
@@ -272,19 +355,6 @@ def _alternativas_por_fonte() -> list[dict]:
         {"source": [f"aws.{event_source.split('.')[0]}"], "detail": {"eventName": sorted(event_names)}}
         for event_source, event_names in sorted(por_fonte.items())
     ]
-
-
-def build_event_pattern() -> dict:
-    """Monta um ÚNICO event pattern (todos os serviços mapeados, agrupados
-    por `event_source` via `$or` — cada alternativa exige `source` +
-    `eventName` correlacionados, evitando o falso-positivo teórico de um
-    pattern "achatado" com dois arrays soltos).
-
-    **Só para referência/debug** — o pattern único já ultrapassa a quota
-    padrão de 2.048 caracteres com o conjunto atual de serviços mapeados.
-    Para gerar o(s) pattern(s) de verdade usado(s) pela(s) regra(s) do
-    EventBridge, use `build_event_patterns()` (plural)."""
-    return {"detail-type": [_DETAIL_TYPE], "$or": _alternativas_por_fonte()}
 
 
 def build_event_patterns(max_chars: int = _MAX_EVENT_PATTERN_CHARS) -> list[dict]:

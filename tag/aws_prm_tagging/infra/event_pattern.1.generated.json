@@ -5,6 +5,38 @@
   "$or": [
     {
       "source": [
+        "aws.ecs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster",
+          "CreateService"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.eks"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster",
+          "CreateNodegroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.elasticache"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCacheCluster"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.elasticbeanstalk"
       ],
       "detail": {
@@ -50,7 +82,8 @@
       ],
       "detail": {
         "eventName": [
-          "CreateDomain"
+          "CreateDomain",
+          "CreateElasticsearchDomain"
         ]
       }
     },
@@ -146,7 +179,7 @@
     },
     {
       "source": [
-        "aws.kinesisanalyticsv2"
+        "aws.kinesisanalytics"
       ],
       "detail": {
         "eventName": [
@@ -180,7 +213,7 @@
       ],
       "detail": {
         "eventName": [
-          "CreateFunction20150331v2"
+          "CreateFunction"
         ]
       }
     },
@@ -191,6 +224,27 @@
       "detail": {
         "eventName": [
           "CreateLogGroup"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.m2"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApplication",
+          "CreateEnvironment"
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mediaconvert"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateQueue"
         ]
       }
     },
@@ -211,57 +265,6 @@
       "detail": {
         "eventName": [
           "CreateChannel"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.medical-imaging"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateDatastore"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.memorydb"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.mq"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateBroker"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.network-firewall"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateFirewall"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.networkmanager"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCoreNetwork",
-          "CreateGlobalNetwork"
         ]
       }
     }

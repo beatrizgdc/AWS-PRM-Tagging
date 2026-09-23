@@ -86,15 +86,51 @@ Para `resource_discovery.py` (só a parte pura, sem boto3):
   `_filter_load_balancers_for_cluster` (filtro puro sobre o resultado já
   coletado uma vez por região, não mais relistado a cada cluster).
 
-Ao adicionar um módulo novo (Etapa 3 em diante), crie um novo grupo de
+Para a Etapa 3 (`event_mapping.py`/`event_parser.py`/`single_resource.py`/
+`publish.py`/`handler_continuous_tagging.py`):
+
+- `test_event_mapping.py` — a tabela nunca diverge do CSV
+  (`validate_against_csv`), o event pattern gerado tem a forma que o
+  EventBridge espera, e é dividido em múltiplos patterns dentro da quota de
+  tamanho; inclui a guarda de deriva contra os arquivos
+  `infra/event_pattern.*.generated.json`.
+- `test_event_parser_extracao.py` — extração pura a partir de payloads
+  sintéticos de CloudTrail: casos representativos de extractors dedicados
+  (lote via `RunInstances`, construção a partir de `requestParameters`,
+  `tipo_recurso` de EKS/Bedrock), o fallback genérico, e os casos
+  defensivos (payload insuficiente, evento fora do mapeamento).
+- `test_event_parser_botocore.py` — **verificação estrutural de TODO
+  extractor dedicado** (`_DirectPath`/`_ConstructedPath`) contra o shape
+  real da operação de API no `botocore` instalado (não contra dado
+  sintético digitado à mão) — a rede de segurança que substitui, em parte,
+  não ter um evento CloudTrail real capturado (ver
+  [docs/melhorias-futuras.md](../../docs/melhorias-futuras.md)).
+- `test_single_resource.py` — os 4 caminhos de leitura (genérico/EKS/
+  Bedrock/ELB) usando `fake_session_factory`, incluindo a limitação
+  conhecida de `GetResources` não devolver recurso sem tag nenhuma.
+- `test_publish.py` — montagem do payload e chamada de `sns:Publish`.
+- `test_handler_continuous_tagging.py` — ponta a ponta com sessão/clients
+  falsos: recurso em escopo sem IaC (tagueia), gerenciado por IaC (pula e
+  sinaliza), já tagueado corretamente (`ja_ok` sem erro), evento duplicado
+  (idempotência), evento fora do escopo do CSV (ignorado).
+
+Para `infra/template.yaml`:
+
+- `test_infra_event_patterns.py` — os blocos `EventPattern` do template
+  (colados manualmente, já que o CloudFormation não inclui JSON externo
+  nessa propriedade) batem com `infra/event_pattern.*.generated.json`.
+
+Ao adicionar um módulo novo (Etapa 4 em diante), crie um novo grupo de
 arquivos `test_<módulo>_<área>.py` seguindo o mesmo padrão, em vez de
 acrescentar num arquivo já existente de outro módulo.
 
 Fixtures compartilhadas ficam em [`conftest.py`](conftest.py) —
 `recurso_factory`/`relatorio_etapa1_factory` para dicts no formato da Etapa
 1, `decisao_factory`/`relatorio_decisao_factory` para o formato da Etapa 2a
-(entrada da Etapa 2b), e `fake_session_factory` para uma sessão boto3 falsa
-(sem rede real) nos testes que exercitam a revalidação de `tag_execution.py`.
+(entrada da Etapa 2b), `fake_session_factory` para uma sessão boto3 falsa
+(sem rede real) nos testes que exercitam a revalidação de `tag_execution.py`
+ou a leitura de `single_resource.py`, e `cloudtrail_event_factory` para
+eventos sintéticos no formato "AWS API Call via CloudTrail" (Etapa 3).
 Reaproveite em vez de recriar esses dicts/stubs à mão em um novo arquivo.
 
 Toda função de teste tem uma docstring curta explicando o *porquê* do

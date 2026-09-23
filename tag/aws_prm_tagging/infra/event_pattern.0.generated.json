@@ -25,6 +25,17 @@
     },
     {
       "source": [
+        "aws.apigateway"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApi",
+          "CreateRestApi"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.appsync"
       ],
       "detail": {
@@ -67,6 +78,17 @@
     },
     {
       "source": [
+        "aws.cassandra"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKeyspace",
+          "CreateTable"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.clouddirectory"
       ],
       "detail": {
@@ -87,7 +109,7 @@
     },
     {
       "source": [
-        "aws.cloudhsmv2"
+        "aws.cloudhsm"
       ],
       "detail": {
         "eventName": [
@@ -147,6 +169,16 @@
     },
     {
       "source": [
+        "aws.datapipeline"
+      ],
+      "detail": {
+        "eventName": [
+          "CreatePipeline"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.directconnect"
       ],
       "detail": {
@@ -180,6 +212,16 @@
     },
     {
       "source": [
+        "aws.dsql"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.dynamodb"
       ],
       "detail": {
@@ -208,38 +250,6 @@
       "detail": {
         "eventName": [
           "CreateRepository"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ecs"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster",
-          "CreateService"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.eks"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster",
-          "CreateNodegroup"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticache"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCacheCluster"
         ]
       }
     }

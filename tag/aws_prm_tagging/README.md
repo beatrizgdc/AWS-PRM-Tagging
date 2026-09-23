@@ -26,16 +26,21 @@ início de implementação do quarto:
 4. **Automação contínua** (Etapa 3) — Lambda acionado por regra(s) de
    EventBridge a cada criação de recurso em escopo, reaproveitando
    `decision.py` (Etapa 2a) e `tag_execution.py` (Etapa 2c) sem nenhuma
-   lógica de decisão/execução duplicada. Cobre um **lote inicial** de ~25
-   dos ~85 serviços do CSV (os de alta confiança na forma do evento de
-   criação — ver [event_mapping.py](event_mapping.py)); os demais estão
-   mapeados como pendentes, não como lacuna silenciosa (ver
-   [docs/melhorias-futuras.md](docs/melhorias-futuras.md)). Implementação em
-   Python testada (`test/unit/`) e infraestrutura como código (SAM) em
-   [infra/](infra/README.md) — **nenhuma das duas foi validada contra uma
-   conta AWS real ainda** (nem `sam deploy`, nem um evento CloudTrail
-   real capturado). Varredura recorrente/auditoria (Etapa 4) continua fora
-   do escopo deste repositório.
+   lógica de decisão/execução duplicada. Cobre **69 dos ~85** serviços do
+   CSV — cada `eventSource`/`eventName`/campo de extração verificado contra
+   o `botocore` instalado (não vem de memória), com um teste próprio
+   (`test_event_parser_botocore.py`) que trava qualquer divergência futura
+   contra o shape real da API; os 16 que ficam de fora têm o motivo
+   documentado linha a linha (ver [event_mapping.py](event_mapping.py) e
+   [docs/melhorias-futuras.md](docs/melhorias-futuras.md)) — não são uma
+   lacuna silenciosa. 223 testes (`test/unit/`) e infraestrutura como
+   código (SAM) em [infra/](infra/README.md) — **nenhuma das duas foi
+   validada contra uma conta AWS real ainda** (nem `sam deploy`, nem um
+   evento CloudTrail real capturado — a verificação contra o botocore prova
+   que os campos existem na API, não a capitalização exata que o CloudTrail
+   grava para os poucos serviços onde isso é incerto). Varredura
+   recorrente/auditoria (Etapa 4) continua fora do escopo deste
+   repositório.
 
 A Etapa 3 reaproveita os módulos escritos aqui (`aws_prm_tagging/`, núcleo
 compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e é

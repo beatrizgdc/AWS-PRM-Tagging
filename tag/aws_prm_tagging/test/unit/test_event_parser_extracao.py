@@ -44,9 +44,9 @@ def test_s3_create_bucket_extrai_arn_sem_regiao_ou_conta(cloudtrail_event_factor
 def test_lambda_create_function_extrai_arn_direto(cloudtrail_event_factory):
     event = cloudtrail_event_factory(
         event_source="lambda.amazonaws.com",
-        event_name="CreateFunction20150331v2",
+        event_name="CreateFunction",
         detail_overrides={
-            "responseElements": {"functionArn": "arn:aws:lambda:us-east-1:000000000000:function:minha-funcao"}
+            "responseElements": {"FunctionArn": "arn:aws:lambda:us-east-1:000000000000:function:minha-funcao"}
         },
     )
     resultado = parse_creation_event(event)
@@ -86,11 +86,12 @@ def test_bedrock_create_inference_profile_marca_tipo_recurso(cloudtrail_event_fa
 
 def test_sqs_create_queue_constroi_arn_a_partir_do_nome(cloudtrail_event_factory):
     """CreateQueue não devolve ARN na resposta — só QueueUrl — o ARN precisa
-    ser construído a partir do nome pedido na requisição."""
+    ser construído a partir do nome pedido na requisição (SQS é protocolo
+    "json", campo QueueName em PascalCase confirmado via botocore)."""
     event = cloudtrail_event_factory(
         event_source="sqs.amazonaws.com",
         event_name="CreateQueue",
-        detail_overrides={"requestParameters": {"queueName": "minha-fila"}},
+        detail_overrides={"requestParameters": {"QueueName": "minha-fila"}},
     )
     resultado = parse_creation_event(event)
     assert resultado[0].arn == "arn:aws:sqs:us-east-1:000000000000:minha-fila"
@@ -143,14 +144,18 @@ def test_evento_sem_detail_devolve_lista_vazia():
     assert parse_creation_event({}) == []
 
 
-def test_rds_create_db_cluster_usa_fallback_de_identificador(cloudtrail_event_factory):
-    """Quando o responseElements não traz o ARN direto (ex.: payload
-    incompleto), o extractor de RDS cai para construir a partir do
-    identificador pedido na requisição."""
+def test_rds_create_db_cluster_le_arn_tolerante_a_capitalizacao(cloudtrail_event_factory):
+    """RDS é protocolo "query" — a capitalização exata do CloudTrail é
+    incerta (ver docstring de event_parser.py), então o extractor tenta a
+    capitalização do botocore (`DBClusterArn`) E a variante com a primeira
+    letra minúscula (`dBClusterArn`, o formato que eventos reais de RDS
+    costumam usar). Aqui testamos essa segunda variante."""
     event = cloudtrail_event_factory(
         event_source="rds.amazonaws.com",
         event_name="CreateDBCluster",
-        detail_overrides={"requestParameters": {"dBClusterIdentifier": "meu-cluster-aurora"}},
+        detail_overrides={
+            "responseElements": {"dBCluster": {"dBClusterArn": "arn:aws:rds:us-east-1:000000000000:cluster:meu-cluster-aurora"}}
+        },
     )
     resultado = parse_creation_event(event)
     assert resultado[0].arn == "arn:aws:rds:us-east-1:000000000000:cluster:meu-cluster-aurora"

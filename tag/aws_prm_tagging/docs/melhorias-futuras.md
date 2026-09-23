@@ -19,28 +19,51 @@ Decisões explicitamente adiadas durante a implementação inicial da Etapa 3
 (EventBridge + Step Functions + Lambda), combinadas com o gestor do
 projeto — cada uma com o porquê de não ter entrado agora.
 
-### Mapeamento evento→serviço cobre só um lote inicial (~25 de ~85 serviços)
+### Mapeamento evento→serviço — 69 de ~85 serviços cobertos, 16 conscientemente de fora
 
-**O quê:** `event_mapping.py` mapeia eventos de criação de alta confiança
-para ~25 dos ~85 serviços do CSV oficial (EC2, S3, Lambda, DynamoDB, RDS,
-EKS, Bedrock, SNS, SQS, ECR, ECS, EFS, ElastiCache, KMS, CloudFront, Route
-53, Secrets Manager, Step Functions, ELB, e mais alguns com `eventName`
-plausível mas sem extractor dedicado). Os demais ficam `None`
-explicitamente, com o motivo documentado por linha (múltiplos tipos de
-recurso sem "o" recurso óbvio para PRM, serviço muito novo, API não-REST,
-serviço descontinuado).
+**Atualizado.** Uma primeira versão deste item registrava cobertura de
+~25/85 serviços, "de memória". Revisitado usando o `botocore` instalado
+localmente como fonte de verdade (`session.get_service_model(...)` dá o
+nome exato de cada operação de API e o `signingName`/`endpointPrefix` real
+de cada serviço — a base do `eventSource` do CloudTrail) — cobertura hoje é
+**69 dos ~85 `product_service_code`** (92 eventos de criação no total).
+Esse processo já corrigiu **3 bugs reais** que a versão anterior tinha
+(fonte errada para `AmazonKinesisAnalytics`, `AmazonTimestream` e
+`CloudHSM`) e **confirmou** (não só supôs) que `AmazonDocDB`/`AmazonNeptune`
+genuinamente não são distinguíveis por evento — os pacotes SDK
+`docdb`/`neptune` têm `endpointPrefix`/`signingName` = `rds`, ou seja usam o
+MESMO endpoint que RDS/Aurora. Três achados novos entraram na cobertura:
+`AuroraDSQL`, `AWSM2` e `AmazonMCS` (Amazon Keyspaces) — este último tinha
+sido descartado por engano numa versão anterior por supor, sem checar, que
+só existia a API CQL (data-plane); na verdade o control-plane
+(`CreateKeyspace`/`CreateTable`) é uma API REST normal.
 
-**Por que não foi resolvido agora:** mapear ~60 serviços adicionais exigiria
-confiança na forma exata de `responseElements`/`requestParameters` de cada
-API sem acesso a um evento CloudTrail real capturado — inventar isso teria
-risco real (evento mapeado errado = silenciosamente nunca dispara, ou
-extractor errado = ARN malformado). O CSV é atualizado manualmente
-(decisão do gestor) — este mapeamento segue o mesmo modelo: extensão
-incremental, não um trabalho de uma vez só.
+**Os 16 que continuam `None`**, com contagem real de operações `Create*`
+verificada via botocore (não estimativa): `AmazonSageMaker` (72!),
+`AmazonQuickSight` (34), `AWSGlue` (31), `AmazonBedrockAgentCore` (29),
+`AWSIoT` (32), `AmazonAppStream` (17), `AWSDataSync`/`AWSDeadlineCloud` (13
+cada), `AmazonOmics` (12), `AWSSecurityHub` (11, nível de conta — não
+"criação de recurso" no sentido usual), `AWSElasticDisasterRecovery` (6,
+replicação contínua, nenhuma operação é uma criação de recurso "normal"),
+`comprehend` (5, jobs/endpoints sem recurso persistente óbvio),
+`AWSIoTSiteWise`, `AmazonDocDB`, `AmazonNeptune` (ambiguidade confirmada,
+ver acima) e `AWSCodeStar` (descontinuado pela AWS, sem definição no
+botocore instalado).
 
-**O que destrava:** priorizar, com o gestor/PDM, quais dos serviços ainda
-`None` são mais usados pelos clientes da EMPRESAX, e mapear/testar em sandbox
-um de cada vez.
+**Por que não foi resolvido 100%:** os 16 restantes são genuinamente
+ambíguos (múltiplos tipos de recurso sem "o" recurso óbvio para PRM) ou têm
+uma ambiguidade estrutural real (DocDB/Neptune) — mapear errado aqui tem
+custo real (evento mapeado errado nunca dispara silenciosamente, ou o
+recurso errado é tagueado como se fosse outro serviço). O CSV é atualizado
+manualmente (decisão do gestor) — este mapeamento segue o mesmo modelo:
+extensão incremental quando houver prioridade de negócio clara, não um
+trabalho de "resolver tudo de uma vez".
+
+**O que destrava:** priorizar, com o gestor/PDM, se algum dos 16 restantes
+(SageMaker e QuickSight à parte — ambíguos demais para valer a pena sem uma
+decisão de produto sobre qual sub-recurso importa) é usado o suficiente
+pelos clientes da EMPRESAX para justificar escolher um recurso "principal"
+por decisão de produto (não só técnica) e mapear só esse.
 
 ### Alerta ativo quando o CSV ganha um serviço sem mapeamento de evento
 
@@ -60,20 +83,44 @@ SNS) que rode periodicamente (ou no deploy) comparando o CSV vigente contra
 mapeamento — candidato natural para rodar junto da Etapa 4 quando ela for
 implementada.
 
-### Extractors da Etapa 3 ainda não validados em sandbox
+### Extractors da Etapa 3 — verificados estruturalmente, mas não contra um evento real
 
-**O quê:** tanto os extractors dedicados (`event_parser._REGISTRY`) quanto
-o fallback genérico se baseiam em conhecimento de documentação pública das
-APIs da AWS, não em eventos CloudTrail reais capturados. Nenhum foi
-confirmado contra uma conta AWS real.
+**Atualizado — duas camadas de teste agora, não nenhuma.** Uma primeira
+versão deste item dizia que os extractors vinham só de memória, sem nenhuma
+verificação. Isso mudou:
 
-**Por que não foi resolvido agora:** exigiria gerar cada tipo de recurso
-numa conta sandbox e capturar o evento real — trabalho de validação, não de
-design; fica natural de fazer junto da priorização de mapeamento acima.
+1. **Verificação estrutural automatizada (implementada agora,
+   `test/unit/test_event_parser_botocore.py`)**: cada `path` hardcoded num
+   extractor dedicado (`_DirectPath`/`_ConstructedPath` em
+   `event_parser.py`) é checado, via o `botocore` instalado localmente,
+   contra o shape REAL da operação de API — pega erro de digitação, campo
+   inexistente ou operação renomeada, sem precisar de nenhuma conta AWS.
+   Essa verificação já achou e corrigiu bugs reais nesta mesma sessão de
+   trabalho (`CreateDomain`/`CreateApi` vêm de pacotes SDK diferentes dos
+   que o `eventSource` sozinho sugeriria — `opensearch`/`apigatewayv2`, não
+   `es`/`apigateway`). Roda como parte da suíte normal de testes, sem custo
+   nenhum.
+2. **O que a camada 1 NÃO cobre**: a *capitalização exata* que o CloudTrail
+   de fato grava para os poucos serviços de protocolo `query`/`ec2`/
+   `rest-xml` (ver docstring de `event_parser.py`) — só um evento real
+   capturado confirma isso com certeza; os extractors desses serviços usam
+   leitura tolerante a capitalização (`_direct_ci`/`_constructed_ci`) como
+   mitigação, não como substituto da validação real.
 
-**O que destrava:** para cada serviço do lote inicial, criar o recurso numa
-conta sandbox com CloudTrail habilitado, capturar o evento real, e
-confirmar contra o extractor correspondente (ou corrigir).
+**Por que a camada 2 não foi resolvida agora:** exigiria gerar cada tipo de
+recurso numa conta sandbox com CloudTrail habilitado e capturar o evento
+real — ação contra uma conta AWS de verdade, fora do escopo de uma sessão
+sem credenciais.
+
+**O que destrava:** um runbook de captura manual (mesmo padrão de
+`test/manual-live/README.md`, já usado para o smoke test da Etapa 2c) —
+criar 1 recurso descartável por serviço numa conta sandbox, capturar o
+evento real via `aws cloudtrail lookup-events` ou o console do CloudTrail,
+e comparar contra o extractor. Priorizar os serviços de protocolo
+`query`/`ec2`/`rest-xml` (`rds`, `elasticache`, `redshift`,
+`elasticbeanstalk`, `sns`, `elasticloadbalancing`) — são os únicos onde a
+capitalização é uma incerteza real; os demais (protocolo `json`/`rest-json`)
+têm confiança bem mais alta por já virem de shapes verificados.
 
 ### Corrida com IaC — debounce de 30 minutos, sem validação de tempo real
 
@@ -143,20 +190,36 @@ alguém observar o CloudWatch Logs ativamente).
 para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
 "Alerta ativo quando o CSV ganha um serviço sem mapeamento" acima.
 
-### Permissões IAM nativas por serviço só cobrem o lote inicial
+### Permissões IAM nativas — 67 de 69 serviços mapeados cobertos
 
-**O quê:** `infra/template.yaml` (`PrmEtapa3NativeTagWriteLoteInicial`) só
-tem a permissão de tagging nativa (exigida além de `tag:TagResources`) para
-os ~18 serviços com extractor dedicado. Um recurso de um serviço coberto só
-pelo fallback genérico de extração (ex.: AppSync, Athena, Backup...) vai
-gerar uma tentativa de escrita que falha com `AccessDenied` até essa
-permissão ser adicionada.
-
-**Por que não foi resolvido agora:** a lista completa de ~80 ações nativas
-de tagging por serviço já é uma pendência conhecida da Etapa 2c (ver
+**Atualizado.** `infra/template.yaml` (`PrmEtapa3NativeTagWrite`) tem a
+ação de tagging nativa (exigida além de `tag:TagResources` para o caminho
+genérico) para **67 dos 69** serviços mapeados em `event_mapping.py` — cada
+nome de ação confirmado contra o botocore instalado (não veio de memória).
+Isso também alimenta de volta a pendência equivalente da Etapa 2c (ver
 "Isso não é suficiente sozinho" em
-[producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real))
-— não duplicada aqui, é a mesma pendência.
+[producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)):
+a lista levantada aqui é um bom ponto de partida para fechar aquela
+pendência também, já que é a mesma informação (ação de tagging nativa por
+serviço), só que descoberta para um subconjunto menor de serviços por ora.
+
+**O único que falta**: `CodeBuild` — nenhuma operação com "tag" no nome
+existe no pacote `codebuild` do botocore; o mecanismo real de tagging desse
+serviço não foi confirmado (possivelmente via `UpdateProject`, sem ação
+dedicada). Até resolver, `CreateProject` do CodeBuild vai gerar uma
+tentativa de escrita que falha de forma segura (reportada, nunca uma ação
+incorreta).
+
+**Por que não foi resolvido 100%:** CodeBuild precisa de uma investigação
+própria (não é só "faltou procurar" — o padrão comum `TagResource`/
+`AddTags*` genuinamente não existe nesse serviço) fora do escopo desta
+sessão.
+
+**O que destrava:** confirmar em sandbox (ou na documentação de IAM do
+CodeBuild) qual ação cobre a tag do projeto — provavelmente
+`codebuild:UpdateProject`, mas isso concede mais que só tagging (todo o
+projeto), então vale confirmar se há uma alternativa mais restrita antes de
+adicionar à política.
 
 **O que destrava:** o mesmo levantamento pendente da Etapa 2c; quando
 resolvido lá, aplicar a mesma lista aqui.
