@@ -132,8 +132,10 @@ Resources:
                   # (confirmado na doc oficial, ver docs/producao.md). Nomes
                   # verificados contra o botocore instalado (não vem de
                   # memória) — ver "Permissões IAM — cobertura real" em
-                  # infra/README.md, inclusive o único serviço mapeado sem
-                  # ação de tag encontrada (CodeBuild — ver melhorias-futuras.md).
+                  # infra/README.md. CodeBuild não entra aqui de propósito —
+                  # confirmado em sandbox que tag:TagResources sozinho (já
+                  # concedido por PrmEtapa3TagWrite) cobre esse serviço, sem
+                  # ação nativa nenhuma (ver test/manual-live-etapa3/README.md).
                   - acm:TagResource
                   - acm-pca:TagCertificateAuthority
                   - apigateway:TagResource

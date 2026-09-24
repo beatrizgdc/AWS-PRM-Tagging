@@ -3,9 +3,11 @@
 > **Atenção: isto roda contra uma conta AWS REAL, cria recursos reais (alguns
 > com custo por hora), e implanta uma stack CloudFormation de verdade.**
 > **Nunca rode contra conta de cliente — só sandbox.** Cada seção tem um
-> passo de reversão explícito; não pule esse passo. Nada neste roteiro foi
-> executado — é um roteiro para você rodar (ou autorizar) quando tiver
-> acesso à conta sandbox, não uma automação.
+> passo de reversão explícito; não pule esse passo. É um roteiro para você
+> rodar (ou autorizar) quando tiver acesso à conta sandbox, não uma
+> automação. **Parte 3 já foi executada** (autorizada explicitamente, conta
+> sandbox XXXXXXXXXXXX) — ver resultado na própria seção. Partes 1 e 2
+> seguem não executadas.
 
 ## Por que este roteiro existe
 
@@ -25,9 +27,8 @@ Três lacunas que só uma conta AWS real resolve (ver
    e importa corretamente num runtime Lambda real — não provam que a regra
    do EventBridge de fato casa um evento real, nem que o Step Functions
    invoca a Lambda corretamente, nem que a tag chega no recurso.
-3. **CodeBuild sem ação de tag nativa identificada** (ver
-   [infra/README.md](../../infra/README.md#permissões-iam--cobertura-real))
-   — precisa de investigação em conta real.
+3. **CodeBuild sem ação de tag nativa identificada** — **resolvido**, ver
+   Parte 3 abaixo e [infra/README.md](../../infra/README.md#permissões-iam--cobertura-real).
 
 ## Pré-requisitos
 
@@ -183,6 +184,17 @@ Sinal de que a regra do EventBridge não casou o evento — confirmar:
 ---
 
 ## Parte 3 — Investigar a ação de tag do CodeBuild
+
+**Resultado (executado em 2026-09-23, conta sandbox XXXXXXXXXXXX,
+`codebuild-teste-service-role` como service role):** o passo 2
+(`tag:TagResources`, caminho genérico) funcionou sozinho —
+`FailedResourcesMap` veio vazio e `batch-get-projects` confirmou a tag
+aplicada no projeto. **CodeBuild não precisa de nenhuma ação nativa na
+política `PrmEtapa3NativeTagWrite`** — a permissão genérica já existente
+(`PrmEtapa3TagWrite`) é suficiente. Passo 3 (`UpdateProject`) não foi
+necessário. Projeto de teste (`teste-prm-etapa3`) apagado logo em seguida,
+nada ficou na conta. Comandos abaixo mantidos como documentação do
+processo, para o mesmo tipo de investigação em outro serviço no futuro.
 
 ```bash
 # 1. Criar um projeto mínimo descartável

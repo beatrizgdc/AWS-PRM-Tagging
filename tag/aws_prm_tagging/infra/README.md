@@ -87,21 +87,21 @@ A política `PrmEtapa3NativeTagWrite` tem a ação de tagging NATIVA (exigida
 além de `tag:TagResources` para o caminho genérico, ver
 [docs/producao.md](../docs/producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real))
 para **67 ações**, uma por serviço mapeado em `event_mapping.py` — cobre
-praticamente todos os ~69 serviços mapeados (EKS/Bedrock/ELB já têm sua
+os serviços que de fato exigem ação nativa (EKS/Bedrock/ELB já têm sua
 permissão via `PrmEtapa3TagWrite`, que usa a API dedicada, não o caminho
 genérico). Cada nome de ação foi confirmado contra o botocore instalado
 (`session.get_service_model(...).operation_names`), não veio de memória —
 mesmo processo de verificação de `event_parser.py`.
 
-**Único serviço mapeado sem ação de tag encontrada**: `CodeBuild` — o
-pacote `codebuild` do botocore não tem nenhuma operação com "tag" no nome;
-tags de projeto parecem ser geridas via `UpdateProject` (todo o objeto,
-sem uma ação `TagResource` dedicada), mas isso não foi confirmado. Até
-resolver, um `CreateProject` do CodeBuild vai gerar uma tentativa de escrita
-que falha (`erro_permissao` ou `ValidationException`, dependendo do
-mecanismo real) — comportamento seguro. Roteiro de investigação em conta
-sandbox (não executado ainda) em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-3--investigar-a-ação-de-tag-do-codebuild).
+**Cobertura confirmada em sandbox — CodeBuild não precisa de ação
+nativa.** O pacote `codebuild` do botocore não tem nenhuma operação com
+"tag" no nome, o que levantava a dúvida se `tag:TagResources` sozinho
+bastava. **Testado na conta sandbox em 2026-09-23** (criar projeto →
+`tag:TagResources` → confirmar via `batch-get-projects` → apagar projeto,
+ver [test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-3--investigar-a-ação-de-tag-do-codebuild)):
+o caminho genérico funcionou sozinho, sem precisar de `UpdateProject` nem
+de nenhuma entrada nova em `PrmEtapa3NativeTagWrite`. Cobertura real hoje:
+**69 de 69 serviços mapeados**, nenhum gap conhecido.
 
 ## Build e deploy
 

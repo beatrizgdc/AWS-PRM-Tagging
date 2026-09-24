@@ -216,39 +216,29 @@ alguém observar o CloudWatch Logs ativamente).
 para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
 "Alerta ativo quando o CSV ganha um serviço sem mapeamento" acima.
 
-### Permissões IAM nativas — 67 de 69 serviços mapeados cobertos
+### Permissões IAM nativas — resolvido, 69 de 69 serviços mapeados cobertos
 
-**Atualizado.** `infra/template.yaml` (`PrmEtapa3NativeTagWrite`) tem a
-ação de tagging nativa (exigida além de `tag:TagResources` para o caminho
-genérico) para **67 dos 69** serviços mapeados em `event_mapping.py` — cada
-nome de ação confirmado contra o botocore instalado (não veio de memória).
-Isso também alimenta de volta a pendência equivalente da Etapa 2c (ver
-"Isso não é suficiente sozinho" em
+**Resolvido em 2026-09-23, testado na conta sandbox.** `infra/template.yaml`
+(`PrmEtapa3NativeTagWrite`) tem a ação de tagging nativa (exigida além de
+`tag:TagResources` para o caminho genérico) para **67 dos 69** serviços
+mapeados em `event_mapping.py` — cada nome de ação confirmado contra o
+botocore instalado (não veio de memória). Os outros 2 (EKS/Bedrock/ELB já
+têm sua permissão via `PrmEtapa3TagWrite`, API dedicada, não o caminho
+genérico) mais **CodeBuild** fecham os 69.
+
+`CodeBuild` era o único caso sem uma operação óbvia com "tag" no nome no
+pacote `codebuild` do botocore. Testado diretamente na conta sandbox
+(criar projeto → `tag:TagResources` → confirmar tag aplicada → apagar
+projeto — roteiro e resultado completos em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-3--investigar-a-ação-de-tag-do-codebuild)):
+**o caminho genérico (`tag:TagResources`, já concedido por
+`PrmEtapa3TagWrite`) funciona sozinho** — não precisa de `UpdateProject`
+nem de nenhuma ação nova na política. Nenhum gap conhecido restante.
+
+Isso também fecha a pendência equivalente da Etapa 2c (ver "Isso não é
+suficiente sozinho" em
 [producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)):
-a lista levantada aqui é um bom ponto de partida para fechar aquela
-pendência também, já que é a mesma informação (ação de tagging nativa por
-serviço), só que descoberta para um subconjunto menor de serviços por ora.
-
-**O único que falta**: `CodeBuild` — nenhuma operação com "tag" no nome
-existe no pacote `codebuild` do botocore; o mecanismo real de tagging desse
-serviço não foi confirmado (possivelmente via `UpdateProject`, sem ação
-dedicada). Até resolver, `CreateProject` do CodeBuild vai gerar uma
-tentativa de escrita que falha de forma segura (reportada, nunca uma ação
-incorreta).
-
-**Por que não foi resolvido 100%:** CodeBuild precisa de uma investigação
-própria (não é só "faltou procurar" — o padrão comum `TagResource`/
-`AddTags*` genuinamente não existe nesse serviço) fora do escopo desta
-sessão.
-
-**O que destrava:** confirmar em sandbox (ou na documentação de IAM do
-CodeBuild) qual ação cobre a tag do projeto — provavelmente
-`codebuild:UpdateProject`, mas isso concede mais que só tagging (todo o
-projeto), então vale confirmar se há uma alternativa mais restrita antes de
-adicionar à política.
-
-**O que destrava:** o mesmo levantamento pendente da Etapa 2c; quando
-resolvido lá, aplicar a mesma lista aqui.
+a mesma lista de 67 ações nativas serve de ponto de partida por lá.
 
 ### DLQ para o alvo do EventBridge — não implementado
 
