@@ -59,6 +59,20 @@ _EVENT_OVERRIDE_PARA_BOTOCORE_ID = {
     ("apigateway.amazonaws.com", "CreateApi"): "apigatewayv2",
 }
 
+# Casos confirmados em sandbox (test/manual-live-etapa3/README.md,
+# 2026-09-23) onde o CloudTrail real ACHATA a resposta documentada pelo
+# botocore — o wrapper (`DBInstance`/`DBCluster`/`CacheCluster`) que a
+# operação oficialmente devolve não aparece no evento real; o `path` do
+# extractor já reflete isso (sem o wrapper, ver event_parser.py), então a
+# verificação abaixo desce pelo wrapper antes de validar o resto do path,
+# pra continuar checando contra o shape real da operação em vez de deixar
+# de verificar esses casos.
+_WRAPPER_ACHATADO_PELO_CLOUDTRAIL = {
+    ("rds.amazonaws.com", "CreateDBInstance"): ("DBInstance",),
+    ("rds.amazonaws.com", "CreateDBCluster"): ("DBCluster",),
+    ("elasticache.amazonaws.com", "CreateCacheCluster"): ("CacheCluster",),
+}
+
 
 def _service_model(session, event_source: str, event_name: str):
     override = _EVENT_OVERRIDE_PARA_BOTOCORE_ID.get((event_source, event_name))
@@ -69,18 +83,22 @@ def _service_model(session, event_source: str, event_name: str):
     return session.get_service_model(service_id)
 
 
-def _shape_has_path(shape, path: tuple[str, ...], tolerant_casing: bool) -> bool:
+def _descend_shape(shape, path: tuple[str, ...], tolerant_casing: bool):
     for key in path:
         if shape is None or shape.type_name != "structure":
-            return False
+            return None
         member = shape.members.get(key)
         if member is None and tolerant_casing:
             alt = (key[0].lower() + key[1:]) if key else key
             member = shape.members.get(alt)
         if member is None:
-            return False
+            return None
         shape = member
-    return True
+    return shape
+
+
+def _shape_has_path(shape, path: tuple[str, ...], tolerant_casing: bool) -> bool:
+    return _descend_shape(shape, path, tolerant_casing) is not None
 
 
 def _dedicated_path_specs():
@@ -113,6 +131,15 @@ def test_caminho_do_extractor_existe_no_shape_real_da_operacao(key, spec, builde
     else:
         target_shape = op.output_shape if builder.source == "responseElements" else op.input_shape
         origem = builder.source
+
+    wrapper = _WRAPPER_ACHATADO_PELO_CLOUDTRAIL.get(key)
+    if wrapper is not None:
+        target_shape = _descend_shape(target_shape, wrapper, tolerant_casing=True)
+        assert target_shape is not None, (
+            f"wrapper conhecido {wrapper} não existe mais no shape de {origem} de "
+            f"{event_source}/{event_name} — a exceção de achatamento em "
+            "_WRAPPER_ACHATADO_PELO_CLOUDTRAIL pode estar desatualizada"
+        )
 
     assert _shape_has_path(target_shape, builder.path, builder.tolerant_casing), (
         f"caminho {builder.path} (tolerant_casing={builder.tolerant_casing}) não encontrado no "

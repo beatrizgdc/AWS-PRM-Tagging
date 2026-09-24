@@ -177,7 +177,12 @@ Resources:
                   - kinesisvideo:TagResource
                   - kms:TagResource
                   - lambda:TagResource
-                  - logs:TagLogGroup
+                  # Confirmado com erro real em sandbox: tag:TagResources
+                  # chama logs:TagResource internamente (a API unificada),
+                  # não logs:TagLogGroup (legada) — as duas existem no
+                  # botocore, então a verificação original (só checar que a
+                  # ação existe) não pegou que essa era a errada das duas.
+                  - logs:TagResource
                   - m2:TagResource
                   - mediaconvert:TagResource
                   - medialive:CreateTags
@@ -192,6 +197,12 @@ Resources:
                   - redshift:CreateTags
                   - redshift-serverless:TagResource
                   - route53:ChangeTagsForResource
+                  # S3 precisa das DUAS ações, não só Put — confirmado com
+                  # erro real em sandbox (AccessDenied em s3:GetBucketTagging
+                  # mesmo com tag:TagResources + s3:PutBucketTagging já
+                  # concedidos): a implementação de tag:TagResources para
+                  # buckets lê o TagSet atual antes de mesclar/escrever.
+                  - s3:GetBucketTagging
                   - s3:PutBucketTagging
                   - secretsmanager:TagResource
                   - sns:TagResource

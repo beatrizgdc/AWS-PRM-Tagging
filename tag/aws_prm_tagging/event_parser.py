@@ -250,17 +250,36 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     # --- S3 (rest-xml — construído a partir de requestParameters) ---
     ("s3.amazonaws.com", "CreateBucket"): _SpecificExtractor("AmazonS3", _ext_s3_create_bucket),
     # --- Protocolo query/ec2/rest-xml — leitura tolerante a capitalização ---
-    ("rds.amazonaws.com", "CreateDBInstance"): _SpecificExtractor("AmazonRDS", _direct_ci("DBInstance", "DBInstanceArn")),
-    ("rds.amazonaws.com", "CreateDBCluster"): _SpecificExtractor("AmazonRDS", _direct_ci("DBCluster", "DBClusterArn")),
+    # Confirmado em evento real capturado em sandbox: ao contrário do shape
+    # documentado do botocore (que embrulha a resposta em `{"DBInstance":
+    # {...}}`), o CloudTrail grava os campos JÁ ACHATADOS — `dBInstanceArn`
+    # direto na raiz de `responseElements`, sem o wrapper. `CreateDBCluster`
+    # (Aurora) segue o mesmo padrão de shape no botocore (`{"DBCluster":
+    # {...}}`) mas não foi testado com um evento real nesta sessão — corrigido
+    # por analogia com `CreateDBInstance`, não confirmado independentemente.
+    ("rds.amazonaws.com", "CreateDBInstance"): _SpecificExtractor("AmazonRDS", _direct_ci("DBInstanceArn")),
+    ("rds.amazonaws.com", "CreateDBCluster"): _SpecificExtractor("AmazonRDS", _direct_ci("DBClusterArn")),
+    # Mesmo achatamento confirmado em evento real (ver CreateDBInstance
+    # acima): `aRN` vem direto na raiz de `responseElements`, sem o wrapper
+    # `CacheCluster` que o shape do botocore documenta.
     ("elasticache.amazonaws.com", "CreateCacheCluster"): _SpecificExtractor(
-        "AmazonElastiCache", _direct_ci("CacheCluster", "ARN")
+        "AmazonElastiCache", _direct_ci("ARN")
     ),
     ("redshift.amazonaws.com", "CreateCluster"): _SpecificExtractor(
         "AmazonRedshift",
         _constructed_ci("arn:aws:redshift:{region}:{account_id}:cluster:{value}", "requestParameters", "ClusterIdentifier"),
     ),
     ("elasticbeanstalk.amazonaws.com", "CreateApplication"): _SpecificExtractor(
-        "AWSElasticBeanstalk", _direct_ci("Application", "ApplicationArn")
+        "AWSElasticBeanstalk",
+        # Confirmado em evento real capturado em sandbox: `responseElements`
+        # vem `null` para este evento (não `{"Application": {...}}` como um
+        # `_direct_ci` assumiria) — o ARN precisa ser construído a partir do
+        # nome pedido, igual ao caminho do S3.
+        _constructed_ci(
+            "arn:aws:elasticbeanstalk:{region}:{account_id}:application/{value}",
+            "requestParameters",
+            "ApplicationName",
+        ),
     ),
     ("elasticbeanstalk.amazonaws.com", "CreateEnvironment"): _SpecificExtractor(
         "AWSElasticBeanstalk", _direct_ci("EnvironmentArn")

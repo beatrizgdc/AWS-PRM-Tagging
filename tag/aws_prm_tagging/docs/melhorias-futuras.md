@@ -99,44 +99,51 @@ SNS) que rode periodicamente (ou no deploy) comparando o CSV vigente contra
 mapeamento — candidato natural para rodar junto da Etapa 4 quando ela for
 implementada.
 
-### Extractors da Etapa 3 — verificados estruturalmente, mas não contra um evento real
+### Extractors da Etapa 3 — verificados estruturalmente E contra eventos reais
 
-**Atualizado — duas camadas de teste agora, não nenhuma.** Uma primeira
-versão deste item dizia que os extractors vinham só de memória, sem nenhuma
-verificação. Isso mudou:
+**Resolvido em 2026-09-23/24, testado em sandbox — 3 bugs reais
+encontrados e corrigidos.** Duas camadas de verificação agora:
 
-1. **Verificação estrutural automatizada (implementada agora,
-   `test/unit/test_event_parser_botocore.py`)**: cada `path` hardcoded num
+1. **Verificação estrutural automatizada
+   (`test/unit/test_event_parser_botocore.py`)**: cada `path` hardcoded num
    extractor dedicado (`_DirectPath`/`_ConstructedPath` em
    `event_parser.py`) é checado, via o `botocore` instalado localmente,
    contra o shape REAL da operação de API — pega erro de digitação, campo
    inexistente ou operação renomeada, sem precisar de nenhuma conta AWS.
-   Essa verificação já achou e corrigiu bugs reais nesta mesma sessão de
-   trabalho (`CreateDomain`/`CreateApi` vêm de pacotes SDK diferentes dos
-   que o `eventSource` sozinho sugeriria — `opensearch`/`apigatewayv2`, não
-   `es`/`apigateway`). Roda como parte da suíte normal de testes, sem custo
-   nenhum.
-2. **O que a camada 1 NÃO cobre**: a *capitalização exata* que o CloudTrail
-   de fato grava para os poucos serviços de protocolo `query`/`ec2`/
-   `rest-xml` (ver docstring de `event_parser.py`) — só um evento real
-   capturado confirma isso com certeza; os extractors desses serviços usam
-   leitura tolerante a capitalização (`_direct_ci`/`_constructed_ci`) como
-   mitigação, não como substituto da validação real.
+   Essa verificação já achou e corrigiu bugs reais (`CreateDomain`/
+   `CreateApi` vêm de pacotes SDK diferentes dos que o `eventSource`
+   sozinho sugeriria — `opensearch`/`apigatewayv2`, não `es`/`apigateway`).
+   Roda como parte da suíte normal de testes, sem custo nenhum.
+2. **Eventos reais capturados em sandbox** (roteiro completo e resultado
+   por serviço em
+   [test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-1--capturar-eventos-cloudtrail-reais-sem-implantar-a-stack)):
+   dos 8 serviços de protocolo `query`/`ec2`/`rest-xml` testados (todos
+   menos CloudFront, pulado por custo de tempo — 15-20min de propagação),
+   **3 tinham bug real**, não só incerteza de capitalização:
+   - `rds.amazonaws.com/CreateDBInstance` e (por analogia, não testado
+     diretamente) `CreateDBCluster` — o CloudTrail ACHATA a resposta
+     (`dBInstanceArn` na raiz), diferente do shape do botocore que embrulha
+     em `{"DBInstance": {...}}`.
+   - `elasticache.amazonaws.com/CreateCacheCluster` — mesmo achatamento
+     (`aRN` na raiz, não `{"CacheCluster": {...}}`).
+   - `elasticbeanstalk.amazonaws.com/CreateApplication` — `responseElements`
+     vem `null`; corrigido para construir o ARN a partir de
+     `requestParameters.ApplicationName`, igual ao S3.
 
-**Por que a camada 2 não foi resolvida agora:** exigiria gerar cada tipo de
-recurso numa conta sandbox com CloudTrail habilitado e capturar o evento
-real — ação contra uma conta AWS de verdade, fora do escopo de uma sessão
-sem credenciais.
+   S3, SNS, Route 53, ELB e Redshift foram confirmados corretos como
+   estavam. A verificação estrutural (camada 1) não pegou esses 3 porque
+   checava só "o campo existe no shape documentado", não "o CloudTrail
+   real respeita esse shape" — os dois primeiros casos são um tipo de erro
+   novo (achatamento de wrapper), não coberto antes; a camada 1 foi
+   ajustada com uma lista de exceções conhecidas
+   (`_WRAPPER_ACHATADO_PELO_CLOUDTRAIL` em `test_event_parser_botocore.py`)
+   para continuar verificando esses casos contra o shape real, só
+   descontando o wrapper que se sabe que o CloudTrail omite.
 
-**O que destrava:** um runbook de captura manual (mesmo padrão de
-`test/manual-live/README.md`, já usado para o smoke test da Etapa 2c) —
-criar 1 recurso descartável por serviço numa conta sandbox, capturar o
-evento real via `aws cloudtrail lookup-events` ou o console do CloudTrail,
-e comparar contra o extractor. Priorizar os serviços de protocolo
-`query`/`ec2`/`rest-xml` (`rds`, `elasticache`, `redshift`,
-`elasticbeanstalk`, `sns`, `elasticloadbalancing`) — são os únicos onde a
-capitalização é uma incerteza real; os demais (protocolo `json`/`rest-json`)
-têm confiança bem mais alta por já virem de shapes verificados.
+**O que ainda não foi testado**: só CloudFront (`CreateDistribution`) —
+pulado por causa do tempo de propagação/exclusão (15-20min), não por
+custo. Continua com leitura tolerante a capitalização como mitigação, não
+substituto.
 
 ### Corrida com IaC — debounce de 30 minutos, sem validação de tempo real
 
@@ -259,39 +266,76 @@ junto.
 **O que destrava:** mesma decisão do buffer SQS acima — se/quando uma fila
 for adicionada à arquitetura, o DLQ vem natural junto dela.
 
-### `sam validate`/`cfn-lint`/`sam build`/`sam local invoke` — feitos; deploy em sandbox real, não
+### `sam validate`/`cfn-lint`/`sam build`/`sam local invoke`/`sam deploy` — todos feitos, pipeline real confirmado
 
-**Atualizado.** `cfn-lint`, `sam validate --lint`, `sam build` e
-`sam local invoke` (contra um evento sintético fora de escopo, dentro de um
-container `public.ecr.aws/lambda/python:3.12` real via Docker) rodaram
-nesta sessão — nenhum precisa de credencial AWS. Todos passam limpos. Esse
-processo **achou e corrigiu um bug real**: `.samignore` não é suportado
-pelo SAM CLI instalado (confirmado no código-fonte — nenhuma referência a
-isso em `samcli`); o build empacotava `test/`/`docs/`/`infra/`/`reference/`
-inteiros dentro da Lambda sem ninguém perceber. Corrigido com
-`Metadata.BuildMethod: makefile` + `Makefile` (ver
+**Resolvido — deploy real e smoke test de ponta a ponta executados em
+sandbox (2026-09-23/24)**, além das validações estáticas já feitas antes
+(`cfn-lint`, `sam validate --lint`, `sam build`, `sam local invoke` — ver
 [infra/README.md](../infra/README.md#build-e-deploy)).
 
-O que continua fora: **implantar de verdade contra uma conta sandbox**
-(`sam deploy`) — exige credenciais AWS reais, fora do que dá para fazer
-sem acesso a uma conta. Roteiro elaborado (não executado) em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md),
-cobrindo: captura de evento CloudTrail real para os ~9 serviços de
-protocolo `query`/`ec2`/`rest-xml` (capitalização incerta), smoke test de
-ponta a ponta (EventBridge → Step Functions → Lambda → SNS), e investigação
-da ação de tag do CodeBuild.
+Resultado completo do smoke test em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-2--smoke-test-de-ponta-a-ponta-implanta-a-stack):
+stack implantada de verdade (`sam deploy`, região `us-east-2`), um bucket
+S3 criado de propósito disparou o pipeline completo — EventBridge → Step
+Functions (debounce 30s) → Lambda → decisão → escrita real — e **a tag
+chegou corretamente no recurso**, confirmado via `get-bucket-tagging`.
 
-**Por que não foi resolvido 100% agora:** implantar contra uma conta real
-exige credenciais que este ambiente de desenvolvimento não tem — é
-trabalho que só quem tem acesso à conta sandbox pode rodar (ou autorizar
-explicitamente).
+**2 bugs reais de permissão IAM encontrados e corrigidos** nesse processo
+(detalhe na Parte 2 do runbook) — nenhum dos dois gerava exceção nem
+aparecia no CloudWatch Logs da Lambda; só apareceram inspecionando o
+`TagResources` bruto no CloudTrail (`FailedResourcesMap`, chamada com HTTP
+200 mas falha por recurso dentro dela):
 
-**O que destrava:** rodar o roteiro em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)
-contra a conta sandbox — mesma disciplina já seguida para a Etapa 2c
-(`test/manual-live/README.md`).
+1. **S3 precisava de `s3:GetBucketTagging`** além de `s3:PutBucketTagging`
+   (só o segundo estava na política).
+2. **CloudWatch Logs precisava de `logs:TagResource`**, não
+   `logs:TagLogGroup` (a ação que estava na política) — as duas existem no
+   botocore, por isso a verificação estrutural automatizada não pegou;
+   achado porque a própria Lambda, ao criar seu log group na primeira
+   execução, gerou um evento `CreateLogGroup` orgânico que a Etapa 3
+   processou e tentou taguear.
 
-## Cobertura de recursos que nunca tiveram tag nenhuma
+Stack e todos os recursos de teste (2 buckets) foram apagados ao final,
+confirmado sem sobra na conta.
+
+**O que ainda não foi testado**: volume real de eventos em produção
+(rajadas), e o caminho de CloudFront/Route 53 quando a stack estiver numa
+região diferente de `us-east-1` (ver "Achado à parte" no runbook, novo
+item de arquitetura abaixo).
+
+### Serviços globais (Route 53/CloudFront) só disparam EventBridge em us-east-1 — não corrigido
+
+**Classificação: precisa de decisão de arquitetura, não é melhoria
+opcional.** Achado novo, confirmado empiricamente em sandbox em
+2026-09-24 (não só documentação da AWS — reproduzido: `aws cloudtrail
+lookup-events` para `CreateHostedZone` devolveu 0 resultados consultado em
+`us-east-2`, e 1 resultado — com `awsRegion: us-east-1` gravado no próprio
+evento — na mesma consulta em `us-east-1`, mesmo com o perfil AWS
+configurado para `us-east-2`).
+
+**O quê:** a AWS entrega eventos de CloudTrail de serviços GLOBAIS (Route
+53 e CloudFront, os únicos 2 mapeados hoje; IAM/STS seriam outros exemplos
+não mapeados) só ao barramento padrão do EventBridge em `us-east-1`,
+nunca ao de outra região. Se a stack da Etapa 3 for implantada numa conta
+cliente em qualquer região que não seja `us-east-1` (a arquitetura
+multi-cliente não fixa isso — ver
+[arquitetura-multicliente.md](arquitetura-multicliente.md)), as regras do
+EventBridge dela **nunca vão ver** criação de hosted zone/distribuição —
+falha silenciosa (evento nunca chega, não é uma tentativa de escrita que
+falha com erro visível).
+
+**Por que não foi corrigido agora:** é mudança de arquitetura, não um bug
+de código — precisa de decisão sobre a abordagem: (a) implantar uma cópia
+mínima das regras de EventBridge (+ um jeito de invocar o Step Functions
+da região principal a partir de `us-east-1`) especificamente para esses 2
+serviços em toda conta cliente, além da stack principal; (b) aceitar o gap
+e confiar na Etapa 4 (fora do escopo deste repositório) como backstop para
+esses 2 serviços; ou (c) mudar a região "principal" da stack para
+`us-east-1` em todo cliente (nem sempre possível/desejável). Nenhuma
+opção é óbvia o suficiente para decidir sozinho.
+
+**O que destrava:** decisão de arquitetura com o gestor sobre qual das 3
+opções acima seguir — só depois disso vale implementar.
 
 **O quê:** `resourcegroupstaggingapi:GetResources` (usado por
 `resource_discovery.discover_generic_resources`) não retorna recursos que

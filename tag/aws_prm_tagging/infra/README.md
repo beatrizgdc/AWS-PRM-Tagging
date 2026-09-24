@@ -103,6 +103,25 @@ o caminho genérico funcionou sozinho, sem precisar de `UpdateProject` nem
 de nenhuma entrada nova em `PrmEtapa3NativeTagWrite`. Cobertura real hoje:
 **69 de 69 serviços mapeados**, nenhum gap conhecido.
 
+**2 ações da política estavam ERRADAS, não faltando** — só descoberto com
+o smoke test de ponta a ponta real (ver
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-2--smoke-test-de-ponta-a-ponta-implanta-a-stack)),
+porque as duas passavam despercebidas pela verificação estrutural (a ação
+errada também existe no botocore, só não é a que `tag:TagResources` invoca
+de verdade):
+
+- `s3:PutBucketTagging` sozinho não basta — falta `s3:GetBucketTagging`
+  também (`tag:TagResources` lê o TagSet atual antes de escrever). Todo
+  bucket teria falhado silenciosamente (sem exceção, só `erro_permissao`
+  no relatório/SNS) até este teste.
+- `logs:TagLogGroup` estava errado — a ação certa é `logs:TagResource`
+  (API unificada, a que `tag:TagResources` de fato chama). Achado porque a
+  própria Lambda, ao criar seu log group na primeira execução, gerou um
+  evento `CreateLogGroup` real que a Etapa 3 processou e tentou taguear.
+
+Ambas corrigidas em `template.yaml` e reconfirmadas com um segundo smoke
+test depois do redeploy.
+
 ## Build e deploy
 
 ```bash
@@ -111,11 +130,11 @@ sam build --template-file aws_prm_tagging/infra/template.yaml
 sam deploy --guided
 ```
 
-**Validado nesta sessão, sem tocar em nenhuma conta AWS real** (`cfn-lint`,
-`sam validate --lint`, `sam build` e `sam local invoke` contra um evento
-sintético fora de escopo, todos rodados localmente — o `sam local invoke`
-sobe o runtime Lambda real via Docker, mas não chama nenhuma API AWS de
-verdade nesse caminho de teste):
+**Validado localmente (sem tocar em conta real) E contra uma conta sandbox
+real** (`cfn-lint`, `sam validate --lint`, `sam build`, `sam local invoke`
+e, por fim, `sam deploy` de verdade — ver
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)
+para o roteiro e resultado completos):
 
 - `cfn-lint`/`sam validate --lint` — zero findings. Também roda como teste
   automatizado (`test/unit/test_infra_template_cfn_lint.py`, pula
@@ -132,12 +151,24 @@ verdade nesse caminho de teste):
   container `public.ecr.aws/lambda/python:3.12` real (mesma imagem que a
   AWS usa), processando um evento fora de escopo do CSV de ponta a ponta
   sem erro.
+- **`sam deploy` real, contra a conta sandbox (2026-09-23/24)** — stack
+  completa implantada (`prm-etapa3-smoke-test`, `us-east-2`), um bucket S3
+  criado de propósito disparou o pipeline inteiro (EventBridge → Step
+  Functions → Lambda → decisão → escrita real) e **a tag chegou
+  corretamente no recurso**. Achou e corrigiu **2 bugs reais de permissão
+  IAM** (`s3:GetBucketTagging` faltando, `logs:TagLogGroup` errado em vez
+  de `logs:TagResource` — ver "Permissões IAM" acima) que nenhuma
+  verificação estática pegaria, porque as duas passavam despercebidas em
+  silêncio (sem exceção, só reportadas como `erro_permissao` no
+  relatório/SNS) até um evento real de verdade expor o `FailedResourcesMap`
+  do `tag:TagResources` no CloudTrail. Stack e recursos de teste apagados
+  ao final, nada ficou na conta.
 
-**O que isso ainda NÃO valida** — precisa de conta AWS real (roteiro
-elaborado, não executado, em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)):
-se a regra do EventBridge de fato casa um evento real, se o Step Functions
-invoca a Lambda corretamente, se a tag chega de verdade no recurso, e a
-capitalização exata do CloudTrail para os ~9 serviços de protocolo
-`query`/`ec2`/`rest-xml` onde isso é incerto (ver docstring de
-`event_parser.py`).
+**O que isso ainda NÃO valida**: volume real de eventos em produção
+(rajadas de criação de recurso), e o caminho de Route 53/CloudFront quando
+a stack estiver numa região diferente de `us-east-1` — achado novo,
+documentado como pendência de arquitetura em
+[docs/melhorias-futuras.md](../docs/melhorias-futuras.md#serviços-globais-route-53cloudfront-só-disparam-eventbridge-em-us-east-1--não-corrigido).
+CloudFront (`CreateDistribution`) também não teve seu evento capturado
+(pulado por custo de tempo de propagação/exclusão, não de dinheiro) — segue
+com leitura tolerante a capitalização como mitigação.

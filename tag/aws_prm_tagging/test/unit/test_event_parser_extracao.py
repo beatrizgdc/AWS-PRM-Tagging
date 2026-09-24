@@ -144,19 +144,72 @@ def test_evento_sem_detail_devolve_lista_vazia():
     assert parse_creation_event({}) == []
 
 
-def test_rds_create_db_cluster_le_arn_tolerante_a_capitalizacao(cloudtrail_event_factory):
-    """RDS é protocolo "query" — a capitalização exata do CloudTrail é
-    incerta (ver docstring de event_parser.py), então o extractor tenta a
-    capitalização do botocore (`DBClusterArn`) E a variante com a primeira
-    letra minúscula (`dBClusterArn`, o formato que eventos reais de RDS
-    costumam usar). Aqui testamos essa segunda variante."""
+def test_rds_create_db_instance_le_arn_achatado_confirmado_em_sandbox(cloudtrail_event_factory):
+    """Confirmado com um evento REAL capturado em sandbox (ver
+    test/manual-live-etapa3/README.md, 2026-09-23): ao contrário do shape
+    documentado do botocore (que embrulha a resposta em `{"DBInstance":
+    {...}}`), o CloudTrail grava `dBInstanceArn` já ACHATADO, direto na raiz
+    de `responseElements` — sem o wrapper. Bug real, não hipotético (a
+    versão anterior deste extractor procurava por `DBInstance.DBInstanceArn`
+    e nunca encontraria nada num evento de produção)."""
+    event = cloudtrail_event_factory(
+        event_source="rds.amazonaws.com",
+        event_name="CreateDBInstance",
+        detail_overrides={
+            "responseElements": {"dBInstanceArn": "arn:aws:rds:us-east-1:000000000000:db:meu-banco"}
+        },
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].arn == "arn:aws:rds:us-east-1:000000000000:db:meu-banco"
+    assert resultado[0].servico == "Amazon Relational Database Service (RDS)"
+
+
+def test_rds_create_db_cluster_le_arn_achatado_por_analogia_com_db_instance(cloudtrail_event_factory):
+    """`CreateDBCluster` (Aurora) não foi testado com um evento real nesta
+    sessão (só `CreateDBInstance` foi, ver teste acima) — mas segue o MESMO
+    padrão de shape no botocore (`{"DBCluster": {...}}`), então corrigido
+    por analogia. Documentado como inferência, não confirmação
+    independente, em event_parser.py."""
     event = cloudtrail_event_factory(
         event_source="rds.amazonaws.com",
         event_name="CreateDBCluster",
         detail_overrides={
-            "responseElements": {"dBCluster": {"dBClusterArn": "arn:aws:rds:us-east-1:000000000000:cluster:meu-cluster-aurora"}}
+            "responseElements": {"dBClusterArn": "arn:aws:rds:us-east-1:000000000000:cluster:meu-cluster-aurora"}
         },
     )
     resultado = parse_creation_event(event)
     assert resultado[0].arn == "arn:aws:rds:us-east-1:000000000000:cluster:meu-cluster-aurora"
     assert resultado[0].servico == "Amazon Relational Database Service (RDS)"
+
+
+def test_elasticache_create_cache_cluster_le_arn_achatado_confirmado_em_sandbox(cloudtrail_event_factory):
+    """Mesmo achatamento confirmado em sandbox que o RDS: `aRN` vem direto
+    na raiz de `responseElements`, sem o wrapper `CacheCluster` documentado
+    pelo botocore."""
+    event = cloudtrail_event_factory(
+        event_source="elasticache.amazonaws.com",
+        event_name="CreateCacheCluster",
+        detail_overrides={
+            "responseElements": {"aRN": "arn:aws:elasticache:us-east-1:000000000000:cluster:meu-cluster"}
+        },
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].arn == "arn:aws:elasticache:us-east-1:000000000000:cluster:meu-cluster"
+    assert resultado[0].servico == "Amazon ElastiCache"
+
+
+def test_elasticbeanstalk_create_application_constroi_arn_do_request(cloudtrail_event_factory):
+    """Confirmado em sandbox: `CreateApplication` grava `responseElements:
+    null` no CloudTrail — o ARN precisa ser construído a partir do nome
+    pedido em `requestParameters`, igual ao caminho já usado para S3."""
+    event = cloudtrail_event_factory(
+        event_source="elasticbeanstalk.amazonaws.com",
+        event_name="CreateApplication",
+        detail_overrides={
+            "requestParameters": {"applicationName": "meu-app"},
+            "responseElements": None,
+        },
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].arn == "arn:aws:elasticbeanstalk:us-east-1:000000000000:application/meu-app"
+    assert resultado[0].servico == "AWS Elastic Beanstalk"
