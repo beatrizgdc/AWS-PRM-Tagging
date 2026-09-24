@@ -9,7 +9,7 @@ Etapa 3/4) forem empacotadas como Lambda.
 
 Cada conta cliente roda sua própria execução da automação — não há acesso
 cross-account nesta arquitetura. Isso vale tanto para este script (execução
-local/CLI) quanto para os estágios futuros (Lambda dentro de uma stack
+local/CLI) quanto para as Etapas futuras (Lambda dentro de uma stack
 CloudFormation implantada na própria conta do cliente).
 
 ## Credenciais
@@ -36,7 +36,7 @@ produção:
 
 2. **IAM role anexada ao ambiente de execução** (recomendado para execução
    agendada/automatizada): instance profile de EC2, task role de
-   ECS/Fargate, ou — nos próximos estágios — execution role de Lambda. Nesse
+   ECS/Fargate, ou — nas próximas Etapas — execution role de Lambda. Nesse
    caso `--profile` é omitido; o boto3 resolve a role automaticamente.
 
 3. **Variáveis de ambiente temporárias** (`AWS_ACCESS_KEY_ID`,
@@ -180,9 +180,17 @@ de cada serviço dono do recurso — ex., para taguear uma instância EC2 via
 ([referência](https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_TagResources.html)).
 Como o escopo cobre ~80 serviços do CSV oficial, a política real da Etapa 2c
 precisa de uma ação de tagging nativa por serviço (`ec2:CreateTags`,
-`lambda:TagResource`, `s3:PutBucketTagging`, `rds:AddTagsToResource` etc.) —
-essa lista completa, serviço a serviço, é levantamento pendente para quando
-a Etapa 2c for implementada, não algo a assumir aqui.
+`lambda:TagResource`, `s3:PutBucketTagging`, `rds:AddTagsToResource` etc.).
+Essa lista já foi levantada e confirmada em sandbox para a Etapa 3
+(`PrmEtapa3NativeTagWrite` em
+[infra/template.yaml](../infra/template.yaml), documentada em
+[infra/README.md](../infra/README.md#permissões-iam--cobertura-real) e
+[melhorias-futuras.md](melhorias-futuras.md#permissões-iam-nativas--resolvido-69-de-69-serviços-mapeados-cobertos))
+e serve de ponto de partida direto para a Etapa 2c, já que ambas cobrem o
+mesmo conjunto de 69 serviços mapeados e a mesma ação nativa por serviço —
+ainda assim, monte/revise essa política especificamente para a Etapa 2c (e
+teste contra a conta sandbox) antes de usá-la em produção, em vez de
+reaproveitar `infra/template.yaml` diretamente.
 
 ## Passo a passo
 
@@ -252,15 +260,15 @@ recursos por chamada). Em contas grandes:
   fora de `us-east-1`/`sa-east-1`), considerar restringir a lista de regiões
   processadas antes de rodar em larga escala — hoje o script sempre varre
   todas as regiões comerciais ativas da conta; um filtro de região por CLI é
-  um candidato natural de melhoria para os próximos estágios, não implementado
-  aqui para manter o escopo do estágio 1 fiel ao pedido original.
+  um candidato natural de melhoria para as próximas Etapas, não implementado
+  aqui para manter o escopo da Etapa 1 fiel ao pedido original.
 
-## Caminho para os próximos estágios (Lambda + CloudFormation StackSets)
+## Caminho para as próximas Etapas (Lambda + CloudFormation StackSets)
 
 A distribuição para os clientes da EMPRESAX foi decidida via **CloudFormation
 StackSets com service-managed permissions**, integrada ao AWS Organizations
 de cada cliente — uma stack autocontida por conta, sem acesso cross-account
-de leitura. Este documento cobre só a execução do estágio 1 contra uma
+de leitura. Este documento cobre só a execução da Etapa 1 contra uma
 conta; a camada de orquestração multi-cliente (trusted access, targeting por
 sub-OU, modelo de reporte por push, dashboard) está em
 [arquitetura-multicliente.md](arquitetura-multicliente.md).
@@ -287,20 +295,20 @@ Pontos a considerar ao empacotar como Lambda:
 
 - **Timeout**: a varredura completa de todas as regiões pode facilmente
   ultrapassar os 15 minutos máximos de uma execução Lambda em contas
-  grandes. Os estágios de automação contínua e varredura recorrente devem
+  grandes. As Etapas de automação contínua e varredura recorrente devem
   paralelizar por região (ex.: uma invocação de Lambda por região, orquestrada
   por Step Functions ou EventBridge, reaproveitando `discover_generic_resources`,
   `discover_bedrock_resources` e `discover_eks_resources` como estão) em vez
   de repetir o loop sequencial de `main.py`.
 - **Permissões**: a execution role da Lambda substitui o `--profile` local —
   aplicar a mesma política de somente-leitura acima (mais as permissões de
-  escrita necessárias nos estágios 2+, que devem ficar em uma política
+  escrita necessárias nas Etapas 2+, que devem ficar em uma política
   separada, nunca na mesma role usada para descoberta).
 - **CloudFormation StackSets**: o template implantado por StackSet em cada
   conta deve provisionar a execution role local, a própria função Lambda com
   o pacote `aws_prm_tagging` (ou uma Lambda Layer compartilhada entre as
-  functions dos 4 estágios, já que o código de descoberta é o mesmo), e o
-  gatilho apropriado por estágio (EventBridge Scheduler para a varredura
+  functions das 4 Etapas, já que o código de descoberta é o mesmo), e o
+  gatilho apropriado por Etapa (EventBridge Scheduler para a varredura
   recorrente; EventBridge rule de `CreateTags`/`RunInstances` etc., ou AWS
   Config, para a automação contínua de novos recursos). O parâmetro
   `--expected-tag-value` do CLI vira um **StackSet parameter** por

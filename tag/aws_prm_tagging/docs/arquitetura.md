@@ -32,26 +32,29 @@ seções `decision.py`/`tag_execution.py` abaixo.
 Nenhuma dessas funções tem efeito colateral sobre a conta AWS: todas usam
 exclusivamente operações `Describe*`/`List*`/`Get*`.
 
-## Núcleo compartilhado vs. entrypoint de estágio
+## Núcleo compartilhado vs. entrypoint de Etapa
 
 Todo módulo no nível raiz do pacote (`services.py`, `regions.py`,
 `resource_discovery.py`, `tag_status.py`, `iac_detection.py`, `decision.py`,
-`tag_execution.py`, `ou_tree.py`, `report.py`, `retry.py`, `event_mapping.py`,
-`event_parser.py`, `single_resource.py`, `publish.py`) é **núcleo
-compartilhado**: pode ser importado por qualquer um dos 4 estágios sem saber
-qual estágio está chamando. `decision.py` (Etapa 2a) e `tag_execution.py`
-(Etapas 2b/2c) estão aqui pelo mesmo motivo que `resource_discovery.py`
-está — a Etapa 3 (automação contínua) e a Etapa 4 (varredura recorrente)
-também precisam classificar e aplicar a tag, não só a Etapa 2; `publish.py`
-segue o mesmo princípio para o lado de reporte (Etapa 3 é quem primeiro
-precisou publicar algo, mas a Etapa 4 reaproveita o mesmo módulo depois).
+`tag_execution.py`, `tag_reads.py`, `ou_tree.py`, `report.py`, `retry.py`,
+`event_mapping.py`, `event_parser.py`, `single_resource.py`, `publish.py`) é
+**núcleo compartilhado**: pode ser importado por qualquer uma das 4 Etapas
+sem saber qual Etapa está chamando. `decision.py` (Etapa 2a) e
+`tag_execution.py` (Etapas 2b/2c) estão aqui pelo mesmo motivo que
+`resource_discovery.py` está — a Etapa 3 (automação contínua) e a Etapa 4
+(varredura recorrente) também precisam classificar e aplicar a tag, não só
+a Etapa 2; `publish.py` segue o mesmo princípio para o lado de reporte
+(Etapa 3 é quem primeiro precisou publicar algo, mas a Etapa 4 reaproveita
+o mesmo módulo depois). `tag_reads.py` entra pelo mesmo critério: é
+importado tanto por `tag_execution.py` (Etapas 2b/2c) quanto por
+`single_resource.py` (Etapa 3) — ver seção própria abaixo.
 
-Dois módulos são **entrypoint de estágio**: `main.py` (CLI com 3
-subcomandos, um por estágio implementado como CLI — `map`, `decide`, `apply`
+Dois módulos são **entrypoint de Etapa**: `main.py` (CLI com 3
+subcomandos, um por Etapa implementada como CLI — `map`, `decide`, `apply`
 — ver [README.md](../README.md#uso)) e `handler_continuous_tagging.py`
 (handler Lambda da Etapa 3, invocado pelo Step Functions — ver
 [infra/README.md](../infra/README.md)). Os dois seguem o mesmo padrão: só
-orquestram I/O específico do estágio (args de CLI / variáveis de ambiente e
+orquestram I/O específico da Etapa (args de CLI / variáveis de ambiente e
 sessão boto3), importando os módulos do núcleo em vez de duplicar lógica.
 Quando a Etapa 4 ganhar seu próprio entrypoint (handler Lambda agendado),
 segue o mesmo padrão dos dois acima. `apply` cobre tanto a Etapa 2b
@@ -120,8 +123,8 @@ comerciais.
 
 ### `resource_discovery.py`
 
-Três funções públicas, cada uma isolada e reutilizável nos próximos
-estágios. Todas devolvem `(recursos, falhas)` — `falhas` é uma lista de
+Três funções públicas, cada uma isolada e reutilizável nas próximas
+Etapas. Todas devolvem `(recursos, falhas)` — `falhas` é uma lista de
 dicts `{"regiao", "etapa", "erro"}` no mesmo formato que `main.py` grava em
 `falhas_descoberta` (ver `report.py` abaixo): uma `ClientError` capturada
 durante a descoberta (ex.: `AccessDenied`, throttling esgotado, falha no
@@ -305,7 +308,7 @@ relatório (ver nota sobre EKS em `resource_discovery.py` acima), mantendo a
 `build_report`. `build_report` agrega a lista (já deduplicada) em contadores
 (`por_status_tag`, `por_status_iac`, `por_servico`,
 `total_tag_similar_encontrada` — ver `tag_status.py` acima) e monta o JSON
-final no formato descrito no `README.md` do estágio 1. Ambas são funções
+final no formato descrito no `README.md` da Etapa 1. Ambas são funções
 puras, sem I/O.
 
 Recebe também `falhas_descoberta` (opcional, de `main.py`) — uma entrada
@@ -533,6 +536,23 @@ especificamente para códigos de erro de throttling
 outro erro (ex.: `AccessDeniedException`) propaga imediatamente — não faz
 sentido re-tentar um erro de permissão.
 
+### `tag_reads.py`
+
+Wrappers de baixo nível — 1 chamada de API nativa por tipo de recurso
+dedicado (EKS, Bedrock, ELBv2), cada uma decorada com `retry.with_backoff()`
+— compartilhados entre `single_resource.py` (Etapa 3, lê 1 ARN por vez) e
+`tag_execution.py` (Etapas 2b/2c, revalida em lote). Extraído para eliminar
+a duplicação de código que existia entre os dois chamadores (mesma chamada
+de API, implementada duas vezes) — ver
+[melhorias-futuras.md](melhorias-futuras.md#refatorações-de-código-sem-risco-de-comportamento).
+Só encapsula a chamada crua do boto3; nenhuma lógica de negócio (formato de
+saída, agrupamento em lote, tratamento de erro por ARN) mora aqui — isso
+continua específico de cada chamador. O caminho genérico
+(`resourcegroupstaggingapi:GetResources`) fica de fora de propósito:
+`single_resource.py` consulta 1 ARN específico, `tag_execution.py` pagina a
+região inteira sem filtro — usos genuinamente diferentes da mesma API, não
+uma duplicação.
+
 ### `event_mapping.py` (Etapa 3)
 
 Tabela `product_service_code` (do CSV oficial) -> evento(s) de criação de
@@ -579,11 +599,10 @@ do EventBridge — puro, nenhuma chamada de API. Devolve lista (não um único
 valor) porque algumas APIs de criação são de lote (`ec2:RunInstances` pode
 criar várias instâncias numa única chamada).
 
-**Praticamente todo evento mapeado tem extractor dedicado** (`_REGISTRY`,
-91 dos 92 eventos — só `elasticmapreduce:RunJobFlow` ficou fora por
-descuido numa revisão e já foi coberto também; o fallback genérico
-(`_extract_generic`) existe como rede de segurança, não como caminho
-principal). Cada extractor é um `_DirectPath`/`_ConstructedPath` (dataclasses
+**Todo evento mapeado tem extractor dedicado** (`_REGISTRY`, 92 dos 92
+eventos — `elasticmapreduce:RunJobFlow` tinha ficado fora por descuido numa
+revisão, já corrigido; o fallback genérico (`_extract_generic`) existe como
+rede de segurança, não como caminho principal). Cada extractor é um `_DirectPath`/`_ConstructedPath` (dataclasses
 inspecionáveis, não closures) com um `path` explícito — verificado por
 `test_event_parser_botocore.py` contra o shape real da operação no
 botocore instalado (ver seção de testes abaixo). Dentro dos extractors
@@ -595,11 +614,17 @@ geralmente bate com o shape do SDK); os poucos de protocolo `query`/`ec2`/
 `sns`, `s3`, `route53`, `cloudfront`, `elasticloadbalancing`) usam leitura
 tolerante a capitalização (`_direct_ci`/`_constructed_ci`) ou construção a
 partir de `requestParameters` (mais simples, menos superfície de erro) —
-ver docstring do módulo para o raciocínio completo. **Nenhum extractor foi
-validado contra um evento CloudTrail real capturado em sandbox** — a
-verificação contra o botocore prova que os campos existem na API, não a
-capitalização exata que o CloudTrail grava para esses serviços específicos
-— ver [docs/melhorias-futuras.md](melhorias-futuras.md).
+ver docstring do módulo para o raciocínio completo. **8 desses extractors já
+foram confirmados contra um evento CloudTrail real capturado em sandbox**
+(2026-09-23/24 — 3 tinham bug real: RDS `CreateDBInstance`, ElastiCache
+`CreateCacheCluster` e Elastic Beanstalk `CreateApplication`, todos já
+corrigidos; os outros 5 testados confirmaram o extractor existente). Só
+`cloudfront:CreateDistribution` ficou de fora (pulado por tempo de
+propagação, não por custo) — continua com leitura tolerante a
+capitalização como mitigação, não substituto. Ver
+[docs/melhorias-futuras.md](melhorias-futuras.md) e
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)
+para o roteiro e resultado completos.
 
 ### `single_resource.py` (Etapa 3)
 
@@ -663,17 +688,17 @@ Lambda de fato invoca.
 
 Único módulo com efeito de I/O de CLI (leitura de argumentos de linha de
 comando e leitura/escrita de arquivo JSON). Toda a lógica de negócio vive
-nos módulos acima, então os próximos estágios podem importar
+nos módulos acima, então as próximas Etapas podem importar
 `resource_discovery`, `tag_status`, `iac_detection`, `decision`,
 `tag_execution` etc. diretamente em um handler Lambda sem depender do CLI.
 
-Três subcomandos (`argparse` com `add_subparsers`), um por estágio
+Três subcomandos (`argparse` com `add_subparsers`), um por Etapa
 implementado — encadeados manualmente por quem roda o CLI (a saída em
 arquivo de um é a entrada em arquivo do próximo), não por um orquestrador
 único:
 
-- `map` — Etapa 1. Comportamento idêntico ao script original de estágio
-  único (mesmos argumentos `--expected-tag-value`/`--profile`/`--output`).
+- `map` — Etapa 1. Comportamento idêntico ao script original de Etapa
+  única (mesmos argumentos `--expected-tag-value`/`--profile`/`--output`).
   Falhas de descoberta por região/etapa são coletadas e passadas para
   `report.build_report(..., falhas_descoberta=...)` — nunca só logadas.
 - `decide` — Etapa 2a. Lê `--input` (saída de `map`), escreve o relatório de

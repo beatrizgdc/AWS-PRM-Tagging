@@ -1,6 +1,6 @@
 # Teste de ponta a ponta contra LocalStack
 
-Teste manual de integração do estágio 1 (mapeamento) executado durante o
+Teste manual de integração da Etapa 1 (mapeamento) executado durante o
 desenvolvimento, documentado aqui para reprodução e para servir de
 regressão ao alterar `aws_prm_tagging/`. Roda inteiramente contra o
 [LocalStack](https://www.localstack.cloud/) — nenhuma chamada toca uma conta
@@ -156,7 +156,7 @@ excluir instâncias/buckets/cluster manualmente.
 
 ## Limitações deste teste
 
-- Valida o *código* do estágio 1 (paginação, classificação, tratamento de
+- Valida o *código* da Etapa 1 (paginação, classificação, tratamento de
   erro, formato do relatório), não valida atribuição de receita real — isso é
   calculado pelo backend da AWS a partir de dados de billing reais, fora do
   escopo deste repositório.

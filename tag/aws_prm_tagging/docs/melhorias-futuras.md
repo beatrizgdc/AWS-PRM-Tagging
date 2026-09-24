@@ -225,13 +225,35 @@ para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
 
 ### Permissões IAM nativas — resolvido, 69 de 69 serviços mapeados cobertos
 
-**Resolvido em 2026-09-23, testado na conta sandbox.** `infra/template.yaml`
-(`PrmEtapa3NativeTagWrite`) tem a ação de tagging nativa (exigida além de
-`tag:TagResources` para o caminho genérico) para **67 dos 69** serviços
-mapeados em `event_mapping.py` — cada nome de ação confirmado contra o
-botocore instalado (não veio de memória). Os outros 2 (EKS/Bedrock/ELB já
-têm sua permissão via `PrmEtapa3TagWrite`, API dedicada, não o caminho
-genérico) mais **CodeBuild** fecham os 69.
+**Resolvido em 2026-09-23, testado na conta sandbox.** Dos 69 serviços
+mapeados em `event_mapping.py`:
+
+- **3 usam API dedicada**, não o caminho genérico — `AmazonEKS`,
+  `AmazonBedrock` e `AWSELB`. Já têm sua permissão via `PrmEtapa3TagWrite`
+  (`eks:TagResource`/`bedrock:TagResource`/`elasticloadbalancing:AddTags`),
+  sem depender de `PrmEtapa3NativeTagWrite`.
+- Os outros **66 usam o caminho genérico** (`tag:TagResources`), que a AWS
+  documenta como exigindo, além de si mesmo, a ação de tagging nativa do
+  serviço dono do recurso (ver `docs/producao.md`). Desses 66, **65
+  precisam mesmo de uma ação nativa** — `CodeBuild` é a exceção: testado
+  diretamente em sandbox (ver abaixo), `tag:TagResources` sozinho já basta,
+  sem nenhuma ação própria.
+
+`infra/template.yaml` (`PrmEtapa3NativeTagWrite`) cobre esses 65 com **68
+ações IAM distintas em 67 namespaces de serviço** — cada nome confirmado
+contra o botocore instalado (não veio de memória). O total de ações não é
+"1 por serviço" porque a granularidade real da AWS não é 1:1 com o
+`product_service_code` do CSV: `AWSCertificateManager` precisa de
+`acm:TagResource` **e** `acm-pca:TagCertificateAuthority` (2 namespaces
+para 1 serviço mapeado); o mesmo vale para `AmazonCognito`
+(`cognito-identity`/`cognito-idp`) e `AmazonRedshift`
+(`redshift`/`redshift-serverless`); `AmazonS3` precisa de **2 ações no
+mesmo namespace** (`s3:GetBucketTagging` e `s3:PutBucketTagging` — ver
+"2 ações da política estavam ERRADAS" abaixo); e o namespace `ec2`
+(`ec2:CreateTags`) é **compartilhado** entre `AmazonEC2` e a parte de
+`AmazonVPC` que usa ARNs `ec2:...` (ex.: Transit Gateway — mesma
+desambiguação de `services.py`, ver [arquitetura.md](arquitetura.md#servicespy)),
+então não soma como 2 ações separadas. Nenhum gap conhecido restante.
 
 `CodeBuild` era o único caso sem uma operação óbvia com "tag" no nome no
 pacote `codebuild` do botocore. Testado diretamente na conta sandbox

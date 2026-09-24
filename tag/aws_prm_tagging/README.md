@@ -1,9 +1,9 @@
 # Mapeamento, decisão e tagueamento para o AWS Partner Revenue Measurement (PRM)
 
 Automação de tagging AWS para atender a exigência de Resource Tagging do
-programa AWS Partner Revenue Measurement (PRM). Este repositório cobre os
-primeiros três estágios de uma automação de **quatro estágios**, mais um
-início de implementação do quarto:
+programa AWS Partner Revenue Measurement (PRM). Este repositório cobre as
+três primeiras Etapas de uma automação de **quatro Etapas**, mais um
+início de implementação da quarta:
 
 1. **Mapeamento** (Etapa 1, `map`) — descoberta somente-leitura de recursos
    e status da tag `aws-apn-id` por recurso.
@@ -33,12 +33,20 @@ início de implementação do quarto:
    contra o shape real da API; os 16 que ficam de fora têm o motivo
    documentado linha a linha (ver [event_mapping.py](event_mapping.py) e
    [docs/melhorias-futuras.md](docs/melhorias-futuras.md)) — não são uma
-   lacuna silenciosa. 223 testes (`test/unit/`) e infraestrutura como
-   código (SAM) em [infra/](infra/README.md) — **nenhuma das duas foi
-   validada contra uma conta AWS real ainda** (nem `sam deploy`, nem um
-   evento CloudTrail real capturado — a verificação contra o botocore prova
-   que os campos existem na API, não a capitalização exata que o CloudTrail
-   grava para os poucos serviços onde isso é incerto). Varredura
+   lacuna silenciosa. Suíte de testes (`test/unit/` — número de testes
+   não fixado aqui de propósito, cresce a cada correção; rodar
+   `pytest aws_prm_tagging/test/unit/ --collect-only` para o total exato.
+   *OBS: revisar ao final do projeto se vale fixar um número aqui.*) e
+   infraestrutura como código (SAM) em [infra/](infra/README.md) —
+   **validada em sandbox em 2026-09-23/24** (`sam deploy` real e eventos
+   CloudTrail reais capturados para 8 serviços, 5 bugs reais encontrados e
+   corrigidos — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md)
+   e [test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
+   para o roteiro e resultado completos). Uma revisão de código posterior a
+   essa validação corrigiu mais 3 pontos (lote de revalidação genérica,
+   filtro de `errorCode` nos event patterns, condição `aws:TagKeys`) —
+   **esses 3 ainda só foram validados estaticamente** (cfn-lint, `sam
+   build`, suíte de testes), sem reconfirmação em sandbox. Varredura
    recorrente/auditoria (Etapa 4) continua fora do escopo deste
    repositório.
 
@@ -305,7 +313,7 @@ Dois níveis, sem sobreposição:
 
 ## Estrutura
 
-```
+```text
 aws_prm_tagging/                             raiz deste repositório (pacote Python — este README vive aqui)
   reference/                                 material de referência (leitura humana, não lido pelo código)
     aws-prm-onboarding-guide.pdf               guia oficial AWS PRM
@@ -318,6 +326,7 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   iac_detection.py                           heurística de IaC
   decision.py                                Etapa 2a — decisão de tagueamento (taguear/pular_iac/revisar_tag_similar/ja_ok/conflito)
   tag_execution.py                           Etapas 2b (dry-run) e 2c (execução real) — roteamento de API, batching, revalidação
+  tag_reads.py                               wrappers de leitura de tags nativas (EKS/Bedrock/ELBv2), compartilhados entre tag_execution.py e single_resource.py
   ou_tree.py                                 árvore de OUs da Organization
   report.py                                  monta o relatório JSON da Etapa 1
   retry.py                                   backoff exponencial para throttling
