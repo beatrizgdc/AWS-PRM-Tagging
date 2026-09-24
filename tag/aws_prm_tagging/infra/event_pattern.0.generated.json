@@ -10,6 +10,11 @@
       "detail": {
         "eventName": [
           "CreateCertificateAuthority"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -20,6 +25,11 @@
       "detail": {
         "eventName": [
           "RequestCertificate"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -31,6 +41,11 @@
         "eventName": [
           "CreateApi",
           "CreateRestApi"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -41,6 +56,11 @@
       "detail": {
         "eventName": [
           "CreateGraphqlApi"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -52,6 +72,11 @@
         "eventName": [
           "CreateDataCatalog",
           "CreateWorkGroup"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -63,6 +88,11 @@
         "eventName": [
           "CreateBackupPlan",
           "CreateBackupVault"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -73,6 +103,11 @@
       "detail": {
         "eventName": [
           "CreateInferenceProfile"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -84,6 +119,11 @@
         "eventName": [
           "CreateKeyspace",
           "CreateTable"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -94,6 +134,11 @@
       "detail": {
         "eventName": [
           "CreateDirectory"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -104,6 +149,11 @@
       "detail": {
         "eventName": [
           "CreateDistribution"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -114,6 +164,11 @@
       "detail": {
         "eventName": [
           "CreateCluster"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -124,6 +179,11 @@
       "detail": {
         "eventName": [
           "CreateProject"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -134,6 +194,11 @@
       "detail": {
         "eventName": [
           "CreatePipeline"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -144,6 +209,11 @@
       "detail": {
         "eventName": [
           "CreateIdentityPool"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -154,6 +224,11 @@
       "detail": {
         "eventName": [
           "CreateUserPool"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -164,6 +239,11 @@
       "detail": {
         "eventName": [
           "CreateInstance"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -174,82 +254,11 @@
       "detail": {
         "eventName": [
           "CreatePipeline"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.directconnect"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateConnection",
-          "CreateDirectConnectGateway"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.dms"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateReplicationInstance",
-          "CreateReplicationTask"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ds"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateDirectory",
-          "CreateMicrosoftAD"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.dsql"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.dynamodb"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateTable"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ec2"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateTransitGateway",
-          "CreateVolume",
-          "CreateVpc",
-          "RunInstances"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ecr"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateRepository"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     }

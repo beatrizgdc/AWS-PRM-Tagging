@@ -51,8 +51,16 @@ botocore é uma boa aposta para o `responseElements` real do CloudTrail.
   estrutura própria adicional bem conhecida (`"instancesSet": {"items":
   [...]}`) tratada em extractors dedicados, não pelos helpers genéricos.
 
-**Nenhum extractor foi validado contra um evento CloudTrail real capturado
-em sandbox** — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md).
+**8 dos 9 serviços de protocolo `query`/`ec2`/`rest-xml` já foram
+validados contra um evento CloudTrail real capturado em sandbox**
+(2026-09-23/24) — achou e corrigiu 3 bugs reais (RDS `CreateDBInstance`,
+ElastiCache `CreateCacheCluster`, Elastic Beanstalk `CreateApplication`);
+confirmou S3, SNS, Route 53, ELB e Redshift corretos como estavam. Só
+CloudFront (`CreateDistribution`) segue sem evento real capturado (pulado
+por custo de tempo de propagação, não de dinheiro) — ver
+[docs/melhorias-futuras.md](docs/melhorias-futuras.md) e
+[test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
+para o resultado completo, serviço a serviço.
 """
 from __future__ import annotations
 

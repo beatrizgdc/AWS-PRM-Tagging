@@ -229,7 +229,7 @@ sam deploy --guided \
   --capabilities CAPABILITY_IAM \
   --profile <perfil-sandbox>
 
-# 3. Confirmar que as 3 regras de EventBridge e a Step Machine foram criadas
+# 3. Confirmar que as 5 regras de EventBridge e a Step Machine foram criadas
 aws events list-rules --name-prefix prm-etapa3-smoke-test --profile <perfil-sandbox>
 aws stepfunctions list-state-machines --profile <perfil-sandbox>
 

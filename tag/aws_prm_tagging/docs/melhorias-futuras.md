@@ -303,39 +303,160 @@ confirmado sem sobra na conta.
 região diferente de `us-east-1` (ver "Achado à parte" no runbook, novo
 item de arquitetura abaixo).
 
-### Serviços globais (Route 53/CloudFront) só disparam EventBridge em us-east-1 — não corrigido
+### A stack cobre só 1 região — qualquer recurso regional fora dela fica invisível (Route 53/CloudFront são só o caso mais extremo)
 
 **Classificação: precisa de decisão de arquitetura, não é melhoria
-opcional.** Achado novo, confirmado empiricamente em sandbox em
-2026-09-24 (não só documentação da AWS — reproduzido: `aws cloudtrail
-lookup-events` para `CreateHostedZone` devolveu 0 resultados consultado em
-`us-east-2`, e 1 resultado — com `awsRegion: us-east-1` gravado no próprio
-evento — na mesma consulta em `us-east-1`, mesmo com o perfil AWS
-configurado para `us-east-2`).
+opcional — e o gap é maior do que a primeira versão deste item dizia.**
 
-**O quê:** a AWS entrega eventos de CloudTrail de serviços GLOBAIS (Route
-53 e CloudFront, os únicos 2 mapeados hoje; IAM/STS seriam outros exemplos
-não mapeados) só ao barramento padrão do EventBridge em `us-east-1`,
-nunca ao de outra região. Se a stack da Etapa 3 for implantada numa conta
-cliente em qualquer região que não seja `us-east-1` (a arquitetura
-multi-cliente não fixa isso — ver
-[arquitetura-multicliente.md](arquitetura-multicliente.md)), as regras do
-EventBridge dela **nunca vão ver** criação de hosted zone/distribuição —
-falha silenciosa (evento nunca chega, não é uma tentativa de escrita que
-falha com erro visível).
+**O quê:** uma regra de EventBridge só casa eventos da MESMA região onde
+ela foi criada — isso vale para QUALQUER serviço regional (EC2, RDS, S3,
+Lambda, todos os ~69 mapeados). Se a stack da Etapa 3 for implantada numa
+conta cliente numa única região "principal" (o que este `template.yaml`
+faz — ele não é multi-região), **todo recurso criado em qualquer outra
+região dessa conta fica invisível para a Etapa 3**, silenciosamente —
+evento nunca chega, não é uma tentativa de escrita que falha com erro
+visível. Contas de cliente que operam em mais de uma região (comum) têm
+esse gap para a maioria dos recursos que criam, não só para 2 serviços.
+
+**Route 53/CloudFront são um caso à parte, mais restritivo ainda**:
+confirmado empiricamente em sandbox em 2026-09-24 (não só documentação da
+AWS — reproduzido: `aws cloudtrail lookup-events` para `CreateHostedZone`
+devolveu 0 resultados consultado em `us-east-2`, e 1 resultado — com
+`awsRegion: us-east-1` gravado no próprio evento — na mesma consulta em
+`us-east-1`, mesmo com o perfil AWS configurado para `us-east-2`) — a AWS
+entrega evento de CloudTrail de serviço GLOBAL (Route 53, CloudFront, os
+únicos 2 mapeados hoje; IAM/STS seriam outros exemplos não mapeados) **só**
+ao barramento do EventBridge em `us-east-1`, nunca ao de nenhuma outra
+região — nem a "principal" da stack, mesmo que ela receba os eventos
+regionais normalmente. Ou seja: mesmo que a stack principal fique em
+`us-east-1` (resolvendo o caso geral acima para ela mesma), regras
+implantadas em QUALQUER outra região nunca veriam esses 2 serviços de
+jeito nenhum.
 
 **Por que não foi corrigido agora:** é mudança de arquitetura, não um bug
-de código — precisa de decisão sobre a abordagem: (a) implantar uma cópia
-mínima das regras de EventBridge (+ um jeito de invocar o Step Functions
-da região principal a partir de `us-east-1`) especificamente para esses 2
-serviços em toda conta cliente, além da stack principal; (b) aceitar o gap
-e confiar na Etapa 4 (fora do escopo deste repositório) como backstop para
-esses 2 serviços; ou (c) mudar a região "principal" da stack para
-`us-east-1` em todo cliente (nem sempre possível/desejável). Nenhuma
-opção é óbvia o suficiente para decidir sozinho.
+de código — precisa de decisão sobre a abordagem, e as duas partes do
+problema (regional geral + global) tendem a ter a MESMA resposta:
 
-**O que destrava:** decisão de arquitetura com o gestor sobre qual das 3
-opções acima seguir — só depois disso vale implementar.
+- (a) **StackSet em todas as regiões ativas da conta cliente** — resolve o
+  caso regional geral (cada região tem sua própria stack/regras) e,
+  combinada com uma cópia adicional das regras específicas para Route
+  53/CloudFront sempre em `us-east-1`, resolve os 2 casos juntos. Custo:
+  mais recursos implantados por conta (Lambda/Step Functions/EventBridge
+  replicados por região), a maioria delas provavelmente ociosa a maior
+  parte do tempo.
+- (b) **Aceitar o gap e confiar na Etapa 4** (fora do escopo deste
+  repositório, varre o estado final do recurso independente de região) como
+  backstop para regiões/serviços fora da cobertura da Etapa 3 — mais simples
+  de operar, mas perde a reação em tempo real exatamente nos casos
+  multi-região, que tendem a ser contas maiores/mais maduras.
+- (c) Só para o caso global (Route 53/CloudFront): mudar a região
+  "principal" para `us-east-1` em todo cliente — não resolve o caso
+  regional geral, e nem sempre é possível/desejável (ex.: cliente já opera
+  primariamente noutra região por latência/residência de dado).
+
+Nenhuma opção é óbvia o suficiente para decidir sozinho — mas dado que (a)
+resolve as duas partes do problema juntas, é o candidato mais forte se o
+volume de clientes multi-região justificar o custo extra.
+
+**O que destrava:** decisão de arquitetura com o gestor — provavelmente
+StackSet multi-região (opção a) vs. aceitar e delegar à Etapa 4 (opção b)
+como os dois candidatos reais.
+
+### Tópico SNS sem nenhuma assinatura — todo resultado publicado desaparece
+
+**Classificação: precisa de decisão de arquitetura/produto — o gap é
+maior do que "falta alertar em caso de falha".** Achado confirmado na
+prática pelo próprio smoke test em sandbox desta sessão: os 2 bugs de
+permissão IAM (S3, CloudWatch Logs) não geravam exceção nem apareciam no
+CloudWatch Logs da Lambda — o handler já classificava corretamente como
+`falhou`/`erro_permissao` e publicava no SNS, mas só foram encontrados
+inspecionando o `TagResources` bruto no CloudTrail, porque **o tópico não
+tinha nenhuma assinatura**. Em produção, ninguém vai inspecionar CloudTrail
+proativamente — toda falha (e todo sucesso) publicado no
+`PrmComplianceTopic` simplesmente desaparece, sem ninguém ouvindo.
+
+**O quê:** `infra/template.yaml` cria o tópico SNS (`PrmComplianceTopic`)
+e o expõe como Output (`PrmComplianceTopicArn`, comentado como "quem
+consumir o dashboard assina aqui") — mas não cria NENHUMA assinatura
+default, nem documenta em lugar nenhum que assinar é um passo obrigatório
+de pré-produção, não opcional. Diferente do item "Falha de extração de
+evento" (que é sobre uma categoria específica de falha silenciosa antes
+mesmo de publicar), este é sobre a publicação em si ser um beco sem saída.
+
+**Por que não foi corrigido agora:** falta decisão de produto sobre QUAL
+consumidor default faz sentido (e-mail de operação da EMPRESAX? uma fila
+SQS alimentando um dashboard? um Lambda que agrega e alerta só em caso de
+`falhou`, para não gerar ruído por sucesso?) — cada opção tem trade-off de
+custo/ruído diferente, e nenhuma foi combinada com o gestor ainda.
+
+**O que destrava:** decisão de produto sobre o consumidor default do
+tópico. Até lá, no mínimo documentar como passo OBRIGATÓRIO (não
+"opcional") no runbook de deploy: nenhuma stack deveria ir para produção
+sem uma assinatura configurada.
+
+### Volumes EBS criados junto com a instância (`RunInstances`) não são tagueados
+
+**Classificação: gap de cobertura confirmado no código, correção de
+escopo pequeno mas não trivial (precisa de evento real para confirmar o
+shape).** `event_parser._ext_ec2_run_instances` (`event_parser.py`) só
+extrai `instancesSet.items[].instanceId` do evento — nunca olha os volumes
+EBS anexados na mesma chamada (`items[].blockDeviceMapping.items[].ebs.
+volumeId` no shape esperado da API EC2, protocolo `ec2` com o mesmo
+empacotamento `"xSet": {"items": [...]}` já documentado para esse
+extractor). Toda instância criada com `RunInstances` tem pelo menos 1
+volume root — hoje esse volume só é pego pela Etapa 1 (descoberta
+completa), nunca pela Etapa 3 (reação em tempo real).
+
+**Por que não foi corrigido agora:** o shape exato de
+`blockDeviceMapping` num evento CloudTrail real de `RunInstances` não foi
+capturado nesta sessão (não estava na lista priorizada de serviços
+incertos, já que EC2 tem um shape de CloudTrail conhecido/estável para a
+parte de instância — mas a parte de `blockDeviceMapping` especificamente
+não foi verificada contra um evento real, só contra suposição de estrutura
+análoga).
+
+**O que destrava:** capturar um evento `RunInstances` real em sandbox
+(mesmo padrão do roteiro em
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md)),
+confirmar o path exato de `blockDeviceMapping`/`ebs`/`volumeId`, estender
+`_ext_ec2_run_instances` para devolver também os ARNs dos volumes, e
+adicionar regressão em `test_event_parser_extracao.py`.
+
+### Formas de criar recurso que não passam pelo evento esperado
+
+**Classificação: melhoria futura de cobertura — decisão de priorização,
+não bug de um evento mapeado errado.** Vários jeitos comuns de criar um
+recurso não disparam o `eventName` que `event_mapping.py` espera para
+aquele serviço, então passam batido pela Etapa 3 mesmo com o serviço
+"mapeado":
+
+- `ec2:CreateFleet` (usado por ferramentas de auto-scaling baseadas em
+  Spot/Fleet, ex. Karpenter) não é `RunInstances` — instâncias criadas
+  assim não geram o evento que o extractor de EC2 espera.
+- `rds:RestoreDBInstanceFromDBSnapshot`/`RestoreDBInstanceToPointInTime`/
+  `CreateDBInstanceReadReplica` são formas de criar um DB instance/cluster
+  sem passar por `CreateDBInstance`/`CreateDBCluster`.
+- `dynamodb:RestoreTableFromBackup`/`RestoreTableToPointInTime` — mesma
+  lógica para DynamoDB.
+- NAT Gateway (`ec2:CreateNatGateway`), Elastic IP
+  (`ec2:AllocateAddress`) e snapshots (`ec2:CreateSnapshot`,
+  `rds:CreateDBSnapshot` etc.) não têm evento mapeado — recursos comuns e
+  de custo real que ficam fora da automação.
+
+**Por que não foi corrigido agora:** cada um exigiria mapear um evento
+novo (`event_mapping.py`) + um extractor novo (`event_parser.py`), o mesmo
+processo já usado para os 69 mapeados — trabalho incremental de mesma
+natureza do item "16 serviços sem mapeamento" acima, não algo a resolver
+de uma vez. Karpenter/`CreateFleet` em particular merece prioridade alta
+se algum cliente usa Karpenter para EKS (cenário comum), mas isso é
+julgamento de produto sobre a base de clientes, não técnico.
+
+**O que destrava:** priorizar com o gestor quais desses valem o esforço de
+mapear agora vs. esperar dado real de uso pelos clientes da EMPRESAX —
+`CreateFleet` (Karpenter) parece o candidato mais forte a entrar cedo,
+dado quão comum é hoje em clusters EKS gerenciados com auto-scaling.
+
+## Cobertura de recursos que nunca tiveram tag nenhuma
 
 **O quê:** `resourcegroupstaggingapi:GetResources` (usado por
 `resource_discovery.discover_generic_resources`) não retorna recursos que

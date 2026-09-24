@@ -1,0 +1,37 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.vpc-lattice"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServiceNetwork"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.workspaces"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkspaces"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    }
+  ]
+}

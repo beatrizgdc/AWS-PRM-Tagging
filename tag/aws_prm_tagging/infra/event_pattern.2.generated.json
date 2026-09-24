@@ -5,11 +5,272 @@
   "$or": [
     {
       "source": [
+        "aws.firehose"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDeliveryStream"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.fsx"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFileSystem"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.gamelift"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFleet"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.glacier"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateVault"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.healthlake"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFHIRDatastore"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kafka"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateClusterV2"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kendra"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateIndex"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesis"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStream"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesisanalytics"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApplication"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kinesisvideo"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStream"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.kms"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKey"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.lambda"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFunction"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.logs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateLogGroup"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.m2"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApplication",
+          "CreateEnvironment"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mediaconvert"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateQueue"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.medialive"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateChannel"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.mediapackage"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateChannel"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.medical-imaging"
       ],
       "detail": {
         "eventName": [
           "CreateDatastore"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     },
@@ -20,211 +281,11 @@
       "detail": {
         "eventName": [
           "CreateCluster"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.mq"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateBroker"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.network-firewall"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateFirewall"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.networkmanager"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCoreNetwork",
-          "CreateGlobalNetwork"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.payment-cryptography"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateKey"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.rds"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateDBCluster",
-          "CreateDBInstance"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.redshift-serverless"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateWorkgroup"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.redshift"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.resiliencehub"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateApp"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.route53"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateHostedZone"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.s3"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateBucket"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.secretsmanager"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateSecret"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.sns"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateTopic"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.sqs"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateQueue"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ssm"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateOpsItem"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.states"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateStateMachine"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.storagegateway"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCachediSCSIVolume",
-          "CreateNFSFileShare",
-          "CreateSMBFileShare",
-          "CreateStorediSCSIVolume"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.timestream"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateDatabase"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.transfer"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateServer"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.vpc-lattice"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateServiceNetwork"
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.workspaces"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateWorkspaces"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
         ]
       }
     }

@@ -35,8 +35,20 @@ O event pattern de todos os serviços mapeados juntos ultrapassa a quota
 — ajustável, mas decidimos não depender de um aumento de quota que
 precisaria ser solicitado e replicado em cada uma das ~80-90 contas de
 cliente via StackSet). `event_mapping.build_event_patterns()` divide as
-alternativas em N patterns, cada um dentro do limite — hoje **3** regras
-(`Etapa3EventRule0`, `1`, `2`).
+alternativas em N patterns, cada um dentro do limite — hoje **5** regras
+(`Etapa3EventRule0` a `4`; subiu de 3 para 5 quando cada alternativa passou
+a exigir `errorCode` ausente — ver "Como regenerar os patterns" abaixo).
+
+## Chamadas que falharam não disparam a automação
+
+Cada alternativa do event pattern exige `detail.errorCode` ausente
+(`{"exists": false}`) — uma chamada de API que FALHOU (ex.: `CreateBucket`
+negado por `AccessDenied`, ou nome já em uso) ainda grava um evento no
+CloudTrail com o mesmo `eventName`, mas o recurso nunca chegou a existir.
+Sem esse filtro, a Etapa 3 gastaria uma invocação Lambda tentando ler/
+taguear um ARN que não existe, terminando em `erro_leitura_inicial` sempre
+— trabalho e ruído evitáveis. Corrigido depois de um code review apontar
+que os patterns originais não filtravam isso.
 
 ## Como regenerar os patterns
 
@@ -121,6 +133,24 @@ de verdade):
 
 Ambas corrigidas em `template.yaml` e reconfirmadas com um segundo smoke
 test depois do redeploy.
+
+## Restrição de chave de tag (`aws:TagKeys`)
+
+`PrmEtapa3TagWrite` e `PrmEtapa3NativeTagWrite` têm uma `Condition`
+(`ForAllValues:StringEquals` em `aws:TagKeys`) restringindo as ~69+4 ações
+de escrita cobertas a só poderem escrever a chave `aws-apn-id` — mesmo que
+um bug no código tentasse escrever outra chave, o IAM bloqueia antes de
+chegar na API (defesa em profundidade; o código já só escreve essa 1
+chave, então isso não deveria mudar nenhum comportamento observável hoje).
+
+**Não testado em sandbox contra as ações nativas** — `aws:TagKeys` é uma
+condition key global documentada pela AWS para APIs de tagging, mas isso
+não foi confirmado uma a uma contra as ~69 ações específicas da política
+(seria um novo roteiro de teste, um por ação, fora do escopo desta
+rodada). Se alguma dessas ações não respeitar a condition key como
+esperado, o sintoma seria um `AccessDenied` novo numa tentativa de escrita
+que antes funcionava — vale ficar atento a isso no próximo smoke test
+real.
 
 ## Build e deploy
 

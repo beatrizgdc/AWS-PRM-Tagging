@@ -563,7 +563,7 @@ partir da tabela, agrupados por `event_source` via `$or` (evita o
 falso-positivo teórico de um pattern "achatado" misturando `eventSource` e
 `eventName` de serviços diferentes) e **divididos em múltiplos patterns**
 quando um único pattern ultrapassaria a quota padrão de 2.048 caracteres do
-EventBridge (hoje, 3 regras — ver [infra/README.md](../infra/README.md)).
+EventBridge (hoje, 5 regras — ver [infra/README.md](../infra/README.md)).
 `python3 -m aws_prm_tagging.event_mapping` (do diretório pai) regrava
 `infra/event_pattern.<N>.generated.json` — a única forma de manter
 `infra/template.yaml` sincronizado com esta tabela, já que o CloudFormation

@@ -1,0 +1,282 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.mq"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBroker"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.network-firewall"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFirewall"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.networkmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCoreNetwork",
+          "CreateGlobalNetwork"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.payment-cryptography"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKey"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.rds"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDBCluster",
+          "CreateDBInstance"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift-serverless"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkgroup"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.resiliencehub"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApp"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.route53"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateHostedZone"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.s3"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBucket"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.secretsmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateSecret"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sns"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTopic"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sqs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateQueue"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ssm"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateOpsItem"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.states"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStateMachine"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.storagegateway"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCachediSCSIVolume",
+          "CreateNFSFileShare",
+          "CreateSMBFileShare",
+          "CreateStorediSCSIVolume"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.timestream"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDatabase"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.transfer"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServer"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    }
+  ]
+}

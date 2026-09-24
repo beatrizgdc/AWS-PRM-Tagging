@@ -27,13 +27,18 @@ class _FakeTaggingClient:
     revalidação do caminho genérico. `tagged` é o atalho comum (só o valor
     da aws-apn-id); `tags_completos` permite simular o conjunto completo de
     tags de um recurso (ex.: para os cenários de IaC/conflito detectados só
-    na revalidação) — os dois podem ser combinados."""
+    na revalidação) — os dois podem ser combinados. `erro_para_arns`
+    simula uma falha só num subconjunto de ARNs (um lote específico), para
+    testar isolamento de falha por lote; `erro=True` falha TODO lote.
+    `chamadas` registra os `ResourceARNList` de cada chamada, pra testar
+    que a revalidação usa lotes filtrados (não paginação sem filtro)."""
 
     def __init__(
         self,
         tagged: dict[str, str] | None = None,
         tags_completos: dict[str, dict[str, str]] | None = None,
         erro: bool = False,
+        erro_para_arns: set[str] | None = None,
     ):
         self._tags_por_arn: dict[str, dict[str, str]] = {
             arn: dict(tags) for arn, tags in (tags_completos or {}).items()
@@ -41,14 +46,18 @@ class _FakeTaggingClient:
         for arn, valor in (tagged or {}).items():
             self._tags_por_arn.setdefault(arn, {})[tag_execution.TAG_KEY] = valor
         self._erro = erro
+        self._erro_para_arns = erro_para_arns or set()
+        self.chamadas: list[list[str]] = []
 
-    def get_resources(self, **kwargs):
-        if self._erro:
+    def get_resources(self, ResourceARNList):
+        self.chamadas.append(list(ResourceARNList))
+        if self._erro or any(arn in self._erro_para_arns for arn in ResourceARNList):
             raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "sem permissão"}}, "GetResources")
         return {
             "ResourceTagMappingList": [
-                {"ResourceARN": arn, "Tags": [{"Key": k, "Value": v} for k, v in tags.items()]}
-                for arn, tags in self._tags_por_arn.items()
+                {"ResourceARN": arn, "Tags": [{"Key": k, "Value": v} for k, v in self._tags_por_arn[arn].items()]}
+                for arn in ResourceARNList
+                if arn in self._tags_por_arn
             ]
         }
 
@@ -119,6 +128,16 @@ def _relatorio_um_recurso_generico(arn: str, regiao: str = "us-east-1") -> dict:
     }
 
 
+def _relatorio_varios_recursos_genericos(arns: list[str], regiao: str = "us-east-1") -> dict:
+    return {
+        "conta_id": "000000000000",
+        "recursos": [
+            {"arn": arn, "servico": "Amazon S3", "regiao": regiao, "tipo_recurso": None, "decisao": "taguear"}
+            for arn in arns
+        ],
+    }
+
+
 def test_dry_run_nunca_toca_session_quando_revalidate_desligado():
     """`DryRunExecutor` não chama boto3 de escrita nunca — e sem
     revalidação, o orquestrador não deveria nem dereferenciar `session`.
@@ -157,6 +176,67 @@ def test_revalidacao_prossegue_para_recurso_ainda_sem_tag(fake_session_factory):
 
     assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_SIMULADO_OK
     assert spy.arns_chamados == [arn]
+
+
+def test_revalidacao_generica_usa_resource_arn_list_nao_varredura_sem_filtro(fake_session_factory):
+    """Regressão do bug real reportado após o smoke test em sandbox: uma
+    versão anterior paginava `GetResources` inteiro da região, sem
+    `ResourceARNList` — para revalidar só 1 ARN novo (o caso comum da
+    Etapa 3), isso podia escanear todos os recursos tagueados da região à
+    toa, com risco real de estourar o timeout da Lambda numa conta grande.
+    Aqui confirmamos que a chamada real usa `ResourceARNList` filtrado
+    pelos ARNs pedidos, nunca uma varredura sem filtro."""
+    arn = "arn:aws:s3:::bucket-pendente"
+    client = _FakeTaggingClient({})
+    session = fake_session_factory({"resourcegroupstaggingapi": client})
+
+    tag_execution.run_tagging_execution(
+        _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=_SpyExecutor()
+    )
+
+    assert client.chamadas == [[arn]]
+
+
+def test_revalidacao_generica_mais_de_20_arns_vira_varios_lotes(fake_session_factory):
+    """`ResourceARNList` aceita até 20 ARNs por chamada (mesmo limite de
+    `TagResources`) — 25 ARNs pendentes precisam virar 2 chamadas
+    (20 + 5), nunca uma só."""
+    arns = [f"arn:aws:s3:::bucket-{i}" for i in range(25)]
+    client = _FakeTaggingClient({})
+    session = fake_session_factory({"resourcegroupstaggingapi": client})
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_tagging_execution(
+        _relatorio_varios_recursos_genericos(arns), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    assert [len(c) for c in client.chamadas] == [20, 5]
+    assert len(resultado["recursos"]) == 25
+    assert set(spy.arns_chamados) == set(arns)
+
+
+def test_revalidacao_generica_falha_de_um_lote_nao_afeta_outro(fake_session_factory):
+    """Se um lote de `ResourceARNList` falhar (ex.: `AccessDenied` no meio
+    de uma revalidação em massa da Etapa 2c), só os ARNs DESSE lote viram
+    `revalidacao_falhou` — o outro lote, já lido com sucesso, segue seu
+    fluxo normal (aqui, um dos ARNs já está tagueado corretamente)."""
+    # Sufixo com zero à esquerda: a implementação ordena os ARNs (`sorted`)
+    # antes de dividir em lotes de 20 — sem isso, a ordem lexicográfica de
+    # "bucket-10" antes de "bucket-2" bagunçaria qual ARN cai em qual lote.
+    arns = [f"arn:aws:s3:::bucket-{i:02d}" for i in range(21)]
+    arn_ja_tagueado = arns[20]  # "bucket-20", o único no segundo lote
+    client = _FakeTaggingClient(tagged={arn_ja_tagueado: TAG_VALUE}, erro_para_arns=set(arns[:20]))
+    session = fake_session_factory({"resourcegroupstaggingapi": client})
+    spy = _SpyExecutor()
+
+    resultado = tag_execution.run_tagging_execution(
+        _relatorio_varios_recursos_genericos(arns), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
+    )
+
+    por_arn = {r["arn"]: r["resultado"] for r in resultado["recursos"]}
+    assert all(por_arn[arn] == tag_execution.RESULTADO_REVALIDACAO_FALHOU for arn in arns[:20])
+    assert por_arn[arn_ja_tagueado] == tag_execution.RESULTADO_JA_TAGUEADO
+    assert spy.arns_chamados == []
 
 
 def test_falha_na_revalidacao_bloqueia_a_tentativa_de_tagueamento(fake_session_factory):

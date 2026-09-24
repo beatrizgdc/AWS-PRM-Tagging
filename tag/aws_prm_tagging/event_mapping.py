@@ -60,8 +60,11 @@ minúscula, e no caso específico do EC2 um empacotamento adicional
 `"xSet": {"items": [...]}` para listas) — `event_parser.py` documenta,
 extractor por extractor, onde essa incerteza extra se aplica e usa uma
 leitura tolerante a variação de capitalização nesses casos específicos.
-**Nenhum extractor foi validado contra um evento CloudTrail real capturado
-em sandbox** — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md).
+**8 dos 9 desses serviços já foram validados contra um evento CloudTrail
+real capturado em sandbox** (2026-09-23/24, achou e corrigiu 3 bugs reais)
+— só CloudFront segue sem evento real capturado — ver
+[docs/melhorias-futuras.md](docs/melhorias-futuras.md) e
+[test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md).
 
 ## Cobertura
 
@@ -352,7 +355,20 @@ def _alternativas_por_fonte() -> list[dict]:
         for rule in rules:
             por_fonte.setdefault(rule.event_source, set()).add(rule.event_name)
     return [
-        {"source": [f"aws.{event_source.split('.')[0]}"], "detail": {"eventName": sorted(event_names)}}
+        {
+            "source": [f"aws.{event_source.split('.')[0]}"],
+            "detail": {
+                "eventName": sorted(event_names),
+                # Uma chamada de API que FALHOU (ex.: CreateBucket negado por
+                # AccessDenied, ou nome já em uso) ainda grava um evento no
+                # CloudTrail com o mesmo eventName — o recurso nunca chegou a
+                # existir. `errorCode` só aparece no evento quando a chamada
+                # falhou; exigir sua ausência filtra esses casos antes de
+                # gastar uma invocação Lambda tentando ler/taguear um ARN que
+                # não existe.
+                "errorCode": [{"exists": False}],
+            },
+        }
         for event_source, event_names in sorted(por_fonte.items())
     ]
 
