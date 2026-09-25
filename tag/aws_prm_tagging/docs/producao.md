@@ -184,8 +184,7 @@ precisa de uma ação de tagging nativa por serviço (`ec2:CreateTags`,
 Essa lista já foi levantada e confirmada em sandbox para a Etapa 3
 (`PrmEtapa3NativeTagWrite` em
 [infra/template.yaml](../infra/template.yaml), documentada em
-[infra/README.md](../infra/README.md#permissões-iam--cobertura-real) e
-[melhorias-futuras.md](melhorias-futuras.md#permissões-iam-nativas--resolvido-69-de-69-serviços-mapeados-cobertos))
+[infra/README.md](../infra/README.md#permissões-iam--cobertura-real))
 e serve de ponto de partida direto para a Etapa 2c, já que ambas cobrem o
 mesmo conjunto de 69 serviços mapeados e a mesma ação nativa por serviço —
 ainda assim, monte/revise essa política especificamente para a Etapa 2c (e

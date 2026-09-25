@@ -81,6 +81,46 @@ adicione/remova o recurso `AWS::Events::Rule` correspondente em
 `event_pattern.<N>.generated.json`) — os dois testes acima apontam
 exatamente quando isso é necessário.
 
+## E-mail de notificação (SNS)
+
+O tópico `PrmComplianceTopic` sozinho não é suficiente — sem nenhuma
+assinatura, todo resultado publicado (sucesso ou falha de tagueamento)
+simplesmente desaparece. Isso foi confirmado na prática: os 2 bugs de
+permissão IAM encontrados no smoke test em sandbox (ver "Permissões IAM"
+abaixo) não geravam exceção nem apareciam no CloudWatch Logs — só foram
+achados inspecionando o CloudTrail diretamente, porque o tópico não tinha
+ninguém ouvindo.
+
+Por isso o template já cria uma assinatura de e-mail automaticamente
+(`PrmComplianceEmailSubscription`), usando o parâmetro `NotificationEmail`.
+
+**O default é `teste@exemplo.com` — um placeholder, não um e-mail real.**
+Com o default, a assinatura fica presa em `PendingConfirmation` para
+sempre (ninguém confirma um e-mail que não existe) — o comportamento é
+"nenhuma notificação chega", o mesmo de não ter assinatura nenhuma, só que
+visível no console (a assinatura aparece, mas nunca confirmada) em vez de
+inexistente.
+
+**Trocar o e-mail padrão é UM ÚNICO lugar**: o valor de `Default` do
+parâmetro `NotificationEmail` em `infra/template.yaml` (seção
+`Parameters`). Duas formas de usar isso:
+
+- **Trocar o default permanentemente** (todo deploy que não passar
+  `--parameter-overrides` explícito usa o novo valor): editar essa única
+  linha em `template.yaml` e commitar.
+- **Sobrescrever só num deploy específico**, sem tocar no template (ex.:
+  um e-mail diferente por cliente/ambiente):
+  ```bash
+  sam deploy --parameter-overrides NotificationEmail=seu-email@dominio.com ...
+  ```
+
+**Depois de qualquer uma das duas formas**, a AWS manda um e-mail de
+confirmação para o endereço configurado — alguém precisa clicar em
+"Confirm subscription" nele antes das notificações começarem a chegar de
+verdade. Isso é uma exigência do próprio protocolo `email` do SNS
+(proteção contra assinar alguém sem consentimento); nenhum parâmetro de
+CloudFormation pula esse passo manual.
+
 ## Decisões registradas (valores conservadores, ajustáveis)
 
 Nenhum dos três valores abaixo foi validado contra volume real de criação
@@ -198,7 +238,7 @@ para o roteiro e resultado completos):
 (rajadas de criação de recurso), e o caminho de Route 53/CloudFront quando
 a stack estiver numa região diferente de `us-east-1` — achado novo,
 documentado como pendência de arquitetura em
-[docs/melhorias-futuras.md](../docs/melhorias-futuras.md#serviços-globais-route-53cloudfront-só-disparam-eventbridge-em-us-east-1--não-corrigido).
+[docs/melhorias-futuras.md](../docs/melhorias-futuras.md#a-stack-cobre-só-1-região--qualquer-recurso-regional-fora-dela-fica-invisível-route-53cloudfront-são-só-o-caso-mais-extremo).
 CloudFront (`CreateDistribution`) também não teve seu evento capturado
 (pulado por custo de tempo de propagação/exclusão, não de dinheiro) — segue
 com leitura tolerante a capitalização como mitigação.

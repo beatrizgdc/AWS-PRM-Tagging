@@ -99,51 +99,24 @@ SNS) que rode periodicamente (ou no deploy) comparando o CSV vigente contra
 mapeamento — candidato natural para rodar junto da Etapa 4 quando ela for
 implementada.
 
-### Extractors da Etapa 3 — verificados estruturalmente E contra eventos reais
+### Extractor do CloudFront (`CreateDistribution`) nunca testado contra evento real
 
-**Resolvido em 2026-09-23/24, testado em sandbox — 3 bugs reais
-encontrados e corrigidos.** Duas camadas de verificação agora:
+**O quê:** de todos os serviços de protocolo `query`/`ec2`/`rest-xml`
+(capitalização do CloudTrail incerta — ver docstring de `event_parser.py`),
+só o CloudFront segue sem um evento real capturado em sandbox — os outros
+8 já foram (`test/unit/test_event_parser_botocore.py` verifica
+estruturalmente todos contra o botocore, sem custo de conta real; ver
+[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-1--capturar-eventos-cloudtrail-reais-sem-implantar-a-stack)
+para o resultado dos demais — 3 tinham bug real, já corrigidos).
 
-1. **Verificação estrutural automatizada
-   (`test/unit/test_event_parser_botocore.py`)**: cada `path` hardcoded num
-   extractor dedicado (`_DirectPath`/`_ConstructedPath` em
-   `event_parser.py`) é checado, via o `botocore` instalado localmente,
-   contra o shape REAL da operação de API — pega erro de digitação, campo
-   inexistente ou operação renomeada, sem precisar de nenhuma conta AWS.
-   Essa verificação já achou e corrigiu bugs reais (`CreateDomain`/
-   `CreateApi` vêm de pacotes SDK diferentes dos que o `eventSource`
-   sozinho sugeriria — `opensearch`/`apigatewayv2`, não `es`/`apigateway`).
-   Roda como parte da suíte normal de testes, sem custo nenhum.
-2. **Eventos reais capturados em sandbox** (roteiro completo e resultado
-   por serviço em
-   [test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-1--capturar-eventos-cloudtrail-reais-sem-implantar-a-stack)):
-   dos 8 serviços de protocolo `query`/`ec2`/`rest-xml` testados (todos
-   menos CloudFront, pulado por custo de tempo — 15-20min de propagação),
-   **3 tinham bug real**, não só incerteza de capitalização:
-   - `rds.amazonaws.com/CreateDBInstance` e (por analogia, não testado
-     diretamente) `CreateDBCluster` — o CloudTrail ACHATA a resposta
-     (`dBInstanceArn` na raiz), diferente do shape do botocore que embrulha
-     em `{"DBInstance": {...}}`.
-   - `elasticache.amazonaws.com/CreateCacheCluster` — mesmo achatamento
-     (`aRN` na raiz, não `{"CacheCluster": {...}}`).
-   - `elasticbeanstalk.amazonaws.com/CreateApplication` — `responseElements`
-     vem `null`; corrigido para construir o ARN a partir de
-     `requestParameters.ApplicationName`, igual ao S3.
+**Por que não foi testado ainda:** custo de tempo, não de dinheiro — a
+distribuição leva 15-20min pra propagar antes de poder ser desabilitada e
+apagada.
 
-   S3, SNS, Route 53, ELB e Redshift foram confirmados corretos como
-   estavam. A verificação estrutural (camada 1) não pegou esses 3 porque
-   checava só "o campo existe no shape documentado", não "o CloudTrail
-   real respeita esse shape" — os dois primeiros casos são um tipo de erro
-   novo (achatamento de wrapper), não coberto antes; a camada 1 foi
-   ajustada com uma lista de exceções conhecidas
-   (`_WRAPPER_ACHATADO_PELO_CLOUDTRAIL` em `test_event_parser_botocore.py`)
-   para continuar verificando esses casos contra o shape real, só
-   descontando o wrapper que se sabe que o CloudTrail omite.
-
-**O que ainda não foi testado**: só CloudFront (`CreateDistribution`) —
-pulado por causa do tempo de propagação/exclusão (15-20min), não por
-custo. Continua com leitura tolerante a capitalização como mitigação, não
-substituto.
+**O que destrava:** capturar o evento `CreateDistribution` em sandbox
+(mesmo roteiro da Parte 1) quando o tempo de espera for aceitável.
+Continua com leitura tolerante a capitalização (`_direct_ci`/
+`_constructed_ci`) como mitigação até lá, não substituto.
 
 ### Corrida com IaC — debounce de 30 minutos, sem validação de tempo real
 
@@ -223,52 +196,6 @@ alguém observar o CloudWatch Logs ativamente).
 para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
 "Alerta ativo quando o CSV ganha um serviço sem mapeamento" acima.
 
-### Permissões IAM nativas — resolvido, 69 de 69 serviços mapeados cobertos
-
-**Resolvido em 2026-09-23, testado na conta sandbox.** Dos 69 serviços
-mapeados em `event_mapping.py`:
-
-- **3 usam API dedicada**, não o caminho genérico — `AmazonEKS`,
-  `AmazonBedrock` e `AWSELB`. Já têm sua permissão via `PrmEtapa3TagWrite`
-  (`eks:TagResource`/`bedrock:TagResource`/`elasticloadbalancing:AddTags`),
-  sem depender de `PrmEtapa3NativeTagWrite`.
-- Os outros **66 usam o caminho genérico** (`tag:TagResources`), que a AWS
-  documenta como exigindo, além de si mesmo, a ação de tagging nativa do
-  serviço dono do recurso (ver `docs/producao.md`). Desses 66, **65
-  precisam mesmo de uma ação nativa** — `CodeBuild` é a exceção: testado
-  diretamente em sandbox (ver abaixo), `tag:TagResources` sozinho já basta,
-  sem nenhuma ação própria.
-
-`infra/template.yaml` (`PrmEtapa3NativeTagWrite`) cobre esses 65 com **68
-ações IAM distintas em 67 namespaces de serviço** — cada nome confirmado
-contra o botocore instalado (não veio de memória). O total de ações não é
-"1 por serviço" porque a granularidade real da AWS não é 1:1 com o
-`product_service_code` do CSV: `AWSCertificateManager` precisa de
-`acm:TagResource` **e** `acm-pca:TagCertificateAuthority` (2 namespaces
-para 1 serviço mapeado); o mesmo vale para `AmazonCognito`
-(`cognito-identity`/`cognito-idp`) e `AmazonRedshift`
-(`redshift`/`redshift-serverless`); `AmazonS3` precisa de **2 ações no
-mesmo namespace** (`s3:GetBucketTagging` e `s3:PutBucketTagging` — ver
-"2 ações da política estavam ERRADAS" abaixo); e o namespace `ec2`
-(`ec2:CreateTags`) é **compartilhado** entre `AmazonEC2` e a parte de
-`AmazonVPC` que usa ARNs `ec2:...` (ex.: Transit Gateway — mesma
-desambiguação de `services.py`, ver [arquitetura.md](arquitetura.md#servicespy)),
-então não soma como 2 ações separadas. Nenhum gap conhecido restante.
-
-`CodeBuild` era o único caso sem uma operação óbvia com "tag" no nome no
-pacote `codebuild` do botocore. Testado diretamente na conta sandbox
-(criar projeto → `tag:TagResources` → confirmar tag aplicada → apagar
-projeto — roteiro e resultado completos em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-3--investigar-a-ação-de-tag-do-codebuild)):
-**o caminho genérico (`tag:TagResources`, já concedido por
-`PrmEtapa3TagWrite`) funciona sozinho** — não precisa de `UpdateProject`
-nem de nenhuma ação nova na política. Nenhum gap conhecido restante.
-
-Isso também fecha a pendência equivalente da Etapa 2c (ver "Isso não é
-suficiente sozinho" em
-[producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real)):
-a mesma lista de 67 ações nativas serve de ponto de partida por lá.
-
 ### DLQ para o alvo do EventBridge — não implementado
 
 **Classificação: melhoria futura.** Mesma decisão do buffer SQS acima —
@@ -288,133 +215,75 @@ junto.
 **O que destrava:** mesma decisão do buffer SQS acima — se/quando uma fila
 for adicionada à arquitetura, o DLQ vem natural junto dela.
 
-### `sam validate`/`cfn-lint`/`sam build`/`sam local invoke`/`sam deploy` — todos feitos, pipeline real confirmado
-
-**Resolvido — deploy real e smoke test de ponta a ponta executados em
-sandbox (2026-09-23/24)**, além das validações estáticas já feitas antes
-(`cfn-lint`, `sam validate --lint`, `sam build`, `sam local invoke` — ver
-[infra/README.md](../infra/README.md#build-e-deploy)).
-
-Resultado completo do smoke test em
-[test/manual-live-etapa3/README.md](../test/manual-live-etapa3/README.md#parte-2--smoke-test-de-ponta-a-ponta-implanta-a-stack):
-stack implantada de verdade (`sam deploy`, região `us-east-2`), um bucket
-S3 criado de propósito disparou o pipeline completo — EventBridge → Step
-Functions (debounce 30s) → Lambda → decisão → escrita real — e **a tag
-chegou corretamente no recurso**, confirmado via `get-bucket-tagging`.
-
-**2 bugs reais de permissão IAM encontrados e corrigidos** nesse processo
-(detalhe na Parte 2 do runbook) — nenhum dos dois gerava exceção nem
-aparecia no CloudWatch Logs da Lambda; só apareceram inspecionando o
-`TagResources` bruto no CloudTrail (`FailedResourcesMap`, chamada com HTTP
-200 mas falha por recurso dentro dela):
-
-1. **S3 precisava de `s3:GetBucketTagging`** além de `s3:PutBucketTagging`
-   (só o segundo estava na política).
-2. **CloudWatch Logs precisava de `logs:TagResource`**, não
-   `logs:TagLogGroup` (a ação que estava na política) — as duas existem no
-   botocore, por isso a verificação estrutural automatizada não pegou;
-   achado porque a própria Lambda, ao criar seu log group na primeira
-   execução, gerou um evento `CreateLogGroup` orgânico que a Etapa 3
-   processou e tentou taguear.
-
-Stack e todos os recursos de teste (2 buckets) foram apagados ao final,
-confirmado sem sobra na conta.
-
-**O que ainda não foi testado**: volume real de eventos em produção
-(rajadas), e o caminho de CloudFront/Route 53 quando a stack estiver numa
-região diferente de `us-east-1` (ver "Achado à parte" no runbook, novo
-item de arquitetura abaixo).
-
 ### A stack cobre só 1 região — qualquer recurso regional fora dela fica invisível (Route 53/CloudFront são só o caso mais extremo)
 
-**Classificação: precisa de decisão de arquitetura, não é melhoria
-opcional — e o gap é maior do que a primeira versão deste item dizia.**
+**Classificação: melhoria planejada — decisão de arquitetura já tomada
+com o gestor (2026-09-25), implementação ainda não feita.**
 
 **O quê:** uma regra de EventBridge só casa eventos da MESMA região onde
 ela foi criada — isso vale para QUALQUER serviço regional (EC2, RDS, S3,
-Lambda, todos os ~69 mapeados). Se a stack da Etapa 3 for implantada numa
-conta cliente numa única região "principal" (o que este `template.yaml`
-faz — ele não é multi-região), **todo recurso criado em qualquer outra
-região dessa conta fica invisível para a Etapa 3**, silenciosamente —
-evento nunca chega, não é uma tentativa de escrita que falha com erro
-visível. Contas de cliente que operam em mais de uma região (comum) têm
-esse gap para a maioria dos recursos que criam, não só para 2 serviços.
+Lambda, todos os ~69 mapeados). Hoje `template.yaml` implanta a Etapa 3
+numa única região por deploy — **todo recurso criado em qualquer outra
+região da mesma conta fica invisível para a Etapa 3**, silenciosamente
+(evento nunca chega, não é uma tentativa de escrita que falha com erro
+visível). Contas de cliente que operam em mais de uma região (comum) têm
+esse gap para a maioria dos recursos que criam, não só para Route
+53/CloudFront.
 
 **Route 53/CloudFront são um caso à parte, mais restritivo ainda**:
-confirmado empiricamente em sandbox em 2026-09-24 (não só documentação da
-AWS — reproduzido: `aws cloudtrail lookup-events` para `CreateHostedZone`
-devolveu 0 resultados consultado em `us-east-2`, e 1 resultado — com
-`awsRegion: us-east-1` gravado no próprio evento — na mesma consulta em
-`us-east-1`, mesmo com o perfil AWS configurado para `us-east-2`) — a AWS
-entrega evento de CloudTrail de serviço GLOBAL (Route 53, CloudFront, os
-únicos 2 mapeados hoje; IAM/STS seriam outros exemplos não mapeados) **só**
-ao barramento do EventBridge em `us-east-1`, nunca ao de nenhuma outra
-região — nem a "principal" da stack, mesmo que ela receba os eventos
-regionais normalmente. Ou seja: mesmo que a stack principal fique em
-`us-east-1` (resolvendo o caso geral acima para ela mesma), regras
-implantadas em QUALQUER outra região nunca veriam esses 2 serviços de
-jeito nenhum.
+confirmado empiricamente em sandbox em 2026-09-24 (reproduzido: `aws
+cloudtrail lookup-events` para `CreateHostedZone` devolveu 0 resultados
+consultado em `us-east-2`, e 1 resultado — com `awsRegion: us-east-1`
+gravado no próprio evento — na mesma consulta em `us-east-1`, mesmo com o
+perfil AWS configurado para `us-east-2`) — a AWS entrega evento de
+CloudTrail de serviço GLOBAL **só** ao barramento do EventBridge em
+`us-east-1`, nunca ao de nenhuma outra região, mesmo que essa seja a
+região "principal" da stack.
 
-**Por que não foi corrigido agora:** é mudança de arquitetura, não um bug
-de código — precisa de decisão sobre a abordagem, e as duas partes do
-problema (regional geral + global) tendem a ter a MESMA resposta:
+**Decisão registrada — opção (a) do leque anterior**: StackSet em todas
+as regiões ativas da conta cliente, sempre incluindo `us-east-1` mesmo que
+a conta não tenha recurso lá (única forma de cobrir Route
+53/CloudFront). Descartadas: (b) aceitar o gap e delegar à Etapa 4 —
+perde a reação em tempo real exatamente nas contas multi-região, que
+tendem a ser as maiores/mais maduras; (c) fixar a região principal em
+`us-east-1` — não resolve o caso regional geral.
 
-- (a) **StackSet em todas as regiões ativas da conta cliente** — resolve o
-  caso regional geral (cada região tem sua própria stack/regras) e,
-  combinada com uma cópia adicional das regras específicas para Route
-  53/CloudFront sempre em `us-east-1`, resolve os 2 casos juntos. Custo:
-  mais recursos implantados por conta (Lambda/Step Functions/EventBridge
-  replicados por região), a maioria delas provavelmente ociosa a maior
-  parte do tempo.
-- (b) **Aceitar o gap e confiar na Etapa 4** (fora do escopo deste
-  repositório, varre o estado final do recurso independente de região) como
-  backstop para regiões/serviços fora da cobertura da Etapa 3 — mais simples
-  de operar, mas perde a reação em tempo real exatamente nos casos
-  multi-região, que tendem a ser contas maiores/mais maduras.
-- (c) Só para o caso global (Route 53/CloudFront): mudar a região
-  "principal" para `us-east-1` em todo cliente — não resolve o caso
-  regional geral, e nem sempre é possível/desejável (ex.: cliente já opera
-  primariamente noutra região por latência/residência de dado).
+**Desenho da implementação (ainda não feita):**
 
-Nenhuma opção é óbvia o suficiente para decidir sozinho — mas dado que (a)
-resolve as duas partes do problema juntas, é o candidato mais forte se o
-volume de clientes multi-região justificar o custo extra.
+1. **Separar `template.yaml` em dois templates.** Hoje o tópico SNS
+   (`PrmComplianceTopic`) vive na mesma stack que Lambda/Step
+   Functions/EventBridge — duplicar tudo por região duplicaria o tópico
+   também, quebrando a regra já registrada de que ele é peça
+   compartilhada única por conta (ver docstring do template e a seção do
+   e-mail de notificação acima). Precisa virar:
+   - **Template "hub"** (implantado 1x por conta, região principal): só o
+     tópico SNS + a assinatura de e-mail (`NotificationEmail`, ver acima).
+   - **Template "regional"** (o que existe hoje, menos o tópico SNS):
+     Lambda, Step Functions, EventBridge, IAM — recebe o ARN do tópico do
+     hub como parâmetro simples (publicar num tópico SNS de outra região
+     funciona apontando o client boto3 pra região do tópico — não precisa
+     de `Fn::ImportValue` cross-region nem de nenhum truque).
+2. **Descobrir as regiões ativas da conta cliente** para alimentar o
+   StackSet — reaproveitar `regions.get_active_regions()` (já existe,
+   mesmo código que a Etapa 1 usa), rodado uma vez por conta antes do
+   deploy, **sempre forçando a inclusão de `us-east-1`** na lista mesmo
+   quando a conta não reporta recurso lá.
+3. **Pré-requisito de conta/organização**: StackSet de verdade (não só
+   `sam deploy` manual por região) precisa de trusted access configurado
+   entre a conta de gerenciamento e as contas de cliente (ou roles
+   self-managed) — a confirmar se já está habilitado antes de implementar
+   isso de fato.
+4. **Custo**: praticamente nenhum de infra ociosa — Lambda/Step Functions
+   só cobram por execução, EventBridge/IAM são gratuitos; o custo real é
+   só mais peças pra gerenciar por conta.
+5. **Validação**: precisa de um novo roteiro em sandbox (deploy em 2+
+   regiões, confirmar que cada região só reage a evento local, e que as
+   duas publicam no mesmo tópico do hub) antes de considerar resolvido —
+   mesma disciplina já seguida para o resto da Etapa 3.
 
-**O que destrava:** decisão de arquitetura com o gestor — provavelmente
-StackSet multi-região (opção a) vs. aceitar e delegar à Etapa 4 (opção b)
-como os dois candidatos reais.
-
-### Tópico SNS sem nenhuma assinatura — todo resultado publicado desaparece
-
-**Classificação: precisa de decisão de arquitetura/produto — o gap é
-maior do que "falta alertar em caso de falha".** Achado confirmado na
-prática pelo próprio smoke test em sandbox desta sessão: os 2 bugs de
-permissão IAM (S3, CloudWatch Logs) não geravam exceção nem apareciam no
-CloudWatch Logs da Lambda — o handler já classificava corretamente como
-`falhou`/`erro_permissao` e publicava no SNS, mas só foram encontrados
-inspecionando o `TagResources` bruto no CloudTrail, porque **o tópico não
-tinha nenhuma assinatura**. Em produção, ninguém vai inspecionar CloudTrail
-proativamente — toda falha (e todo sucesso) publicado no
-`PrmComplianceTopic` simplesmente desaparece, sem ninguém ouvindo.
-
-**O quê:** `infra/template.yaml` cria o tópico SNS (`PrmComplianceTopic`)
-e o expõe como Output (`PrmComplianceTopicArn`, comentado como "quem
-consumir o dashboard assina aqui") — mas não cria NENHUMA assinatura
-default, nem documenta em lugar nenhum que assinar é um passo obrigatório
-de pré-produção, não opcional. Diferente do item "Falha de extração de
-evento" (que é sobre uma categoria específica de falha silenciosa antes
-mesmo de publicar), este é sobre a publicação em si ser um beco sem saída.
-
-**Por que não foi corrigido agora:** falta decisão de produto sobre QUAL
-consumidor default faz sentido (e-mail de operação da EMPRESAX? uma fila
-SQS alimentando um dashboard? um Lambda que agrega e alerta só em caso de
-`falhou`, para não gerar ruído por sucesso?) — cada opção tem trade-off de
-custo/ruído diferente, e nenhuma foi combinada com o gestor ainda.
-
-**O que destrava:** decisão de produto sobre o consumidor default do
-tópico. Até lá, no mínimo documentar como passo OBRIGATÓRIO (não
-"opcional") no runbook de deploy: nenhuma stack deveria ir para produção
-sem uma assinatura configurada.
+**O que destrava:** implementar o split de template (passo 1) e a
+descoberta de regiões (passo 2) — a decisão de abordagem já está tomada,
+falta só o trabalho.
 
 ### Volumes EBS criados junto com a instância (`RunInstances`) não são tagueados
 
@@ -777,19 +646,6 @@ organizado. Baixa prioridade, sem prazo:
   idêntica) existem hoje tanto em `resource_discovery.py` quanto em
   `tag_execution.py` — mesmo caso, um módulo utilitário compartilhado
   resolveria as duas coisas juntas.
-
-  **Resolvido — a duplicação das chamadas de API nativa (EKS/Bedrock/
-  ELBv2)**: `single_resource.py` (Etapa 3, lê 1 ARN por vez) chamava a
-  mesma API que `tag_execution._revalidate_eks_or_bedrock`/`_revalidate_elb`
-  (Etapas 2b/2c, revalida em lote) já chamavam, com código copiado. Extraído
-  para [`tag_reads.py`](../tag_reads.py) — as 3 chamadas de API
-  (`eks_list_tags`/`bedrock_list_tags`/`elb_describe_tags`) agora moram num
-  só lugar, cada módulo continua com sua própria lógica de formato de
-  saída/lote/erro por cima. `resourcegroupstaggingapi:GetResources`
-  continua fora de propósito — os dois módulos usam essa API de forma
-  genuinamente diferente (1 ARN filtrado vs. região inteira paginada), não
-  é duplicação. Suíte inteira (232 testes) e `sam build` confirmados sem
-  regressão depois da extração.
 - **`retry.py` é um retry próprio** — o botocore já oferece
   `Config(retries={"mode": "adaptive"})` nativamente. Trocar exigiria
   reavaliar se a diferenciação atual entre "erro retryable" (throttling) e

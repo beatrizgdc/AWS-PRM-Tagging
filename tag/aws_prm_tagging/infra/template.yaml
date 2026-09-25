@@ -54,6 +54,22 @@ Parameters:
       periódica, fora do escopo deste template) é o backstop para o que não
       for processado a tempo.
 
+  NotificationEmail:
+    Type: String
+    Default: teste@exemplo.com
+    Description: >
+      E-mail assinado automaticamente no tópico SNS de relatório
+      (PrmComplianceTopic) — sem isso, todo resultado publicado (sucesso ou
+      falha) não chega a lugar nenhum (ver docs/melhorias-futuras.md,
+      "Tópico SNS sem nenhuma assinatura"). O valor acima (teste@exemplo.com)
+      É UM PLACEHOLDER, não um e-mail real — a assinatura fica presa em
+      "PendingConfirmation" para sempre até alguém trocar por um endereço de
+      verdade. Trocar o e-mail padrão para TODO deploy que não passar
+      --parameter-overrides é UM ÚNICO lugar: o valor de Default acima (ver
+      "E-mail de notificação (SNS)" em infra/README.md para o passo a passo
+      completo, incluindo a confirmação manual que a AWS sempre exige por
+      e-mail).
+
 Globals:
   Function:
     Runtime: python3.12
@@ -73,6 +89,20 @@ Resources:
     Properties:
       TopicName: !Sub "${AWS::StackName}-prm-compliance"
       DisplayName: "AWS PRM - eventos de compliance de tagging"
+
+  # Assinatura automática do tópico acima — SEM ISSO, o tópico existe mas
+  # ninguém ouve (achado confirmado na prática pelo smoke test em sandbox,
+  # ver docs/melhorias-futuras.md). O e-mail vem do parâmetro
+  # NotificationEmail (default é um placeholder, não um e-mail real — ver
+  # descrição do parâmetro acima e infra/README.md). A confirmação por
+  # clique no e-mail continua manual — nenhum CloudFormation pula isso, é
+  # como o protocolo "email" do SNS sempre funcionou.
+  PrmComplianceEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PrmComplianceTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
 
   # ---------------------------------------------------------------------
   # Execução da função Lambda — permissões de leitura (Etapa 2b) + escrita
