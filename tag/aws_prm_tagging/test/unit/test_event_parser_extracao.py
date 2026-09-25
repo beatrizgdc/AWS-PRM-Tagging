@@ -213,3 +213,121 @@ def test_elasticbeanstalk_create_application_constroi_arn_do_request(cloudtrail_
     resultado = parse_creation_event(event)
     assert resultado[0].arn == "arn:aws:elasticbeanstalk:us-east-1:000000000000:application/meu-app"
     assert resultado[0].servico == "AWS Elastic Beanstalk"
+
+
+def test_vpc_lattice_resolve_servico_pelo_nome_nao_pelo_codigo_ambiguo(cloudtrail_event_factory):
+    """Bug real encontrado em code review: o código `AmazonVPC` é
+    compartilhado no CSV por 2 linhas ("AWS Transit Gateway" primeiro,
+    "Amazon VPC Lattice" depois) — resolver por código sozinho sempre pega
+    a primeira, rotulando todo evento de VPC Lattice como "AWS Transit
+    Gateway" no relatório. `services.classify_arn` já tinha essa correção
+    (`_service_by_name`); `event_parser.py` precisa da mesma."""
+    event = cloudtrail_event_factory(
+        event_source="vpc-lattice.amazonaws.com",
+        event_name="CreateServiceNetwork",
+        detail_overrides={"responseElements": {"arn": "arn:aws:vpc-lattice:us-east-1:000000000000:servicenetwork/sn-1"}},
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].servico == "Amazon VPC Lattice"
+
+
+def test_ec2_create_vpc_continua_resolvendo_transit_gateway(cloudtrail_event_factory):
+    """Regressão: a correção do VPC Lattice acima não pode mudar o
+    resultado (correto) dos eventos de EC2 que também usam o código
+    `AmazonVPC` — esses devem continuar caindo na primeira linha do CSV
+    ("AWS Transit Gateway"), só o vpc-lattice precisa do desvio por nome."""
+    event = cloudtrail_event_factory(
+        event_source="ec2.amazonaws.com",
+        event_name="CreateVpc",
+        detail_overrides={"responseElements": {"vpc": {"vpcId": "vpc-123"}}},
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].servico == "AWS Transit Gateway"
+
+
+def test_ec2_create_vpc_com_vpc_nulo_nao_quebra(cloudtrail_event_factory):
+    """Bug real encontrado em code review: `responseElements: {"vpc":
+    null}` (chave presente, valor `None`) quebrava com `AttributeError` —
+    `.get("vpc", {})` só usa o default quando a CHAVE não existe. Devolve
+    lista vazia, não exceção (princípio declarado na docstring do
+    módulo)."""
+    event = cloudtrail_event_factory(
+        event_source="ec2.amazonaws.com",
+        event_name="CreateVpc",
+        detail_overrides={"responseElements": {"vpc": None}},
+    )
+    assert parse_creation_event(event) == []
+
+
+def test_ec2_create_transit_gateway_com_valor_nulo_nao_quebra(cloudtrail_event_factory):
+    """Mesmo bug/correção de `test_ec2_create_vpc_com_vpc_nulo_nao_quebra`,
+    para o extractor irmão."""
+    event = cloudtrail_event_factory(
+        event_source="ec2.amazonaws.com",
+        event_name="CreateTransitGateway",
+        detail_overrides={"responseElements": {"transitGateway": None}},
+    )
+    assert parse_creation_event(event) == []
+
+
+def test_ec2_run_instances_com_instances_set_nulo_nao_quebra(cloudtrail_event_factory):
+    """Mesmo bug/correção — `responseElements: {"instancesSet": null}`
+    (em vez de ausente) não pode derrubar a Lambda inteira com
+    `AttributeError`."""
+    event = cloudtrail_event_factory(
+        event_source="ec2.amazonaws.com",
+        event_name="RunInstances",
+        detail_overrides={"responseElements": {"instancesSet": None}},
+    )
+    assert parse_creation_event(event) == []
+
+
+def test_ec2_run_instances_com_item_nao_dict_nao_quebra(cloudtrail_event_factory):
+    """Mesmo bug/correção — um item da lista que não seja um dict (payload
+    malformado) não pode quebrar a extração dos demais itens válidos."""
+    event = cloudtrail_event_factory(
+        event_source="ec2.amazonaws.com",
+        event_name="RunInstances",
+        detail_overrides={"responseElements": {"instancesSet": {"items": [None, {"instanceId": "i-ok"}]}}},
+    )
+    resultado = parse_creation_event(event)
+    assert [r.arn for r in resultado] == ["arn:aws:ec2:us-east-1:000000000000:instance/i-ok"]
+
+
+def test_elbv2_create_load_balancer_le_arn_do_response(cloudtrail_event_factory):
+    """Caminho elbv2 (ALB/NLB) normal — confirma que a correção do Classic
+    ELB (teste abaixo) não muda esse comportamento já validado em
+    sandbox."""
+    event = cloudtrail_event_factory(
+        event_source="elasticloadbalancing.amazonaws.com",
+        event_name="CreateLoadBalancer",
+        detail_overrides={
+            "responseElements": {
+                "loadBalancers": [{"loadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/meu-alb/abc"}]
+            }
+        },
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].arn == "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/meu-alb/abc"
+
+
+def test_classic_elb_create_load_balancer_constroi_arn_do_request(cloudtrail_event_factory):
+    """Bug real encontrado em code review: `elasticloadbalancing.amazonaws.
+    com`/`CreateLoadBalancer` é compartilhado pelo Classic ELB (pacote
+    `elb`) e pelo elbv2 (ALB/NLB) — mesmo eventSource/eventName, shapes de
+    resposta diferentes. Classic ELB devolve só `{"DNSName": ...}`, sem
+    ARN nenhum — o extractor só sabia ler o shape do elbv2, então todo
+    Classic ELB (ainda comum via Terraform `aws_elb`) nunca era tagueado,
+    silenciosamente. Corrigido construindo o ARN a partir do
+    `LoadBalancerName` do request (campo que só o Classic ELB usa — elbv2
+    usa `Name`, sinal confiável de qual dos dois é)."""
+    event = cloudtrail_event_factory(
+        event_source="elasticloadbalancing.amazonaws.com",
+        event_name="CreateLoadBalancer",
+        detail_overrides={
+            "requestParameters": {"loadBalancerName": "meu-elb-classic"},
+            "responseElements": {"dNSName": "meu-elb-classic-123.us-east-1.elb.amazonaws.com"},
+        },
+    )
+    resultado = parse_creation_event(event)
+    assert resultado[0].arn == "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/meu-elb-classic"

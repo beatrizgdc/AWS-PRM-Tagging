@@ -89,7 +89,27 @@ class _SpecificExtractor:
     tipo_recurso: str | None = None
 
 
-def _svc_name(services: list[Service], product_service_code: str) -> str | None:
+# Ambiguidade conhecida, mesma de `services.classify_arn`/`_service_by_name`:
+# o código "AmazonVPC" é compartilhado por 2 linhas do CSV ("AWS Transit
+# Gateway" e "Amazon VPC Lattice"). Resolver por código pega sempre a
+# PRIMEIRA linha ("AWS Transit Gateway") — correto para os eventos de EC2
+# (`CreateVpc`/`CreateTransitGateway`, que são mesmo Transit Gateway/rede),
+# mas errado para `vpc-lattice.amazonaws.com`, cujo evento já identifica o
+# serviço sem ambiguidade nenhuma. Bug real encontrado em code review: essa
+# correção existia em `services.py` mas nunca tinha chegado aqui — todo
+# evento de VPC Lattice saía rotulado "AWS Transit Gateway" no relatório
+# (a tag aplicada nunca estava errada, só o rótulo `servico`).
+_SERVICE_NAME_OVERRIDE_POR_EVENT_SOURCE = {
+    "vpc-lattice.amazonaws.com": "Amazon VPC Lattice",
+}
+
+
+def _svc_name(services: list[Service], product_service_code: str, event_source: str | None = None) -> str | None:
+    override_name = _SERVICE_NAME_OVERRIDE_POR_EVENT_SOURCE.get(event_source or "")
+    if override_name is not None:
+        for svc in services:
+            if svc.name == override_name:
+                return svc.name
     for svc in services:
         if svc.product_service_code == product_service_code:
             return svc.name
@@ -178,11 +198,21 @@ def _ext_ec2_run_instances(detail: dict, account_id: str, region: str) -> list[s
     # Estrutura conhecida de eventos reais de CloudTrail para EC2 (protocolo
     # "ec2", com o empacotamento "xSet"/"items" herdado da API XML antiga) —
     # não é o shape "lógico" que o botocore expõe para o SDK.
-    items = (detail.get("responseElements") or {}).get("instancesSet", {}).get("items") or []
+    #
+    # `isinstance` defensivo (bug real encontrado em code review): `.get(
+    # "instancesSet", {})` só usa o default `{}` quando a CHAVE não existe —
+    # se vier presente com valor `None` (`{"instancesSet": null}`), o
+    # default nunca entra em jogo e o `.get("items")` seguinte quebra com
+    # `AttributeError`, derrubando a invocação Lambda inteira em vez de
+    # degradar para lista vazia (o princípio que a docstring do módulo
+    # declara). Mesmo raciocínio para `item` não ser um dict.
+    instances_set = (detail.get("responseElements") or {}).get("instancesSet")
+    items = instances_set.get("items") if isinstance(instances_set, dict) else None
+    items = items if isinstance(items, list) else []
     return [
         f"arn:aws:ec2:{region}:{account_id}:instance/{item['instanceId']}"
         for item in items
-        if item.get("instanceId")
+        if isinstance(item, dict) and item.get("instanceId")
     ]
 
 
@@ -192,12 +222,18 @@ def _ext_ec2_create_volume(detail: dict, account_id: str, region: str) -> list[s
 
 
 def _ext_ec2_create_vpc(detail: dict, account_id: str, region: str) -> list[str]:
-    vpc_id = (detail.get("responseElements") or {}).get("vpc", {}).get("vpcId")
+    # `isinstance` defensivo — mesmo motivo de `_ext_ec2_run_instances`
+    # acima: `responseElements` = `{"vpc": null}` quebraria com
+    # `AttributeError` sem essa checagem.
+    vpc = (detail.get("responseElements") or {}).get("vpc")
+    vpc_id = vpc.get("vpcId") if isinstance(vpc, dict) else None
     return [f"arn:aws:ec2:{region}:{account_id}:vpc/{vpc_id}"] if vpc_id else []
 
 
 def _ext_ec2_create_transit_gateway(detail: dict, account_id: str, region: str) -> list[str]:
-    tgw_id = (detail.get("responseElements") or {}).get("transitGateway", {}).get("transitGatewayId")
+    # `isinstance` defensivo — mesmo motivo de `_ext_ec2_create_vpc` acima.
+    tgw = (detail.get("responseElements") or {}).get("transitGateway")
+    tgw_id = tgw.get("transitGatewayId") if isinstance(tgw, dict) else None
     return [f"arn:aws:ec2:{region}:{account_id}:transit-gateway/{tgw_id}"] if tgw_id else []
 
 
@@ -229,13 +265,34 @@ def _ext_route53_create_hosted_zone(detail: dict, account_id: str, region: str) 
 
 
 def _ext_elbv2_create_load_balancer(detail: dict, account_id: str, region: str) -> list[str]:
-    # elbv2 é protocolo "query" (tolerante a capitalização); CreateLoadBalancer
-    # normalmente cria só 1 load balancer por chamada — usamos o primeiro.
+    # elasticloadbalancing.amazonaws.com/CreateLoadBalancer é compartilhado
+    # por DOIS serviços — elbv2 (ALB/NLB) e o Classic ELB (pacote `elb`) —
+    # com o MESMO eventSource e eventName (confirmado via botocore:
+    # signingName/endpointPrefix idênticos), mas shapes de resposta
+    # completamente diferentes. Bug real encontrado em code review: o
+    # extractor só sabia ler o shape do elbv2
+    # (`responseElements.LoadBalancers[...]`); Classic ELB devolve só
+    # `{"DNSName": ...}`, sem ARN nenhum na resposta — todo Classic ELB
+    # (ainda comum via Terraform `aws_elb`) nunca era tagueado,
+    # silenciosamente (lista vazia, sem erro). Os dois protocolos usam
+    # nomes de campo DIFERENTES no request (`Name` no elbv2, confirmado
+    # em evento real capturado em sandbox como `"name"`; `LoadBalancerName`
+    # no Classic ELB, verificado contra o shape do botocore) — isso serve
+    # de sinal confiável de qual dos dois é, sem ambiguidade.
     lbs = _read_path(detail.get("responseElements") or {}, ("LoadBalancers",), tolerant_casing=True) or []
-    if not lbs or not isinstance(lbs, list):
-        return []
-    arn = lbs[0].get("LoadBalancerArn", lbs[0].get("loadBalancerArn")) if isinstance(lbs[0], dict) else None
-    return [arn] if isinstance(arn, str) and arn.startswith("arn:") else []
+    if isinstance(lbs, list) and lbs:
+        arn = lbs[0].get("LoadBalancerArn", lbs[0].get("loadBalancerArn")) if isinstance(lbs[0], dict) else None
+        if isinstance(arn, str) and arn.startswith("arn:"):
+            return [arn]
+
+    # Não veio no shape do elbv2 — tenta Classic ELB, construindo o ARN a
+    # partir do nome pedido (formato estável documentado pela AWS:
+    # arn:...:loadbalancer/<nome>, sem o segmento "app/"/"net/" que
+    # ALB/NLB usam).
+    nome_classic = _read_path(detail.get("requestParameters") or {}, ("LoadBalancerName",), tolerant_casing=True)
+    if isinstance(nome_classic, str) and nome_classic:
+        return [f"arn:aws:elasticloadbalancing:{region}:{account_id}:loadbalancer/{nome_classic}"]
+    return []
 
 
 def _ext_workspaces_create_workspaces(detail: dict, account_id: str, region: str) -> list[str]:
@@ -522,14 +579,14 @@ def parse_creation_event(event: dict, services: list[Service] | None = None) -> 
 
     if spec is not None:
         arns = spec.arn_builder(detail, account_id, region)
-        servico = _svc_name(services, spec.product_service_code)
+        servico = _svc_name(services, spec.product_service_code, event_source)
         tipo_recurso = spec.tipo_recurso
     else:
         product_service_code = _MAPPED_EVENTS.get(key)
         if product_service_code is None:
             return []  # evento não está em event_mapping.py — nunca deveria acontecer se o pattern do EventBridge está correto, mas defensivo
         arns = _extract_generic(detail)
-        servico = _svc_name(services, product_service_code)
+        servico = _svc_name(services, product_service_code, event_source)
         tipo_recurso = None
 
     if not arns or servico is None:

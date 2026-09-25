@@ -144,3 +144,37 @@ def test_evento_fora_do_escopo_do_csv_e_ignorado(cloudtrail_event_factory, fake_
     handler(event, session=session, sns_client=sns_client)
 
     assert sns_client.published == []
+
+
+class _ClientQueBrasaComErroInesperado:
+    """Simula um bug real (não um `ClientError` da AWS) durante a leitura
+    inicial — ex.: os `AttributeError` que existiam em `event_parser.py`
+    antes de corrigidos. `_process_one_resource` só captura `ClientError`
+    explicitamente; qualquer outra exceção é o caso "inesperado" que o
+    `except Exception` do laço em `handler()` precisa cobrir."""
+
+    def get_resources(self, ResourceARNList=None, ResourcesPerPage=None, PaginationToken=None):
+        raise RuntimeError("bug simulado, não é ClientError")
+
+
+def test_falha_inesperada_ainda_publica_no_sns(cloudtrail_event_factory, fake_session_factory):
+    """Bug real encontrado em code review: antes desta correção, uma falha
+    inesperada (qualquer exceção que não seja `ClientError` na leitura
+    inicial) só aparecia no CloudWatch Logs — nunca no tópico SNS. Isso
+    contraria o princípio que `publish.py` declara ("publicar não é
+    opcional"). A execução do Step Functions continua marcada como falha
+    (`RuntimeError` propagado no final), mas agora o recurso também aparece
+    no relatório de compliance."""
+    arn = "arn:aws:s3:::bucket-vai-quebrar"
+    sns_client = _FakeSnsClient()
+    session = fake_session_factory({"resourcegroupstaggingapi": _ClientQueBrasaComErroInesperado()})
+
+    with pytest.raises(RuntimeError, match="falharam de forma inesperada"):
+        handler(_s3_event(cloudtrail_event_factory, "bucket-vai-quebrar"), session=session, sns_client=sns_client)
+
+    assert len(sns_client.published) == 1
+    payload = json.loads(sns_client.published[0]["Message"])
+    assert payload["arn"] == arn
+    assert payload["categoria_final"] == "falhou"
+    assert payload["resultado"] == "erro_inesperado"
+    assert payload["detalhe_erro"]["codigo"] == "RuntimeError"

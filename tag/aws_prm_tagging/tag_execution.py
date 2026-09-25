@@ -256,16 +256,6 @@ class ApiStrategy(str, Enum):
     ELB_LOAD_BALANCER = "elb_add_tags"
 
 
-# Estratégias que fazem 1 recurso por chamada de escrita (sem batch).
-ESTRATEGIAS_SEM_BATCH_DE_ESCRITA = frozenset(
-    {
-        ApiStrategy.EKS_CLUSTER,
-        ApiStrategy.EKS_NODE_GROUP,
-        ApiStrategy.BEDROCK_PROFILE,
-        ApiStrategy.ELB_LOAD_BALANCER,
-    }
-)
-
 _SERVICO_EKS = "Amazon EKS"
 _SERVICO_BEDROCK = "Amazon Bedrock"
 

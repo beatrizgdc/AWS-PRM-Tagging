@@ -191,7 +191,7 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
                 event_name,
                 event_source,
             )
-        except Exception:
+        except Exception as exc:
             # Uma falha inesperada num recurso não deve impedir o
             # processamento dos demais recursos do mesmo evento (ex.: um
             # RunInstances que criou 3 instâncias) — mesmo princípio já
@@ -202,6 +202,40 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
                 "Falha inesperada ao processar %s — continuando com os demais recursos do evento", extracted.arn
             )
             falhas_inesperadas += 1
+            # Bug real encontrado em code review: até aqui, uma falha
+            # inesperada (bug de programação, ex.: os AttributeError que
+            # existiam em event_parser.py antes de corrigidos) só aparecia
+            # no CloudWatch Logs — nunca no tópico SNS. Isso contraria o
+            # princípio que publish.py declara ("publicar não é opcional").
+            # Publicação em try/except própria: se ELA TAMBÉM falhar (ex.:
+            # tópico sem permissão), não pode derrubar o processamento dos
+            # demais recursos do loop — mesmo princípio do bloco acima.
+            try:
+                publish.publish_outcome(
+                    sns_client,
+                    topic_arn,
+                    publish.build_outcome_payload(
+                        etapa=_ETAPA,
+                        conta_id=conta_id,
+                        arn=extracted.arn,
+                        servico=extracted.servico,
+                        regiao=extracted.regiao,
+                        tipo_recurso=extracted.tipo_recurso,
+                        categoria_final="falhou",
+                        origem="processamento",
+                        resultado="erro_inesperado",
+                        detalhe_erro={"codigo": type(exc).__name__, "mensagem": str(exc)},
+                        event_id=event_id,
+                        event_name=event_name,
+                        event_source=event_source,
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Falha ao publicar o resultado de erro inesperado de %s no SNS — a falha em si já "
+                    "foi logada acima, só a publicação que não chegou",
+                    extracted.arn,
+                )
 
     if falhas_inesperadas:
         raise RuntimeError(

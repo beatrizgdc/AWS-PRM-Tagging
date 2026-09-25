@@ -4,7 +4,7 @@ Cobre que o caminho genérico agrupa por região em lotes de até 20 ARNs
 (limite documentado de `tag:TagResources`), que regiões diferentes nunca são
 misturadas no mesmo lote, e que os caminhos dedicados (EKS/Bedrock/ELB)
 nunca são agrupados — sempre 1 recurso por chamada de escrita, conforme
-`tag_execution.ESTRATEGIAS_SEM_BATCH_DE_ESCRITA`.
+`tag_execution._ESTRATEGIA_DEDICADA`.
 
 Todos os testes aqui usam `revalidate=False` para isolar o comportamento de
 agrupamento da lógica de revalidação (coberta em
