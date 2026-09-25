@@ -38,17 +38,17 @@ início de implementação da quarta:
    `pytest aws_prm_tagging/test/unit/ --collect-only` para o total exato.
    *OBS: revisar ao final do projeto se vale fixar um número aqui.*) e
    infraestrutura como código (SAM) em [infra/](infra/README.md) —
-   **validada em sandbox em 2026-09-23/24** (`sam deploy` real e eventos
-   CloudTrail reais capturados para 8 serviços, 5 bugs reais encontrados e
-   corrigidos — ver [docs/melhorias-futuras.md](docs/melhorias-futuras.md)
-   e [test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
-   para o roteiro e resultado completos). Uma revisão de código posterior a
-   essa validação corrigiu mais 3 pontos (lote de revalidação genérica,
-   filtro de `errorCode` nos event patterns, condição `aws:TagKeys`) —
-   **esses 3 ainda só foram validados estaticamente** (cfn-lint, `sam
-   build`, suíte de testes), sem reconfirmação em sandbox. Varredura
-   recorrente/auditoria (Etapa 4) continua fora do escopo deste
-   repositório.
+   **validada em sandbox** em duas rodadas (2026-09-23/24 e 2026-09-25,
+   mesma conta sandbox XXXXXXXXXXXX): `sam deploy` real, eventos CloudTrail
+   reais capturados e deploy/teardown completo em ambas, 5 bugs reais
+   encontrados e corrigidos na primeira rodada e mais 3 pontos de uma
+   revisão de código posterior (lote de revalidação genérica via
+   `ResourceARNList`, filtro de `errorCode` nos event patterns, condição
+   `aws:TagKeys`) confirmados na segunda — ver
+   [docs/melhorias-futuras.md](docs/melhorias-futuras.md) e
+   [test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
+   para o roteiro e resultado completos. Varredura recorrente/auditoria
+   (Etapa 4) continua fora do escopo deste repositório.
 
 A Etapa 3 reaproveita os módulos escritos aqui (`aws_prm_tagging/`, núcleo
 compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e é
