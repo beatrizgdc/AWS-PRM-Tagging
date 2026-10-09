@@ -1,14 +1,31 @@
-# tag/
+# AWS PRM Tagging
 
-Projeto: mapeamento, decisão e tagueamento AWS para o AWS Partner Revenue
-Measurement (PRM) — tag `aws-apn-id`.
+Automação que encontra, classifica e aplica a tag `aws-apn-id` em recursos
+AWS, atendendo ao **AWS Partner Revenue Measurement (PRM)**.
 
-Código, documentação e testes vivem em
-[aws_prm_tagging/](aws_prm_tagging/README.md) (o pacote Python é a própria
-raiz do repositório do projeto — ver
-[aws_prm_tagging/README.md#onde-rodar-os-comandos](aws_prm_tagging/README.md#onde-rodar-os-comandos)
-antes de rodar qualquer comando a partir daqui).
+## O que faz
 
-`Makefile` nesta pasta é o mecanismo de build customizado usado pelo `sam
-build` da Etapa 3 (ver
-[aws_prm_tagging/infra/README.md](aws_prm_tagging/infra/README.md#build-e-deploy)).
+- **Mapeia** recursos elegíveis em todas as regiões da conta (somente leitura)
+- **Decide** o que taguear, pular (IaC) ou revisar
+- **Aplica** a tag em modo dry-run ou real
+- **Automatiza** o tagueamento de novos recursos em tempo real (~70 serviços)
+- **Notifica** por e-mail via SNS
+
+## Stack
+
+`Python` · `boto3` · `AWS Lambda` · `EventBridge` · `Step Functions` ·
+`SNS` · `CloudTrail` · `IAM` · `AWS SAM` · `CloudFormation` · `pytest` ·
+`cfn-lint` · `LocalStack`
+
+## Destaques
+
+- Arquitetura event-driven, sem acesso cross-account
+- Detecção de recursos gerenciados por IaC (CloudFormation / Terraform)
+- Mais de 240 testes unitários, 100% offline
+- Validado em conta sandbox com deploy real
+
+## Saiba mais
+
+- [Documentação do projeto](aws_prm_tagging/README.md)
+- [Arquitetura](aws_prm_tagging/docs/arquitetura.md)
+- [Detalhes técnicos do repositório](DETALHES-TECNICOS.md)
