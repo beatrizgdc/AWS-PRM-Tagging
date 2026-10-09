@@ -3,6 +3,8 @@
 Automação que encontra, classifica e aplica a tag `aws-apn-id` em recursos
 AWS, atendendo ao **AWS Partner Revenue Measurement (PRM)**.
 
+<img width="1195" height="633" alt="Screenshot_20261009_154755" src="https://github.com/user-attachments/assets/03168d3f-8dce-4066-8330-5b7a1080f46a" />
+
 ## O que faz
 
 - **Mapeia** recursos elegíveis em todas as regiões da conta (somente leitura)
