@@ -70,6 +70,8 @@ deploy/remover_conta.sh --profile <perfil>
 
 As tags já aplicadas continuam nos recursos.
 
+OBS: Apesar de já ter a estrutura pronta, ainda não há conexão com nenhum ambiente zabbix,. Todas as métricas e relatórios estão sendo enviados via tópico SNS ao e-mail que for fornecido durante a interação e processo.
+
 ## Outro valor de tag?
 
 Só para um contrato diferente: responda com o outro `pc:...` quando o
