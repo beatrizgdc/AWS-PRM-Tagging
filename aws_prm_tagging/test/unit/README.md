@@ -119,7 +119,7 @@ Para `infra/`:
 - `test_infra_event_patterns.py` — os blocos `EventPattern` do template
   (colados manualmente, já que o CloudFormation não inclui JSON externo
   nessa propriedade) batem com `infra/event_pattern.*.generated.json`.
-- `test_infra_template_cfn_lint.py` — `infra/template.yaml` sem findings do
+- `test_infra_template_cfn_lint.py` — `infra/template-regional.yaml` e `infra/template-hub.yaml` sem findings do
   `cfn-lint` (via `cfnlint.api.lint_all`, sem Docker nem AWS) — pula
   silenciosamente se `cfn-lint` não estiver instalado (`pytest.importorskip`).
 - `test_infra_statemachine.py` — a definição do Step Functions

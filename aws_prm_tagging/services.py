@@ -116,9 +116,9 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "directconnect": "AWSDirectConnect",
     "ds": "AWSDirectoryService",
     "dynamodb": "AmazonDynamoDB",
-    # "dax" fica de fora de propósito: o CSV não tem nenhum "Product Service
-    # Code" para DAX — a própria linha de DynamoDB traz a nota "Excludes DAX",
-    # ou seja, a AWS exclui DAX da elegibilidade do PRM explicitamente.
+    # DAX: linha própria no CSV desde 2026-09-30 (antes a linha de DynamoDB
+    # dizia "Excludes DAX" e o namespace ficava de fora de propósito).
+    "dax": "AmazonDAX",
     # ec2: desambiguado em classify_arn (AmazonEC2 vs AmazonVPC).
     "ecr": "AmazonECR",
     "ecs": "AmazonECS",
@@ -181,6 +181,19 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     # `classify_arn` via `_service_by_name`, não por este mapeamento de
     # código (ver docstring do módulo).
     "workspaces": "AmazonWorkSpaces",
+    # Serviços que entraram no CSV em 2026-09-30 (ver reference/FONTE-CSV.md).
+    # Amazon EVS não tem namespace próprio aqui de propósito: só o EC2
+    # subjacente conta ("Only includes underlying Amazon EC2 use"), e as
+    # instâncias já são cobertas pelo namespace "ec2".
+    "mobiletargeting": "AmazonPinpoint",  # AWS End User Messaging (apps Pinpoint)
+    "sms-voice": "AmazonPinpoint",  # AWS End User Messaging SMS/Voice
+    "workspaces-instances": "AmazonWorkSpacesInstances",
+    # Namespace de ARN do Amazon Connect Decisions (ex-AWS Supply Chain) é
+    # "scn" — confirmado pelos patterns de ARN do modelo botocore.
+    "scn": "AWSSupplyChain",
+    "gameliftstreams": "AmazonGameLiftStreams",
+    "rtbfabric": "AWSRTBFabric",
+    "ses": "AmazonSES",
 }
 
 # Tipos de recurso EC2 (parte após "arn:aws:ec2:region:account:") faturados
@@ -201,6 +214,9 @@ _EC2_COMPUTE_RESOURCE_TYPES = {
     "reserved-instances",
     "security-group",
     "network-interface-attachment",
+    # NAT Gateway é cobrado sob Amazon EC2 ("EC2-Other"), não AmazonVPC —
+    # antes caía no rótulo "AWS Transit Gateway" no relatório.
+    "natgateway",
 }
 
 

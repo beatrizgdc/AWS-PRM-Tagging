@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from aws_prm_tagging.single_resource import build_resource_from_arn
 
-_EXPECTED = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+_EXPECTED = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 class _FakeGenericClient:

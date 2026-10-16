@@ -1,12 +1,17 @@
 # Validação manual da Etapa 3 contra conta AWS real (sandbox)
 
+> **Histórico.** Este roteiro registra a validação de uma fase anterior do
+> projeto. Nomes de arquivo podem ter mudado (ex.: `infra/template.yaml`
+> hoje é `infra/template-regional.yaml` + `infra/template-hub.yaml`). O
+> roteiro atual de validação é [`test/GUIA-SANDBOX.md`](../GUIA-SANDBOX.md).
+
 > **Atenção: isto roda contra uma conta AWS REAL, cria recursos reais (alguns
 > com custo por hora), e implanta uma stack CloudFormation de verdade.**
 > **Nunca rode contra conta de cliente — só sandbox.** Cada seção tem um
 > passo de reversão explícito; não pule esse passo. É um roteiro para você
 > rodar (ou autorizar) quando tiver acesso à conta sandbox, não uma
 > automação. **As 3 partes já foram executadas** (autorizadas
-> explicitamente, conta sandbox XXXXXXXXXXXX, 2026-09-23/24) — CloudFront
+> explicitamente, conta sandbox da Darede, 2026-09-23/24) — CloudFront
 > foi a única pulada (custo de tempo de propagação, não de dinheiro; segue
 > não testada). Ver resultado em cada seção — **4 bugs reais foram
 > encontrados e corrigidos** nessa execução.
@@ -73,7 +78,7 @@ nova em [docs/melhorias-futuras.md](../../docs/melhorias-futuras.md).
 
 ## Parte 1 — Capturar eventos CloudTrail reais (sem implantar a stack)
 
-**Resultado (executado em 2026-09-23/24, conta sandbox XXXXXXXXXXXX):**
+**Resultado (executado em 2026-09-23/24, conta sandbox da Darede):**
 todos os 8 serviços da tabela prioritária foram testados com um evento
 real, exceto CloudFront (pulado por custo de tempo — 15-20min de
 propagação para poder apagar). Redshift usou `ra3.large` em vez de
@@ -169,7 +174,7 @@ reversão imediata). Priorize isso só depois da lista acima.
 
 ## Parte 2 — Smoke test de ponta a ponta (implanta a stack)
 
-**Resultado (executado em 2026-09-23/24, conta sandbox XXXXXXXXXXXX, stack
+**Resultado (executado em 2026-09-23/24, conta sandbox da Darede, stack
 `prm-etapa3-smoke-test` em `us-east-2`):** o pipeline completo — EventBridge
 → Step Functions (debounce 30s) → Lambda → decisão → escrita real → tag
 no recurso — **funciona de ponta a ponta**, confirmado com um bucket S3
@@ -283,7 +288,7 @@ Sinal de que a regra do EventBridge não casou o evento — confirmar:
 
 ## Parte 3 — Investigar a ação de tag do CodeBuild
 
-**Resultado (executado em 2026-09-23, conta sandbox XXXXXXXXXXXX,
+**Resultado (executado em 2026-09-23, conta sandbox da Darede,
 `codebuild-teste-service-role` como service role):** o passo 2
 (`tag:TagResources`, caminho genérico) funcionou sozinho —
 `FailedResourcesMap` veio vazio e `batch-get-projects` confirmou a tag

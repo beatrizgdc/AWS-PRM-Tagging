@@ -5,11 +5,12 @@
   "$or": [
     {
       "source": [
-        "aws.vpc-lattice"
+        "aws.networkmanager"
       ],
       "detail": {
         "eventName": [
-          "CreateServiceNetwork"
+          "CreateCoreNetwork",
+          "CreateGlobalNetwork"
         ],
         "errorCode": [
           {
@@ -20,11 +21,211 @@
     },
     {
       "source": [
-        "aws.workspaces"
+        "aws.omics"
       ],
       "detail": {
         "eventName": [
-          "CreateWorkspaces"
+          "CreateReferenceStore",
+          "CreateSequenceStore",
+          "CreateWorkflow"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.payment-cryptography"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateKey"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.pinpoint"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApp"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.quicksight"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDashboard",
+          "CreateDataSet",
+          "CreateDataSource",
+          "CreateTemplate",
+          "RegisterUser"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.rds"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDBCluster",
+          "CreateDBClusterSnapshot",
+          "CreateDBInstance",
+          "CreateDBInstanceReadReplica",
+          "CreateDBSnapshot",
+          "RestoreDBClusterFromS3",
+          "RestoreDBClusterFromSnapshot",
+          "RestoreDBClusterToPointInTime",
+          "RestoreDBInstanceFromDBSnapshot",
+          "RestoreDBInstanceFromS3",
+          "RestoreDBInstanceToPointInTime"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift-serverless"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkgroup"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.redshift"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.resiliencehub"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApp"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.route53"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateHostedZone"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.rtbfabric"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateRequesterGateway",
+          "CreateResponderGateway"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.s3"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateBucket"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sagemaker"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateApp",
+          "CreateDomain",
+          "CreateEndpoint",
+          "CreateNotebookInstance"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.scn"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateInstance"
         ],
         "errorCode": [
           {

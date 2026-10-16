@@ -50,7 +50,13 @@ configuração versionados.
 ## Permissões IAM necessárias (somente leitura)
 
 A role/usuário usado para executar o script precisa apenas de ações
-`Describe*`/`List*`/`Get*` — nenhuma ação de escrita. Política mínima:
+`Describe*`/`List*`/`Get*` — nenhuma ação de escrita. Política mínima
+(atualizada em 2026-09-30: inclui a descoberta nativa do item 1 —
+`native_discovery.required_iam_actions()` — e o subcomando `preflight`;
+o teste `test_producao_md_cobre_permissoes_de_leitura` trava qualquer
+divergência entre esta lista e o código). Alternativa mais simples, se a
+política do cliente permitir: a política gerenciada da AWS `ReadOnlyAccess`
+cobre tudo isto.
 
 ```json
 {
@@ -60,20 +66,80 @@ A role/usuário usado para executar o script precisa apenas de ações
       "Sid": "PRMMappingReadOnly",
       "Effect": "Allow",
       "Action": [
-        "sts:GetCallerIdentity",
-        "ec2:DescribeRegions",
-        "ec2:DescribeInstances",
-        "ec2:DescribeVolumes",
-        "tag:GetResources",
+        "acm:ListCertificates",
+        "apigateway:GET",
+        "autoscaling:DescribeAutoScalingGroups",
+        "backup:ListBackupVaults",
         "bedrock:ListInferenceProfiles",
         "bedrock:ListTagsForResource",
-        "eks:ListClusters",
+        "cloudfront:ListDistributions",
+        "cloudtrail:DescribeTrails",
+        "cloudtrail:GetEventSelectors",
+        "cloudtrail:GetTrailStatus",
+        "codebuild:ListProjects",
+        "codepipeline:ListPipelines",
+        "dax:DescribeClusters",
+        "drs:DescribeReplicationConfigurationTemplates",
+        "dynamodb:ListTables",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeInstances",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeRegions",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeTransitGateways",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:DescribeVpnConnections",
+        "ecr:DescribeRepositories",
+        "ecs:DescribeServices",
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:ListTasks",
         "eks:DescribeCluster",
-        "eks:ListNodegroups",
         "eks:DescribeNodegroup",
-        "autoscaling:DescribeAutoScalingGroups",
+        "eks:ListClusters",
+        "eks:ListNodegroups",
+        "elasticache:DescribeCacheClusters",
+        "elasticache:DescribeReplicationGroups",
+        "elasticache:DescribeServerlessCaches",
+        "elasticbeanstalk:DescribeEnvironments",
+        "elasticfilesystem:DescribeFileSystems",
         "elasticloadbalancing:DescribeLoadBalancers",
-        "elasticloadbalancing:DescribeTags"
+        "elasticloadbalancing:DescribeTags",
+        "elasticmapreduce:ListClusters",
+        "es:ListDomainNames",
+        "firehose:ListDeliveryStreams",
+        "fsx:DescribeFileSystems",
+        "glue:ListJobs",
+        "iot:ListBillingGroups",
+        "iot:ListTagsForResource",
+        "iot:ListThings",
+        "kafka:ListClustersV2",
+        "kinesis:ListStreams",
+        "kms:DescribeKey",
+        "kms:ListKeys",
+        "lambda:ListFunctions",
+        "logs:DescribeLogGroups",
+        "memorydb:DescribeClusters",
+        "mq:ListBrokers",
+        "network-firewall:ListFirewalls",
+        "rds:DescribeDBClusters",
+        "rds:DescribeDBInstances",
+        "redshift:DescribeClusters",
+        "route53:ListHostedZones",
+        "s3:GetBucketLocation",
+        "s3:ListAllMyBuckets",
+        "sagemaker:ListEndpoints",
+        "sagemaker:ListNotebookInstances",
+        "secretsmanager:ListSecrets",
+        "sns:ListTopics",
+        "sqs:ListQueues",
+        "states:ListStateMachines",
+        "sts:GetCallerIdentity",
+        "tag:GetResources",
+        "transfer:ListServers",
+        "workspaces:DescribeWorkspaces"
       ],
       "Resource": "*"
     },
@@ -183,13 +249,13 @@ precisa de uma ação de tagging nativa por serviço (`ec2:CreateTags`,
 `lambda:TagResource`, `s3:PutBucketTagging`, `rds:AddTagsToResource` etc.).
 Essa lista já foi levantada e confirmada em sandbox para a Etapa 3
 (`PrmEtapa3NativeTagWrite` em
-[infra/template.yaml](../infra/template.yaml), documentada em
+[infra/template-regional.yaml](../infra/template-regional.yaml), documentada em
 [infra/README.md](../infra/README.md#permissões-iam--cobertura-real))
 e serve de ponto de partida direto para a Etapa 2c, já que ambas cobrem o
 mesmo conjunto de 69 serviços mapeados e a mesma ação nativa por serviço —
 ainda assim, monte/revise essa política especificamente para a Etapa 2c (e
 teste contra a conta sandbox) antes de usá-la em produção, em vez de
-reaproveitar `infra/template.yaml` diretamente.
+reaproveitar `infra/template-regional.yaml` diretamente.
 
 ## Passo a passo
 
@@ -258,13 +324,12 @@ recursos por chamada). Em contas grandes:
 - Se uma conta tiver regiões que claramente não interessam (ex.: nunca usada
   fora de `us-east-1`/`sa-east-1`), considerar restringir a lista de regiões
   processadas antes de rodar em larga escala — hoje o script sempre varre
-  todas as regiões comerciais ativas da conta; um filtro de região por CLI é
-  um candidato natural de melhoria para as próximas Etapas, não implementado
-  aqui para manter o escopo da Etapa 1 fiel ao pedido original.
+  todas as regiões comerciais ativas da conta, a menos que se use
+  `map --regioes us-east-1,sa-east-1` (implementado no Lote 2).
 
 ## Caminho para as próximas Etapas (Lambda + CloudFormation StackSets)
 
-A distribuição para os clientes da EMPRESAX foi decidida via **CloudFormation
+A distribuição para os clientes da Darede foi decidida via **CloudFormation
 StackSets com service-managed permissions**, integrada ao AWS Organizations
 de cada cliente — uma stack autocontida por conta, sem acesso cross-account
 de leitura. Este documento cobre só a execução da Etapa 1 contra uma
@@ -317,5 +382,33 @@ Pontos a considerar ao empacotar como Lambda:
 - **Saída**: em vez de um arquivo JSON local, o handler deve enviar o
   relatório (ou um resumo/eventos derivados dele) para o destino central de
   monitoramento por **push** — sem leitura cross-account da conta do
-  cliente pela EMPRESAX. Ver "Dashboard central" em
+  cliente pela Darede. Ver "Dashboard central" em
   [arquitetura-multicliente.md](arquitetura-multicliente.md).
+
+
+## Permissões do subcomando `auditar-org` (Etapa 4)
+
+Roda com credencial da **conta de gerenciamento** do Organizations (ou de
+um administrador delegado), não na conta-membro, e depende de aprovação do
+cliente. Somente leitura:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PRMAuditoriaOrgReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "organizations:ListPolicies",
+        "organizations:DescribePolicy",
+        "organizations:ListTargetsForPolicy"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+`verificar-csv` não usa credencial AWS — só acesso de saída à internet
+(`docs.aws.amazon.com`).

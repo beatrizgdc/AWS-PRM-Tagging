@@ -13,6 +13,15 @@ mapeamento contrato↔OU, etc.) ficam em
 [arquitetura-multicliente.md](arquitetura-multicliente.md#pontos-em-aberto-resumo),
 não aqui.
 
+> **Atualização 2026-09-30 (handover):** o estado consolidado, as
+> dependências e o que já foi resolvido estão em
+> [plano-finalizacao.md](plano-finalizacao.md). Resolvidos no Lote 1 e
+> mantidos abaixo só como histórico: "Volumes EBS criados junto com a
+> instância", "Formas de criar recurso que não passam pelo evento esperado"
+> (CreateFleet, restores de RDS/DynamoDB, snapshots, NAT, EIP), "Amazon
+> DocumentDB e Amazon Neptune aparecem como Amazon RDS" (na Etapa 3). O
+> mapeamento passou de 69 para 71 serviços (14 sem mapeamento).
+
 ## Pendências da Etapa 3 (automação contínua)
 
 Decisões explicitamente adiadas durante a implementação inicial da Etapa 3
@@ -74,10 +83,14 @@ trabalho de "resolver tudo de uma vez".
 **O que destrava:** priorizar, com o gestor/PDM, se algum dos 16 restantes
 (SageMaker e QuickSight à parte — ambíguos demais para valer a pena sem uma
 decisão de produto sobre qual sub-recurso importa) é usado o suficiente
-pelos clientes da EMPRESAX para justificar escolher um recurso "principal"
+pelos clientes da Darede para justificar escolher um recurso "principal"
 por decisão de produto (não só técnica) e mapear só esse.
 
 ### Alerta ativo quando o CSV ganha um serviço sem mapeamento de evento
+
+**RESOLVIDO em 2026-09-30 (Lote 4)** — subcomando `verificar-csv`
+(`csv_check.py`): compara a tabela da página oficial com o CSV empacotado e
+aponta códigos novos sem mapeamento. Roda centralmente (CI), não por conta.
 
 **Classificação: melhoria futura.** Não bloqueia a Etapa 3 hoje (o teste
 `validate_against_csv` já trava a divergência em desenvolvimento) e é
@@ -124,7 +137,7 @@ Continua com leitura tolerante a capitalização (`_direct_ci`/
 (30 minutos), combinado explicitamente com o gestor como ponto de partida.
 
 **Por que não foi resolvido com mais precisão:** não há dado real de quanto
-tempo as ferramentas de IaC usadas pelos clientes da EMPRESAX (Terraform,
+tempo as ferramentas de IaC usadas pelos clientes da Darede (Terraform,
 CloudFormation, `eksctl`, etc.) levam entre criar um recurso e aplicar suas
 próprias tags — 30 minutos é uma margem confortável, mas não validada.
 
@@ -196,7 +209,7 @@ alguém observar o CloudWatch Logs ativamente).
 para esse caso, e possivelmente reaproveitar o mesmo mecanismo do item
 "Alerta ativo quando o CSV ganha um serviço sem mapeamento" acima.
 
-### DLQ para o alvo do EventBridge — não implementado
+### DLQ para o alvo do EventBridge — RESOLVIDO em 2026-09-30 (Lote 2, uma DLQ por região; ver infra/README.md)
 
 **Classificação: melhoria futura.** Mesma decisão do buffer SQS acima —
 não bloqueia a Etapa 3 nem é pré-requisito de nenhuma etapa seguinte, só
@@ -217,7 +230,12 @@ for adicionada à arquitetura, o DLQ vem natural junto dela.
 
 ### A stack cobre só 1 região — qualquer recurso regional fora dela fica invisível (Route 53/CloudFront são só o caso mais extremo)
 
-**Classificação: melhoria planejada — decisão de arquitetura já tomada
+**RESOLVIDO em 2026-09-30 (Lote 2)** — `infra/template-hub.yaml` +
+`infra/template-regional.yaml`, subcomando `preflight` para a lista de
+regiões (sempre com `us-east-1`). Texto abaixo mantido como histórico da
+decisão. Ver docs/plano-finalizacao.md.
+
+**Classificação original: melhoria planejada — decisão de arquitetura já tomada
 com o gestor (2026-09-25), implementação ainda não feita.**
 
 **O quê:** uma regra de EventBridge só casa eventos da MESMA região onde
@@ -343,11 +361,16 @@ se algum cliente usa Karpenter para EKS (cenário comum), mas isso é
 julgamento de produto sobre a base de clientes, não técnico.
 
 **O que destrava:** priorizar com o gestor quais desses valem o esforço de
-mapear agora vs. esperar dado real de uso pelos clientes da EMPRESAX —
+mapear agora vs. esperar dado real de uso pelos clientes da Darede —
 `CreateFleet` (Karpenter) parece o candidato mais forte a entrar cedo,
 dado quão comum é hoje em clusters EKS gerenciados com auto-scaling.
 
 ## Cobertura de recursos que nunca tiveram tag nenhuma
+
+**RESOLVIDO em 2026-09-30 (Lote 2)** — `native_discovery.py`: listagem
+pelas APIs nativas de cada serviço (somente leitura, sem criar índice do
+Resource Explorer), unida ao resultado do `GetResources`. Texto abaixo
+mantido como histórico.
 
 **O quê:** `resourcegroupstaggingapi:GetResources` (usado por
 `resource_discovery.discover_generic_resources`) não retorna recursos que
@@ -453,7 +476,7 @@ mas essa citação do guia é sobre outro eixo (quais recursos, não qual
 ambiente).
 
 **Por que não foi resolvido agora:** é decisão de negócio, não de código —
-para um MSP como a EMPRESAX, taguear tudo é defensável, mas precisa de
+para um MSP como a Darede, taguear tudo é defensável, mas precisa de
 confirmação explícita.
 
 **O que destrava:** confirmação do gestor/PDM da AWS sobre se o escopo
@@ -461,6 +484,9 @@ confirmação explícita.
 ou se precisa de um filtro adicional.
 
 ## Tag policies do AWS Organizations (Etapa 4)
+
+**RESOLVIDO em 2026-09-30 (Lote 4)** — subcomando `auditar-org`
+(`org_audit.py`), junto com a análise de SCP.
 
 **O quê:** o guia oficial (Customer FAQ 6) cita tag policies do
 Organizations como mecanismo relevante, além de SCP. A Etapa 4 (varredura
@@ -586,9 +612,9 @@ só é informativo no relatório), vale fechar essa lacuna também.
 
 **O quê:** `main._EXPECTED_TAG_VALUE_PATTERN` (`^pc:[A-Za-z0-9]+$`) aceita
 maiúsculas e qualquer tamanho depois do prefixo `pc:`. O único exemplo
-confirmado do guia oficial (`pc:xxxxxxxxxxxxxxxxxxxxxxxxx`) tem 25
+confirmado do guia oficial (`pc:5ugbbrmu7ud3u5hsipfzug61p`) tem 25
 caracteres minúsculos — se esse for o formato real de todo product code da
-EMPRESAX, a regex deveria ser `^pc:[a-z0-9]{25}$`. O risco de deixar como
+Darede, a regex deveria ser `^pc:[a-z0-9]{25}$`. O risco de deixar como
 está: como a comparação de valor é case-sensitive e exata
 (`tag_status.get_tag_status`), um erro de digitação em `--live` (ex.:
 maiúscula trocada, um caractere a mais/a menos) tagueia a conta inteira com
@@ -596,13 +622,13 @@ um valor errado — e depois disso, toda tentativa de corrigir aparece como
 `conflito` para o valor certo, nunca sobrescrito automaticamente.
 
 **Por que não foi resolvido agora:** apertar a regex exige confirmar que
-TODO product code de billing usado pela EMPRESAX segue exatamente esse
+TODO product code de billing usado pela Darede segue exatamente esse
 formato (25 caracteres, minúsculo) — um único exemplo do guia não é
 confirmação suficiente para travar a validação de um jeito que rejeitaria
 um formato válido não previsto.
 
 **O que destrava:** confirmação do gestor/PDM sobre o formato exato (e
-fixo) dos product codes usados pela EMPRESAX no PRM.
+fixo) dos product codes usados pela Darede no PRM.
 
 ## Namespaces de serviços mais novos ausentes do mapeamento genérico
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aws_prm_tagging import decision
 
-EXPECTED = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+EXPECTED = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 def test_eks_cluster_node_group_node_volume_lb_decisoes_independentes(recurso_factory):

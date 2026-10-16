@@ -26,3 +26,7 @@ resultado*.json
 
 # SO / editor
 .DS_Store
+
+# Saídas do roteiro de validação na sandbox (contêm ARNs da conta)
+saida-prm-val-*/
+prm_preflight.json

@@ -13,7 +13,7 @@ from botocore.exceptions import ClientError
 
 from aws_prm_tagging import tag_execution
 
-TAG_VALUE = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+TAG_VALUE = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 # Tag de convenção que `iac_detection.py` reconhece como sinal de

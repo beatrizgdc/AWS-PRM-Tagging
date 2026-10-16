@@ -12,7 +12,7 @@ import pytest
 
 from aws_prm_tagging.handler_continuous_tagging import handler
 
-_EXPECTED = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+_EXPECTED = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 class _FakeGenericRwClient:

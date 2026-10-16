@@ -1,0 +1,227 @@
+{
+  "detail-type": [
+    "AWS API Call via CloudTrail"
+  ],
+  "$or": [
+    {
+      "source": [
+        "aws.secretsmanager"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateSecret"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.securityhub"
+      ],
+      "detail": {
+        "eventName": [
+          "EnableSecurityHub"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ses"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateConfigurationSet",
+          "CreateEmailIdentity",
+          "CreateTenant",
+          "VerifyDomainIdentity",
+          "VerifyEmailIdentity"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sms-voice"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateConfigurationSet",
+          "CreatePool",
+          "RequestPhoneNumber",
+          "RequestSenderId"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sns"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTopic"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.sqs"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateQueue"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.ssm"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateOpsItem"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.states"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateStateMachine"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.storagegateway"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCachediSCSIVolume",
+          "CreateNFSFileShare",
+          "CreateSMBFileShare",
+          "CreateStorediSCSIVolume"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.timestream"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDatabase"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.transfer"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServer"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.vpc-lattice"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateServiceNetwork"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.workspaces-instances"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkspaceInstance"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.workspaces"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateWorkspaces"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    }
+  ]
+}

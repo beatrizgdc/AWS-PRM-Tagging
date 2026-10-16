@@ -64,3 +64,30 @@ def test_ssm_maintenance_window_fora_de_escopo_devolve_none():
     assert services.classify_arn(
         "arn:aws:ssm:us-east-1:000000000000:maintenancewindow/mw-0123456789abcdef0", _service_list()
     ) is None
+
+
+def test_nat_gateway_e_classificado_como_ec2():
+    from aws_prm_tagging.services import classify_arn, load_services
+
+    svc = classify_arn("arn:aws:ec2:us-east-1:000000000000:natgateway/nat-0abc", load_services())
+    assert svc is not None and svc.product_service_code == "AmazonEC2"
+
+
+def test_namespaces_preparados_ficam_inertes_enquanto_o_csv_nao_tiver_a_linha():
+    """dax/mobiletargeting/sms-voice/workspaces-instances estão mapeados em
+    _NAMESPACE_TO_CODE de antemão (item 15), mas só passam a classificar
+    quando o CSV oficial tiver a linha correspondente."""
+    from aws_prm_tagging.services import classify_arn, load_services
+
+    services = load_services()
+    codigos = {s.product_service_code for s in services}
+    for arn, codigo in [
+        ("arn:aws:dax:us-east-1:000000000000:cache/c1", "AmazonDAX"),
+        ("arn:aws:sms-voice:us-east-1:000000000000:pool/p1", "AmazonPinpoint"),
+        ("arn:aws:workspaces-instances:us-east-1:000000000000:workspaceinstance/w1", "AmazonWorkSpacesInstances"),
+    ]:
+        svc = classify_arn(arn, services)
+        if codigo in codigos:
+            assert svc is not None and svc.product_service_code == codigo
+        else:
+            assert svc is None

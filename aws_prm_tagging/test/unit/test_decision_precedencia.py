@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from aws_prm_tagging import decision
 
-EXPECTED = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+EXPECTED = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 def test_tag_ausente_sem_iac_taguear(recurso_factory):

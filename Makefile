@@ -17,3 +17,27 @@ build-Etapa3Function:
 	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
 	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
 	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"
+
+# Hub (item 8) — mesmo conteúdo de artefato da Etapa 3.
+build-ListarRegioesFunction:
+	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
+	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
+	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"
+
+# Hub (item 8) — mesmo conteúdo de artefato da Etapa 3.
+build-ProcessarRegiaoFunction:
+	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
+	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
+	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"
+
+# Hub (item 8) — mesmo conteúdo de artefato da Etapa 3.
+build-TagueamentoInicialCRFunction:
+	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
+	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
+	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"
+
+# Etapa 4 (drift, stack regional) — mesmo conteúdo de artefato.
+build-Etapa4DriftFunction:
+	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
+	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
+	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"

@@ -34,7 +34,7 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
-from . import decision, event_parser, publish, single_resource, tag_execution
+from . import decision, escopo_teste, event_parser, publish, resource_expansion, single_resource, tag_execution
 
 logger = logging.getLogger("aws_prm_tagging.etapa3")
 
@@ -124,6 +124,12 @@ def _process_one_resource(
         revalidate=True,
     )
     resultado_final = execution_report["recursos"][0]
+    if resultado_final["categoria_final"] == "ja_ok" and os.environ.get("PUBLICAR_JA_OK", "true").lower() == "false":
+        # Parâmetro PublicarResultadoJaOk=false (item 14): em cluster ECS com
+        # muita rotação de tasks, cada task que já nasce com a tag (via
+        # propagateTags) geraria um e-mail sem informação nova.
+        logger.info("Já em conformidade, publicação suprimida (PUBLICAR_JA_OK=false): %s", resultado_final["arn"])
+        return
     publish.publish_outcome(
         sns_client,
         topic_arn,
@@ -147,6 +153,16 @@ def _process_one_resource(
     )
 
 
+def _sns_client_for_topic(session: boto3.Session, topic_arn: str):
+    """Client SNS na REGIÃO DO TÓPICO (arn:aws:sns:<regiao>:...), não na
+    região da Lambda. Hoje as duas coincidem; no split hub/regional (item 7
+    do plano) o tópico fica numa região só e as stacks regionais publicam
+    nele — sem isto, `sns:Publish` iria para o endpoint errado."""
+    partes = topic_arn.split(":")
+    regiao = partes[3] if len(partes) > 3 and partes[3] else None
+    return session.client("sns", region_name=regiao) if regiao else session.client("sns")
+
+
 def handler(event: dict, context=None, *, session: boto3.Session | None = None, sns_client=None) -> None:
     """`session`/`sns_client` são injetáveis só para teste (ver
     `test_handler_continuous_tagging.py` e `fake_session_factory` em
@@ -158,11 +174,17 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
 
     detail = event.get("detail") or {}
     event_id = detail.get("eventID") or event.get("id")
-    event_name = detail.get("eventName")
-    event_source = detail.get("eventSource")
+    event_name = detail.get("eventName") or event.get("detail-type")
+    event_source = detail.get("eventSource") or event.get("source")
     conta_id = detail.get("recipientAccountId") or event.get("account")
 
     extracted_resources = event_parser.parse_creation_event(event)
+    # Conta compartilhada (sandbox): FiltroEscopoTeste restringe a reação
+    # aos recursos/principais de teste. Vazio em produção = sem efeito.
+    fora = [r.arn for r in extracted_resources if not escopo_teste.dentro_do_escopo(event, r.arn)]
+    if fora:
+        logger.info("Fora do FiltroEscopoTeste, ignorado(s): %s", fora)
+        extracted_resources = [r for r in extracted_resources if r.arn not in fora]
     if not extracted_resources:
         # Falha de extração (payload insuficiente) ou evento fora do
         # mapeamento — a decisão de alertar ativamente via SNS fica para
@@ -175,7 +197,35 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
         return
 
     session = session or boto3.Session()
-    sns_client = sns_client or session.client("sns")
+    sns_client = sns_client or _sns_client_for_topic(session, topic_arn)
+
+    # Instância EC2 -> volumes EBS anexados (o root nunca gera CreateVolume
+    # próprio). Falha aqui nunca bloqueia a instância; é publicada abaixo.
+    volumes, falhas_expansao = resource_expansion.expand_instance_volumes(session, extracted_resources)
+    extracted_resources = list(extracted_resources) + volumes
+    for falha in falhas_expansao:
+        try:
+            publish.publish_outcome(
+                sns_client,
+                topic_arn,
+                publish.build_outcome_payload(
+                    etapa=_ETAPA,
+                    conta_id=conta_id,
+                    arn=falha["arn"],
+                    servico=None,
+                    regiao=falha["regiao"],
+                    tipo_recurso=None,
+                    categoria_final="falhou",
+                    origem="expansao_volumes",
+                    resultado="erro_expansao_volumes",
+                    detalhe_erro={"codigo": falha["codigo"], "mensagem": falha["mensagem"]},
+                    event_id=event_id,
+                    event_name=event_name,
+                    event_source=event_source,
+                ),
+            )
+        except Exception:
+            logger.exception("Falha ao publicar erro de expansão de volumes de %s", falha["arn"])
 
     falhas_inesperadas = 0
     for extracted in extracted_resources:

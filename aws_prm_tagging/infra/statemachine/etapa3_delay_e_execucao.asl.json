@@ -1,7 +1,21 @@
 {
   "Comment": "Etapa 3 (PRM Resource Tagging) - aguarda um debounce apos o evento de criacao de recurso (reduzir corrida com IaC aplicando suas proprias tags), depois invoca o handler que reaproveita a Etapa 2a (decisao) e a Etapa 2c (tagueamento real, ja com revalidacao embutida).",
-  "StartAt": "AguardarDebounce",
+  "StartAt": "PrecisaDeDebounce",
   "States": {
+    "PrecisaDeDebounce": {
+      "Type": "Choice",
+      "Comment": "Item 14: task ECS (Fargate) pode durar menos que o debounce e ja nasce com as tags de propagateTags - nao ha corrida com IaC a evitar. Vai direto para o processamento. Todo o resto espera o debounce. IsPresent evita erro de runtime (fora da DLQ) quando o evento nao tem detail-type.",
+      "Choices": [
+        {
+          "And": [
+            {"Variable": "$.detail-type", "IsPresent": true},
+            {"Variable": "$.detail-type", "StringEquals": "ECS Task State Change"}
+          ],
+          "Next": "ProcessarRecursoRecemCriado"
+        }
+      ],
+      "Default": "AguardarDebounce"
+    },
     "AguardarDebounce": {
       "Type": "Wait",
       "Comment": "Standard Workflow: cobrado por transicao de estado, nao por tempo de espera - um Wait longo aqui nao tem custo de execucao ociosa (diferente de manter um Lambda dormindo).",
@@ -29,7 +43,29 @@
           "BackoffRate": 2
         }
       ],
+      "Catch": [
+        {
+          "Comment": "Item 9: falha da Lambda depois do Retry (ex.: erro inesperado por recurso) vai para a DLQ da regiao com o evento original e o erro - antes, a execucao so falhava e o evento se perdia.",
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.erro_processamento",
+          "Next": "EnviarParaDlq"
+        }
+      ],
       "End": true
+    },
+    "EnviarParaDlq": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "${DlqUrl}",
+        "MessageBody.$": "$"
+      },
+      "Next": "FalhaRegistradaNaDlq"
+    },
+    "FalhaRegistradaNaDlq": {
+      "Type": "Fail",
+      "Error": "ProcessamentoFalhou",
+      "Cause": "Evento enviado para a DLQ da regiao - ver a mensagem na fila."
     }
   }
 }

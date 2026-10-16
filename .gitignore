@@ -17,3 +17,10 @@ prm_apply_report.json
 mapa*.json
 decisao*.json
 resultado*.json
+
+# Gerados pelos testes na sandbox / build (2026-10-02) — contêm ARNs da conta ou são pesados
+.aws-sam/
+aws-sam-cli-*.zip
+saida-prm-val-*/
+prm_*.json
+prm_*.md

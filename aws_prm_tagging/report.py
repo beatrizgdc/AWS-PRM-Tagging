@@ -50,6 +50,7 @@ def build_report(
     status_tag_counts = Counter(r["status_tag"] for r in resources)
     status_iac_counts = Counter(r["iac"]["tipo"] for r in resources)
     service_counts = Counter(r["servico"] for r in resources)
+    faturamento_counts = Counter(r.get("servico_faturamento") or r["servico"] for r in resources)
     total_tag_similar = sum(1 for r in resources if r.get("tag_similar_encontrada"))
 
     return {
@@ -69,8 +70,14 @@ def build_report(
                 "desconhecido": status_iac_counts.get("desconhecido", 0),
             },
             "por_servico": dict(sorted(service_counts.items())),
+            "por_servico_faturamento": dict(sorted(faturamento_counts.items())),
             "total_tag_similar_encontrada": total_tag_similar,
             "total_falhas_descoberta": len(falhas_descoberta),
+            # Recursos que só apareceram pela descoberta nativa (nunca
+            # tiveram tag — invisíveis ao GetResources). Ver native_discovery.py.
+            "total_descobertos_so_via_api_nativa": sum(
+                1 for r in resources if r.get("origem_descoberta") == "nativa"
+            ),
         },
         "recursos": resources,
         "arvore_ou": ou_tree,

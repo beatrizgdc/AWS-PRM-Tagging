@@ -5,6 +5,130 @@
   "$or": [
     {
       "source": [
+        "aws.cognito-identity"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateIdentityPool"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.cognito-idp"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateUserPool"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.comprehend"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateDocumentClassifier",
+          "CreateEndpoint",
+          "CreateEntityRecognizer"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.connect"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateInstance"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.datapipeline"
+      ],
+      "detail": {
+        "eventName": [
+          "CreatePipeline"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.datasync"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateTask"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.dax"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateCluster"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.deadline"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFarm",
+          "CreateFleet",
+          "CreateQueue"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.directconnect"
       ],
       "detail": {
@@ -72,7 +196,9 @@
       ],
       "detail": {
         "eventName": [
-          "CreateTable"
+          "CreateTable",
+          "RestoreTableFromBackup",
+          "RestoreTableToPointInTime"
         ],
         "errorCode": [
           {
@@ -87,10 +213,14 @@
       ],
       "detail": {
         "eventName": [
+          "AllocateAddress",
+          "CopySnapshot",
+          "CreateNatGateway",
+          "CreateSnapshot",
+          "CreateSnapshots",
           "CreateTransitGateway",
           "CreateVolume",
-          "CreateVpc",
-          "RunInstances"
+          "CreateVpc"
         ],
         "errorCode": [
           {
@@ -106,145 +236,6 @@
       "detail": {
         "eventName": [
           "CreateRepository"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.ecs"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster",
-          "CreateService"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.eks"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCluster",
-          "CreateNodegroup"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticache"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateCacheCluster"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticbeanstalk"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateApplication",
-          "CreateEnvironment"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticfilesystem"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateFileSystem"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticloadbalancing"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateLoadBalancer"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.elasticmapreduce"
-      ],
-      "detail": {
-        "eventName": [
-          "RunJobFlow"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.es"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateDomain",
-          "CreateElasticsearchDomain"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.finspace"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateEnvironment"
         ],
         "errorCode": [
           {

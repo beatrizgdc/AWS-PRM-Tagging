@@ -1,5 +1,7 @@
 # Mapeamento, decisão e tagueamento para o AWS Partner Revenue Measurement (PRM)
 
+> **MVP 1 (02/10/2026):** o documento principal é [docs/MVP-1.md](docs/MVP-1.md). Implantação numa conta: `deploy/implantar_conta.sh` (na pasta acima desta).
+
 Automação de tagging AWS para atender a exigência de Resource Tagging do
 programa AWS Partner Revenue Measurement (PRM). Este repositório cobre as
 três primeiras Etapas de uma automação de **quatro Etapas**, mais um
@@ -26,11 +28,13 @@ início de implementação da quarta:
 4. **Automação contínua** (Etapa 3) — Lambda acionado por regra(s) de
    EventBridge a cada criação de recurso em escopo, reaproveitando
    `decision.py` (Etapa 2a) e `tag_execution.py` (Etapa 2c) sem nenhuma
-   lógica de decisão/execução duplicada. Cobre **69 dos ~85** serviços do
-   CSV — cada `eventSource`/`eventName`/campo de extração verificado contra
+   lógica de decisão/execução duplicada. Cobre **90 dos 92** códigos de serviço do
+   CSV (atualizado em 2026-09-30 — ver
+   [docs/plano-finalizacao.md](docs/plano-finalizacao.md), que consolida o
+   estado do projeto após o handover) — cada `eventSource`/`eventName`/campo de extração verificado contra
    o `botocore` instalado (não vem de memória), com um teste próprio
    (`test_event_parser_botocore.py`) que trava qualquer divergência futura
-   contra o shape real da API; os 16 que ficam de fora têm o motivo
+   contra o shape real da API; os 2 que ficam de fora têm o motivo
    documentado linha a linha (ver [event_mapping.py](event_mapping.py) e
    [docs/melhorias-futuras.md](docs/melhorias-futuras.md)) — não são uma
    lacuna silenciosa. Suíte de testes (`test/unit/` — número de testes
@@ -39,7 +43,7 @@ início de implementação da quarta:
    *OBS: revisar ao final do projeto se vale fixar um número aqui.*) e
    infraestrutura como código (SAM) em [infra/](infra/README.md) —
    **validada em sandbox** em duas rodadas (2026-09-23/24 e 2026-09-25,
-   mesma conta sandbox XXXXXXXXXXXX): `sam deploy` real, eventos CloudTrail
+   mesma conta sandbox da Darede): `sam deploy` real, eventos CloudTrail
    reais capturados e deploy/teardown completo em ambas, 5 bugs reais
    encontrados e corrigidos na primeira rodada e mais 3 pontos de uma
    revisão de código posterior (lote de revalidação genérica via
@@ -48,7 +52,8 @@ início de implementação da quarta:
    [docs/melhorias-futuras.md](docs/melhorias-futuras.md) e
    [test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
    para o roteiro e resultado completos. Varredura recorrente/auditoria
-   (Etapa 4) continua fora do escopo deste repositório.
+   (Etapa 4) implementada no Lote 4 (2026-09-30) — ver
+   [docs/plano-finalizacao.md](docs/plano-finalizacao.md).
 
 A Etapa 3 reaproveita os módulos escritos aqui (`aws_prm_tagging/`, núcleo
 compartilhado — ver [docs/arquitetura.md](docs/arquitetura.md)) e é
@@ -56,7 +61,7 @@ empacotada como Lambda dentro de uma stack CloudFormation (ver
 [infra/README.md](infra/README.md) para o escopo exato do que já está
 implantável e o que ainda falta mesclar), executando localmente em cada
 conta cliente (arquitetura sem acesso cross-account: cada conta roda sua
-própria automação). A Etapa 4 segue o mesmo modelo, ainda não implementada.
+própria automação). A Etapa 4 segue o mesmo modelo (stack hub + regional).
 
 ## O que este script faz
 
@@ -76,7 +81,14 @@ e classifica cada recurso quanto ao status da tag `aws-apn-id`
 partir da conta de gerenciamento de uma AWS Organization, também descobre a
 árvore de OUs. O resultado é um único arquivo JSON.
 
-> **Limitação conhecida:** a descoberta genérica usa
+> **Atualizado em 2026-09-30:** a limitação abaixo foi fechada pela
+> descoberta nativa (`native_discovery.py`), ligada por padrão no `map`
+> (`--sem-descoberta-nativa` desliga). Recursos que só apareceram por ela
+> vêm com `origem_descoberta: "nativa"` e são contados em
+> `resumo.total_descobertos_so_via_api_nativa`. Serviços sem enumerador
+> nativo continuam dependendo do `GetResources`.
+>
+> **Limitação original:** a descoberta genérica usa
 > `resourcegroupstaggingapi:GetResources`, que **não retorna recursos que
 > nunca receberam tag nenhuma** (documentação oficial da AWS). Um recurso
 > sem absolutamente nenhuma tag, de nenhuma chave, fica invisível para este
@@ -93,7 +105,7 @@ Documentação completa:
 
 - [docs/arquitetura.md](docs/arquitetura.md) — como o projeto está estruturado, módulo por módulo, decisões de design e limitações conhecidas.
 - [docs/producao.md](docs/producao.md) — como configurar credenciais, permissões IAM e executar contra uma conta cliente real.
-- [docs/arquitetura-multicliente.md](docs/arquitetura-multicliente.md) — rollout via CloudFormation StackSets para os clientes da EMPRESAX (camada acima da execução por conta).
+- [docs/arquitetura-multicliente.md](docs/arquitetura-multicliente.md) — rollout via CloudFormation StackSets para os clientes da Darede (camada acima da execução por conta).
 - [docs/melhorias-futuras.md](docs/melhorias-futuras.md) — pendências técnicas conhecidas e registradas, não corrigidas ainda (exigem decisão de arquitetura/produto ou têm custo maior que uma correção pontual).
 - [test/localstack/README.md](test/localstack/README.md) — cenário de teste local contra LocalStack, sem tocar em nenhuma conta AWS real.
 - [test/manual-live/README.md](test/manual-live/README.md) — smoke test manual da Etapa 2c (`apply --live`) contra 1 único recurso descartável, numa conta AWS real de sandbox.
@@ -220,7 +232,7 @@ do diretório pai desta pasta (ver "Onde rodar os comandos"):
 
 ```bash
 python3 -m aws_prm_tagging.main map \
-  --expected-tag-value pc:xxxxxxxxxxxxxxxxxxxxxxxxx \
+  --expected-tag-value pc:5ugbbrmu7ud3u5hsipfzug61p \
   --profile <perfil> \
   --output relatorio.json
 ```
@@ -237,7 +249,7 @@ credenciais):
 ```bash
 python3 -m aws_prm_tagging.main decide \
   --input relatorio.json \
-  --expected-tag-value pc:xxxxxxxxxxxxxxxxxxxxxxxxx \
+  --expected-tag-value pc:5ugbbrmu7ud3u5hsipfzug61p \
   --output decisao.json
 ```
 
@@ -334,7 +346,16 @@ aws_prm_tagging/                             raiz deste repositório (pacote Pyt
   event_mapping.py                           Etapa 3 — mapeamento serviço do CSV -> evento(s) de criação, gera o event pattern do EventBridge
   event_parser.py                            Etapa 3 — extrai o(s) recurso(s) recém-criado(s) a partir do payload do evento
   single_resource.py                         Etapa 3 — lê o estado atual de UM recurso (sem descoberta completa)
-  publish.py                                 publicação de resultados no SNS central (núcleo compartilhado — Etapa 3 e futura Etapa 4)
+  resource_expansion.py                      Etapa 3 — expande instância EC2 -> volumes EBS anexados (volume root)
+  native_discovery.py                        Etapa 1 — descoberta pelas APIs nativas (recursos que nunca tiveram tag)
+  pipeline.py                                Etapa 1 -> 2a -> 2b/2c como funções (usado pelo CLI e pelo tagueamento inicial)
+  handler_initial_tagging.py                 tagueamento inicial assíncrono (Custom Resource + Lambdas da stack hub)
+  recomendacoes.py                           subcomando `recomendar` — tag na origem (EKS, ECS, DRS, IoT)
+  handler_drift.py                           Etapa 4 — alerta de drift/remoção da tag (Lambda da stack regional)
+  org_audit.py                               Etapa 4 — subcomando `auditar-org` (SCP e tag policies, conta de gerenciamento)
+  csv_check.py                               Etapa 4 — subcomando `verificar-csv` (página oficial × CSV × mapeamento)
+  preflight.py                               antes do deploy — trail do CloudTrail por região + regiões do StackSet
+  publish.py                                 publicação de resultados no SNS central (núcleo compartilhado — Etapa 3, tagueamento inicial e Etapa 4)
   handler_continuous_tagging.py              Etapa 3 — handler Lambda (I/O only; reaproveita decision.py e tag_execution.py)
   infra/                                     SAM/CloudFormation da Etapa 3 (Lambda, Step Functions, EventBridge, SNS) — ver infra/README.md
   requirements.txt                           dependências de runtime (boto3)

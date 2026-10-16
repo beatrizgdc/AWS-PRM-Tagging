@@ -1,33 +1,34 @@
-# AWS PRM Tagging
+# Automação de Tagueamento AWS PRM — MVP 1
 
-Automação que encontra, classifica e aplica a tag `aws-apn-id` em recursos
-AWS, atendendo ao **AWS Partner Revenue Measurement (PRM)**.
+Aplica e mantém a tag `aws-apn-id = pc:<product code>` nos recursos das
+contas dos clientes, para o AWS Partner Revenue Measurement (PRM).
 
-<img width="1195" height="633" alt="Screenshot_20261009_154755" src="https://github.com/user-attachments/assets/03168d3f-8dce-4066-8330-5b7a1080f46a" />
+**Comece por [aws_prm_tagging/docs/MVP-1.md](aws_prm_tagging/docs/MVP-1.md)**
+— o que é, como funciona, como implantar, operar e remover.
 
-## O que faz
+## Implantar numa conta (resumo)
 
-- **Mapeia** recursos elegíveis em todas as regiões da conta (somente leitura)
-- **Decide** o que taguear, pular (IaC) ou revisar
-- **Aplica** a tag em modo dry-run ou real
-- **Automatiza** o tagueamento de novos recursos em tempo real (~70 serviços)
-- **Notifica** por e-mail via SNS
+```bash
+# a partir desta pasta; pré-requisitos: Python 3.10+, AWS CLI v2, SAM CLI, make
+pip install -r aws_prm_tagging/requirements-dev.txt
+deploy/implantar_conta.sh --profile <perfil> --valor pc:<product-code> --email <email> --somente-mostrar
+deploy/implantar_conta.sh --profile <perfil> --valor pc:<product-code> --email <email>
+```
 
-## Stack
+Tudo começa em dry-run: só a reação a recursos **novos** escreve a tag. Para
+aplicar nos recursos existentes (com consentimento do cliente), ver a seção
+"Como implantar" do documento.
 
-`Python` · `boto3` · `AWS Lambda` · `EventBridge` · `Step Functions` ·
-`SNS` · `CloudTrail` · `IAM` · `AWS SAM` · `CloudFormation` · `pytest` ·
-`cfn-lint` · `LocalStack`
+## Estrutura
 
-## Destaques
+| Caminho | Conteúdo |
+| --- | --- |
+| `deploy/` | `implantar_conta.sh` e `remover_conta.sh` |
+| `aws_prm_tagging/` | Código Python (CLI e Lambdas) |
+| `aws_prm_tagging/infra/` | Templates `template-hub.yaml` e `template-regional.yaml` (SAM) |
+| `aws_prm_tagging/docs/` | `MVP-1.md` (documento principal), arquitetura, produção, plano e histórico |
+| `aws_prm_tagging/test/unit/` | 505 testes automatizados (`python3 -m pytest aws_prm_tagging/test/unit/`) |
+| `aws_prm_tagging/test/GUIA-SANDBOX.md` | Roteiro de validação numa conta de teste |
+| `Makefile` | Build das Lambdas, usado pelo `sam build` |
 
-- Arquitetura event-driven, sem acesso cross-account
-- Detecção de recursos gerenciados por IaC (CloudFormation / Terraform)
-- Mais de 240 testes unitários, 100% offline
-- Validado em conta sandbox com deploy real
-
-## Saiba mais
-
-- [Documentação do projeto](aws_prm_tagging/README.md)
-- [Arquitetura](aws_prm_tagging/docs/arquitetura.md)
-- [Detalhes técnicos do repositório](DETALHES-TECNICOS.md)
+Versão: ver `VERSION`.

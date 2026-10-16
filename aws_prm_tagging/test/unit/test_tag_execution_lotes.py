@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from aws_prm_tagging import tag_execution
 
-TAG_VALUE = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+TAG_VALUE = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 
 
 class _SpyExecutor:

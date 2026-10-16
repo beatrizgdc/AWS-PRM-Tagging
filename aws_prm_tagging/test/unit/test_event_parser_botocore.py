@@ -46,6 +46,10 @@ _EVENT_SOURCE_PARA_BOTOCORE_ID = {
     "kinesisanalytics": "kinesisanalyticsv2",
     "states": "stepfunctions",
     "timestream": "timestream-write",
+    "sms-voice": "pinpoint-sms-voice-v2",
+    "scn": "supplychain",
+    "ses": "sesv2",
+    "bedrock-agentcore": "bedrock-agentcore-control",
 }
 
 # Dois eventNames que compartilham o mesmo eventSource real mas vêm de
@@ -57,6 +61,10 @@ _EVENT_SOURCE_PARA_BOTOCORE_ID = {
 _EVENT_OVERRIDE_PARA_BOTOCORE_ID = {
     ("es.amazonaws.com", "CreateDomain"): "opensearch",
     ("apigateway.amazonaws.com", "CreateApi"): "apigatewayv2",
+    # SES v1 (pacote "ses") e v2 (pacote "sesv2") compartilham o eventSource
+    # "ses.amazonaws.com" — estas duas operações só existem na v1.
+    ("ses.amazonaws.com", "VerifyEmailIdentity"): "ses",
+    ("ses.amazonaws.com", "VerifyDomainIdentity"): "ses",
 }
 
 # Casos confirmados em sandbox (test/manual-live-etapa3/README.md,

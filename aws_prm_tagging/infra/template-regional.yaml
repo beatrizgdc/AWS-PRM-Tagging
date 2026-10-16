@@ -1,0 +1,864 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS PRM Resource Tagging - Etapa 3, stack REGIONAL (item 7 do plano).
+
+  Implantada em TODAS as regiões ativas da conta (+ us-east-1 sempre, única
+  região onde o EventBridge recebe eventos de serviços globais) via
+  StackSet. Contém tudo que é por região: regras do EventBridge, Step
+  Functions (debounce), Lambda, IAM e a DLQ. NÃO contém o tópico SNS — ele
+  vive na stack HUB (template-hub.yaml), uma única vez por conta, e esta
+  stack publica nele pelo ARN montado a partir de HubRegion/HubTopicName.
+  Ordem de deploy: hub primeiro, regional depois. Ver infra/README.md.
+
+Parameters:
+  ExpectedTagValue:
+    Type: String
+    AllowedPattern: "^pc:[A-Za-z0-9]+$"
+    Description: >
+      Valor esperado da tag aws-apn-id para esta conta/sub-OU (formato
+      pc:<product-code>) — StackSet parameter, nunca hardcoded (mesmo
+      princípio já usado em main.py --expected-tag-value).
+
+  DebounceSeconds:
+    Type: Number
+    Default: 1800
+    Description: >
+      Espera (Step Functions Wait) entre o evento de criação do recurso e o
+      processamento de fato — reduz a corrida com ferramentas de IaC que
+      aplicam suas próprias tags pouco depois de criar o recurso. 1800s (30
+      minutos) é o default combinado para o lançamento; ajustável por
+      cliente via parâmetro do StackSet sem mudar código.
+
+  LambdaReservedConcurrency:
+    Type: Number
+    Default: 5
+    Description: >
+      DECISÃO REGISTRADA (valor conservador, não validado contra volume real
+      de criação de recursos em conta de cliente — ajustável depois): limita
+      quantas invocações simultâneas desta função a conta permite, para não
+      contribuir para throttling de API em contas com criação de recursos em
+      rajada (ex.: Auto Scaling). Ver docs/melhorias-futuras.md.
+
+  MaximumEventAgeInSeconds:
+    Type: Number
+    Default: 3600
+    Description: >
+      DECISÃO REGISTRADA (valor conservador, ajustável depois): EventBridge
+      descarta a entrega ao alvo (Step Functions) se não conseguir entregá-la
+      dentro desse tempo. Um evento de criação processado muito tarde já
+      perdeu boa parte do valor de ser reativo — a Etapa 4 (varredura
+      periódica, fora do escopo deste template) é o backstop para o que não
+      for processado a tempo.
+
+  FiltroEscopoTeste:
+    Type: String
+    Default: ""
+    Description: >
+      SÓ PARA CONTA COMPARTILHADA (sandbox). A Etapa 3 não tem dry-run:
+      sem filtro, tagueia qualquer recurso criado na região, por qualquer
+      pessoa. Com termos (separados por vírgula), reage só a eventos cujo
+      principal (ARN do usuário/role) OU cujo ARN de recurso contenha um
+      deles — ex.: "user/fulano,prm-val". Vazio = sem filtro (produção).
+      Também filtra os alertas de drift.
+
+  PublicarResultadoJaOk:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      "false" suprime a publicação no SNS dos resultados "ja_ok" (recurso que
+      já estava com a tag correta). Útil em contas com muita rotação de tasks
+      ECS/Fargate, onde cada task que já nasce com a tag (propagateTags)
+      geraria um e-mail sem informação nova. Default "true" mantém o
+      contrato original (todo resultado é publicado).
+
+  HubRegion:
+    Type: String
+    Default: us-east-1
+    AllowedPattern: "^[a-z]{2}(-[a-z]+)+-[0-9]$"
+    Description: >
+      Região onde a stack HUB (template-hub.yaml) foi implantada — é lá que
+      está o tópico SNS de relatório. Publicar num tópico de outra região
+      funciona apontando o client para a região do ARN (o handler já faz
+      isso), sem Fn::ImportValue cross-region.
+
+  HubTopicName:
+    Type: String
+    Default: prm-compliance
+    Description: >
+      Nome do tópico SNS criado pela stack HUB (parâmetro TopicName de
+      template-hub.yaml). Precisa ser o mesmo nos dois templates.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+
+Resources:
+  # ---------------------------------------------------------------------
+  # Execução da função Lambda — permissões de leitura (Etapa 2b) + escrita
+  # (Etapa 2c) já documentadas em docs/producao.md, mais as permissões
+  # nativas por serviço necessárias além de tag:TagResources (ver docstring
+  # de docs/producao.md, seção Etapa 2c) — só para os serviços do "lote
+  # inicial" com extractor dedicado em event_parser.py. Os demais serviços
+  # mapeados (fallback genérico de extração) vão falhar com AccessDenied até
+  # a permissão nativa correspondente ser adicionada aqui — comportamento
+  # seguro (reportado como erro, nunca uma ação incorreta), não uma lacuna
+  # silenciosa.
+  # ---------------------------------------------------------------------
+  Etapa3ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PrmEtapa3RevalidationRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - eks:ListTagsForResource
+                  - bedrock:ListTagsForResource
+                  - elasticloadbalancing:DescribeTags
+                  # Expansão instância -> volumes EBS anexados (resource_expansion.py):
+                  # o volume root nasce junto com a instância e nunca gera um
+                  # CreateVolume próprio. Somente leitura, sem custo.
+                  - ec2:DescribeInstances
+                Resource: "*"
+        - PolicyName: PrmEtapa3TagWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:TagResources
+                  - eks:TagResource
+                  - bedrock:TagResource
+                  - elasticloadbalancing:AddTags
+                Resource: "*"
+                # Restringe a ÚNICA chave de tag que a Etapa 3 tem motivo
+                # para escrever (aws-apn-id) — mesmo que um bug no código
+                # tentasse escrever outra chave, o IAM bloqueia antes de
+                # chegar na API. `aws:TagKeys` é uma condition key global
+                # suportada pelas APIs de tagging da AWS; NÃO testado em
+                # sandbox contra as ~69 ações nativas abaixo (só confirmado
+                # que a lógica do código sempre escreve 1 única chave) — ver
+                # docs/melhorias-futuras.md.
+                Condition:
+                  ForAllValues:StringEquals:
+                    aws:TagKeys: [aws-apn-id]
+        - PolicyName: PrmEtapa3NativeTagWrite
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  # Uma ação nativa por serviço mapeado (ver event_parser.py
+                  # e event_mapping.py) — tag:TagResources exige essa
+                  # permissão ALÉM de si mesma para o caminho genérico
+                  # (confirmado na doc oficial, ver docs/producao.md). Nomes
+                  # verificados contra o botocore instalado (não vem de
+                  # memória) — ver "Permissões IAM — cobertura real" em
+                  # infra/README.md. CodeBuild não entra aqui de propósito —
+                  # confirmado em sandbox que tag:TagResources sozinho (já
+                  # concedido por PrmEtapa3TagWrite) cobre esse serviço, sem
+                  # ação nativa nenhuma (ver test/manual-live-etapa3/README.md).
+                  - acm:TagResource
+                  - acm-pca:TagCertificateAuthority
+                  - apigateway:TagResource
+                  - appsync:TagResource
+                  - athena:TagResource
+                  - backup:TagResource
+                  - cassandra:TagResource
+                  - clouddirectory:TagResource
+                  - cloudfront:TagResource
+                  - cloudhsm:AddTagsToResource
+                  - codepipeline:TagResource
+                  - cognito-identity:TagResource
+                  - cognito-idp:TagResource
+                  - connect:TagResource
+                  - datapipeline:AddTags
+                  - appstream:TagResource
+                  - bedrock-agentcore:TagResource
+                  - comprehend:TagResource
+                  - datasync:TagResource
+                  - glue:TagResource
+                  - iot:TagResource
+                  - iotsitewise:TagResource
+                  - omics:TagResource
+                  - quicksight:TagResource
+                  - sagemaker:AddTags
+                  - securityhub:TagResource
+                  - dax:TagResource
+                  - workspaces-instances:TagResource
+                  - deadline:TagResource
+                  - directconnect:TagResource
+                  - dms:AddTagsToResource
+                  - ds:AddTagsToResource
+                  - dsql:TagResource
+                  - dynamodb:TagResource
+                  - ec2:CreateTags
+                  - ecr:TagResource
+                  - ecs:TagResource
+                  - elasticache:AddTagsToResource
+                  - elasticbeanstalk:UpdateTagsForResource
+                  - elasticfilesystem:TagResource
+                  - elasticmapreduce:AddTags
+                  - es:AddTags
+                  - finspace:TagResource
+                  - firehose:TagDeliveryStream
+                  - fsx:TagResource
+                  - gamelift:TagResource
+                  - gameliftstreams:TagResource
+                  - glacier:AddTagsToVault
+                  - healthlake:TagResource
+                  - kafka:TagResource
+                  - kendra:TagResource
+                  - kinesis:TagResource
+                  - kinesisanalytics:TagResource
+                  - kinesisvideo:TagResource
+                  - kms:TagResource
+                  - lambda:TagResource
+                  # Confirmado com erro real em sandbox: tag:TagResources
+                  # chama logs:TagResource internamente (a API unificada),
+                  # não logs:TagLogGroup (legada) — as duas existem no
+                  # botocore, então a verificação original (só checar que a
+                  # ação existe) não pegou que essa era a errada das duas.
+                  - logs:TagResource
+                  - m2:TagResource
+                  - mediaconvert:TagResource
+                  - medialive:CreateTags
+                  - mediapackage:TagResource
+                  - medical-imaging:TagResource
+                  - memorydb:TagResource
+                  - mobiletargeting:TagResource
+                  - mq:CreateTags
+                  - network-firewall:TagResource
+                  - networkmanager:TagResource
+                  - payment-cryptography:TagResource
+                  - rds:AddTagsToResource
+                  - redshift:CreateTags
+                  - redshift-serverless:TagResource
+                  - route53:ChangeTagsForResource
+                  - rtbfabric:TagResource
+                  # S3 precisa das DUAS ações, não só Put — confirmado com
+                  # erro real em sandbox (AccessDenied em s3:GetBucketTagging
+                  # mesmo com tag:TagResources + s3:PutBucketTagging já
+                  # concedidos): a implementação de tag:TagResources para
+                  # buckets lê o TagSet atual antes de mesclar/escrever.
+                  - s3:GetBucketTagging
+                  - s3:PutBucketTagging
+                  - scn:TagResource
+                  - secretsmanager:TagResource
+                  - ses:TagResource
+                  - sms-voice:TagResource
+                  - sns:TagResource
+                  - sqs:TagQueue
+                  - ssm:AddTagsToResource
+                  - states:TagResource
+                  - storagegateway:AddTagsToResource
+                  - timestream:TagResource
+                  - transfer:TagResource
+                  - vpc-lattice:TagResource
+                  - workspaces:CreateTags
+                Resource: "*"
+                # Mesma restrição de PrmEtapa3TagWrite acima — só permite
+                # escrever a chave aws-apn-id, mesmo com ~69 ações nativas
+                # diferentes cobertas por esta política. Ver nota lá sobre
+                # não ter sido testado em sandbox contra cada ação.
+                Condition:
+                  ForAllValues:StringEquals:
+                    aws:TagKeys: [aws-apn-id]
+        - PolicyName: PrmEtapa3PublishReport
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Sub "arn:${AWS::Partition}:sns:${HubRegion}:${AWS::AccountId}:${HubTopicName}"
+
+  Etapa3Function:
+    Type: AWS::Serverless::Function
+    Metadata:
+      # `.samignore` NÃO é um mecanismo suportado pelo SAM CLI (confirmado
+      # lendo o código-fonte instalado — nenhuma referência a "samignore"
+      # em lugar nenhum do pacote `samcli`; uma versão anterior deste
+      # template dependia disso e empacotava test/docs/infra/reference (e
+      # qualquer JSON solto de smoke test manual) dentro da Lambda sem
+      # ninguém perceber). `BuildMethod: makefile` é o mecanismo real —
+      # ver `Makefile` na raiz de `CodeUri` (alvo `build-Etapa3Function`),
+      # que copia só os módulos .py do pacote + o CSV oficial em `data/`.
+      BuildMethod: makefile
+    Properties:
+      # CodeUri aponta para o diretório PAI de aws_prm_tagging/ (mesma
+      # exigência de "Onde rodar os comandos" do README raiz) — para que
+      # `aws_prm_tagging.handler_continuous_tagging.handler` seja
+      # importável como pacote dentro da Lambda. O QUE de fato entra no
+      # artefato é decidido pelo Makefile acima, não por tudo que existe
+      # neste diretório.
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_continuous_tagging.handler
+      Role: !GetAtt Etapa3ExecutionRole.Arn
+      ReservedConcurrentExecutions: !Ref LambdaReservedConcurrency
+      Environment:
+        Variables:
+          EXPECTED_TAG_VALUE: !Ref ExpectedTagValue
+          FILTRO_ESCOPO: !Ref FiltroEscopoTeste
+          PUBLICAR_JA_OK: !Ref PublicarResultadoJaOk
+          SNS_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${HubRegion}:${AWS::AccountId}:${HubTopicName}"
+
+  # ---------------------------------------------------------------------
+  # Step Functions Standard — implementa o debounce (Wait) sem manter
+  # nenhum compute ocioso: Standard Workflows cobram por transição de
+  # estado, não por tempo de espera (ver docs/arquitetura.md). SQS não
+  # serviria aqui de qualquer forma: DelaySeconds do SQS tem teto de 15
+  # minutos, menos que os 30 minutos combinados.
+  # ---------------------------------------------------------------------
+  Etapa3StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      DefinitionUri: statemachine/etapa3_delay_e_execucao.asl.json
+      DefinitionSubstitutions:
+        DebounceSeconds: !Ref DebounceSeconds
+        LambdaArn: !GetAtt Etapa3Function.Arn
+        DlqUrl: !Ref Etapa3EventsDlq
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref Etapa3Function
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt Etapa3EventsDlq.QueueName
+
+  # ---------------------------------------------------------------------
+  # Role que o EventBridge assume para iniciar a execução do Step Functions
+  # a partir de cada uma das regras abaixo.
+  # ---------------------------------------------------------------------
+  Etapa3EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartStateMachineExecution
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref Etapa3StateMachine
+
+  # ---------------------------------------------------------------------
+  # Regras de EventBridge — CINCO regras, não uma só. O event pattern de
+  # TODOS os serviços mapeados juntos ultrapassa a quota PADRÃO de 2.048
+  # caracteres por pattern (ajustável via Service Quotas, mas preferimos
+  # caber no default em vez de depender de um aumento de quota replicado em
+  # ~80-90 contas de cliente via StackSet — excelência operacional/de
+  # custo). Cada bloco abaixo é uma cópia exata de
+  # infra/event_pattern.<N>.generated.json — gerados por
+  # `event_mapping.build_event_patterns()`, NUNCA escritos à mão. Cada
+  # alternativa também exige `errorCode` ausente (`{"exists": false}`) —
+  # uma chamada de API que FALHOU (ex.: AccessDenied, nome já em uso) ainda
+  # grava um evento no CloudTrail com o mesmo eventName, mas o recurso nunca
+  # chegou a existir; sem esse filtro, a Etapa 3 gastaria uma invocação
+  # Lambda tentando ler/taguear um ARN inexistente. Se o número de arquivos
+  # gerados mudar (novo serviço mapeado empurra para mais uma regra),
+  # adicione/remova o recurso AWS::Events::Rule correspondente aqui
+  # manualmente — ver infra/README.md.
+  # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # DLQ da região (item 9). Recebe DUAS coisas:
+  #   1. eventos que o EventBridge não conseguiu entregar ao Step Functions
+  #      depois do RetryPolicy (DeadLetterConfig em cada alvo abaixo);
+  #   2. execuções do Step Functions cuja Lambda falhou mesmo depois do
+  #      Retry (estado EnviarParaDlq da state machine).
+  # Sem isso, os dois casos sumiam sem rastro. Custo: praticamente zero (a
+  # fila só recebe mensagem quando algo dá errado; SQS tem free tier de 1M
+  # requisições/mês). Retenção máxima (14 dias) para dar tempo de
+  # investigar. A leitura periódica da DLQ fica para a Etapa 4 (alarme
+  # CloudWatch não pode notificar um SNS de outra região).
+  # ---------------------------------------------------------------------
+  Etapa3EventsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      # Nome FIXO (um por região, então não colide): a varredura recorrente
+      # da Etapa 4 (stack hub) lê a profundidade desta fila em cada região e
+      # usa a existência dela para detectar região ativa sem stack regional.
+      # Ver handler_initial_tagging.NOME_DLQ_REGIONAL.
+      QueueName: prm-etapa3-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  Etapa3EventsDlqPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref Etapa3EventsDlq
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EventBridgeDlq
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt Etapa3EventsDlq.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt Etapa3EventRule0.Arn
+                  - !GetAtt Etapa3EventRule1.Arn
+                  - !GetAtt Etapa3EventRule2.Arn
+                  - !GetAtt Etapa3EventRule3.Arn
+                  - !GetAtt Etapa3EventRule4.Arn
+                  - !GetAtt Etapa3EventRule5.Arn
+                  - !GetAtt Etapa3NativeEc2InstanceRunningRule.Arn
+                  - !GetAtt Etapa3NativeEcsTaskRunningRule.Arn
+                  - !GetAtt Etapa4DriftRule.Arn
+
+  Etapa3EventRule0:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-0"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 0 de 6, ver infra/event_pattern.0.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.acm-pca"]
+            detail: {eventName: ["CreateCertificateAuthority"], errorCode: [{exists: false}]}
+          - source: ["aws.acm"]
+            detail: {eventName: ["RequestCertificate"], errorCode: [{exists: false}]}
+          - source: ["aws.apigateway"]
+            detail: {eventName: ["CreateApi", "CreateRestApi"], errorCode: [{exists: false}]}
+          - source: ["aws.appstream"]
+            detail: {eventName: ["CreateFleet", "CreateImageBuilder"], errorCode: [{exists: false}]}
+          - source: ["aws.appsync"]
+            detail: {eventName: ["CreateGraphqlApi"], errorCode: [{exists: false}]}
+          - source: ["aws.athena"]
+            detail: {eventName: ["CreateDataCatalog", "CreateWorkGroup"], errorCode: [{exists: false}]}
+          - source: ["aws.backup"]
+            detail: {eventName: ["CreateBackupPlan", "CreateBackupVault"], errorCode: [{exists: false}]}
+          - source: ["aws.bedrock-agentcore"]
+            detail: {eventName: ["CreateAgentRuntime", "CreateBrowser", "CreateCodeInterpreter", "CreateGateway", "CreateMemory", "CreateWorkloadIdentity"], errorCode: [{exists: false}]}
+          - source: ["aws.bedrock"]
+            detail: {eventName: ["CreateInferenceProfile"], errorCode: [{exists: false}]}
+          - source: ["aws.cassandra"]
+            detail: {eventName: ["CreateKeyspace", "CreateTable"], errorCode: [{exists: false}]}
+          - source: ["aws.clouddirectory"]
+            detail: {eventName: ["CreateDirectory"], errorCode: [{exists: false}]}
+          - source: ["aws.cloudfront"]
+            detail: {eventName: ["CreateDistribution", "CreateDistribution2020_05_31", "CreateDistributionWithTags", "CreateDistributionWithTags2020_05_31"], errorCode: [{exists: false}]}
+          - source: ["aws.cloudhsm"]
+            detail: {eventName: ["CreateCluster"], errorCode: [{exists: false}]}
+          - source: ["aws.codebuild"]
+            detail: {eventName: ["CreateProject"], errorCode: [{exists: false}]}
+          - source: ["aws.codepipeline"]
+            detail: {eventName: ["CreatePipeline"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa3EventRule1:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-1"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 1 de 6, ver infra/event_pattern.1.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.cognito-identity"]
+            detail: {eventName: ["CreateIdentityPool"], errorCode: [{exists: false}]}
+          - source: ["aws.cognito-idp"]
+            detail: {eventName: ["CreateUserPool"], errorCode: [{exists: false}]}
+          - source: ["aws.comprehend"]
+            detail: {eventName: ["CreateDocumentClassifier", "CreateEndpoint", "CreateEntityRecognizer"], errorCode: [{exists: false}]}
+          - source: ["aws.connect"]
+            detail: {eventName: ["CreateInstance"], errorCode: [{exists: false}]}
+          - source: ["aws.datapipeline"]
+            detail: {eventName: ["CreatePipeline"], errorCode: [{exists: false}]}
+          - source: ["aws.datasync"]
+            detail: {eventName: ["CreateTask"], errorCode: [{exists: false}]}
+          - source: ["aws.dax"]
+            detail: {eventName: ["CreateCluster"], errorCode: [{exists: false}]}
+          - source: ["aws.deadline"]
+            detail: {eventName: ["CreateFarm", "CreateFleet", "CreateQueue"], errorCode: [{exists: false}]}
+          - source: ["aws.directconnect"]
+            detail: {eventName: ["CreateConnection", "CreateDirectConnectGateway"], errorCode: [{exists: false}]}
+          - source: ["aws.dms"]
+            detail: {eventName: ["CreateReplicationInstance", "CreateReplicationTask"], errorCode: [{exists: false}]}
+          - source: ["aws.ds"]
+            detail: {eventName: ["CreateDirectory", "CreateMicrosoftAD"], errorCode: [{exists: false}]}
+          - source: ["aws.dsql"]
+            detail: {eventName: ["CreateCluster"], errorCode: [{exists: false}]}
+          - source: ["aws.dynamodb"]
+            detail: {eventName: ["CreateTable", "RestoreTableFromBackup", "RestoreTableToPointInTime"], errorCode: [{exists: false}]}
+          - source: ["aws.ec2"]
+            detail: {eventName: ["AllocateAddress", "CopySnapshot", "CreateNatGateway", "CreateSnapshot", "CreateSnapshots", "CreateTransitGateway", "CreateVolume", "CreateVpc"], errorCode: [{exists: false}]}
+          - source: ["aws.ecr"]
+            detail: {eventName: ["CreateRepository"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa3EventRule2:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-2"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 2 de 6, ver infra/event_pattern.2.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.ecs"]
+            detail: {eventName: ["CreateCluster", "CreateService"], errorCode: [{exists: false}]}
+          - source: ["aws.eks"]
+            detail: {eventName: ["CreateCluster", "CreateNodegroup"], errorCode: [{exists: false}]}
+          - source: ["aws.elasticache"]
+            detail: {eventName: ["CreateCacheCluster", "CreateReplicationGroup", "CreateServerlessCache"], errorCode: [{exists: false}]}
+          - source: ["aws.elasticbeanstalk"]
+            detail: {eventName: ["CreateApplication", "CreateEnvironment"], errorCode: [{exists: false}]}
+          - source: ["aws.elasticfilesystem"]
+            detail: {eventName: ["CreateFileSystem"], errorCode: [{exists: false}]}
+          - source: ["aws.elasticloadbalancing"]
+            detail: {eventName: ["CreateLoadBalancer"], errorCode: [{exists: false}]}
+          - source: ["aws.elasticmapreduce"]
+            detail: {eventName: ["RunJobFlow"], errorCode: [{exists: false}]}
+          - source: ["aws.es"]
+            detail: {eventName: ["CreateDomain", "CreateElasticsearchDomain"], errorCode: [{exists: false}]}
+          - source: ["aws.finspace"]
+            detail: {eventName: ["CreateEnvironment"], errorCode: [{exists: false}]}
+          - source: ["aws.firehose"]
+            detail: {eventName: ["CreateDeliveryStream"], errorCode: [{exists: false}]}
+          - source: ["aws.fsx"]
+            detail: {eventName: ["CreateFileSystem"], errorCode: [{exists: false}]}
+          - source: ["aws.gamelift"]
+            detail: {eventName: ["CreateFleet"], errorCode: [{exists: false}]}
+          - source: ["aws.gameliftstreams"]
+            detail: {eventName: ["CreateApplication", "CreateStreamGroup"], errorCode: [{exists: false}]}
+          - source: ["aws.glacier"]
+            detail: {eventName: ["CreateVault"], errorCode: [{exists: false}]}
+          - source: ["aws.glue"]
+            detail: {eventName: ["CreateCrawler", "CreateJob"], errorCode: [{exists: false}]}
+          - source: ["aws.healthlake"]
+            detail: {eventName: ["CreateFHIRDatastore"], errorCode: [{exists: false}]}
+          - source: ["aws.iot"]
+            detail: {eventName: ["CreateBillingGroup"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa3EventRule3:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-3"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 3 de 6, ver infra/event_pattern.3.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.iotsitewise"]
+            detail: {eventName: ["CreateAsset", "CreateAssetModel", "CreateGateway"], errorCode: [{exists: false}]}
+          - source: ["aws.kafka"]
+            detail: {eventName: ["CreateClusterV2"], errorCode: [{exists: false}]}
+          - source: ["aws.kendra"]
+            detail: {eventName: ["CreateIndex"], errorCode: [{exists: false}]}
+          - source: ["aws.kinesis"]
+            detail: {eventName: ["CreateStream"], errorCode: [{exists: false}]}
+          - source: ["aws.kinesisanalytics"]
+            detail: {eventName: ["CreateApplication"], errorCode: [{exists: false}]}
+          - source: ["aws.kinesisvideo"]
+            detail: {eventName: ["CreateStream"], errorCode: [{exists: false}]}
+          - source: ["aws.kms"]
+            detail: {eventName: ["CreateKey"], errorCode: [{exists: false}]}
+          - source: ["aws.lambda"]
+            detail: {eventName: ["CreateFunction", "CreateFunction20150331"], errorCode: [{exists: false}]}
+          - source: ["aws.logs"]
+            detail: {eventName: ["CreateLogGroup"], errorCode: [{exists: false}]}
+          - source: ["aws.m2"]
+            detail: {eventName: ["CreateApplication", "CreateEnvironment"], errorCode: [{exists: false}]}
+          - source: ["aws.mediaconvert"]
+            detail: {eventName: ["CreateQueue"], errorCode: [{exists: false}]}
+          - source: ["aws.medialive"]
+            detail: {eventName: ["CreateChannel"], errorCode: [{exists: false}]}
+          - source: ["aws.mediapackage"]
+            detail: {eventName: ["CreateChannel"], errorCode: [{exists: false}]}
+          - source: ["aws.medical-imaging"]
+            detail: {eventName: ["CreateDatastore"], errorCode: [{exists: false}]}
+          - source: ["aws.memorydb"]
+            detail: {eventName: ["CreateCluster"], errorCode: [{exists: false}]}
+          - source: ["aws.mobiletargeting"]
+            detail: {eventName: ["CreateApp"], errorCode: [{exists: false}]}
+          - source: ["aws.mq"]
+            detail: {eventName: ["CreateBroker"], errorCode: [{exists: false}]}
+          - source: ["aws.network-firewall"]
+            detail: {eventName: ["CreateFirewall"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa3EventRule4:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-4"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 4 de 6, ver infra/event_pattern.4.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.networkmanager"]
+            detail: {eventName: ["CreateCoreNetwork", "CreateGlobalNetwork"], errorCode: [{exists: false}]}
+          - source: ["aws.omics"]
+            detail: {eventName: ["CreateReferenceStore", "CreateSequenceStore", "CreateWorkflow"], errorCode: [{exists: false}]}
+          - source: ["aws.payment-cryptography"]
+            detail: {eventName: ["CreateKey"], errorCode: [{exists: false}]}
+          - source: ["aws.pinpoint"]
+            detail: {eventName: ["CreateApp"], errorCode: [{exists: false}]}
+          - source: ["aws.quicksight"]
+            detail: {eventName: ["CreateDashboard", "CreateDataSet", "CreateDataSource", "CreateTemplate", "RegisterUser"], errorCode: [{exists: false}]}
+          - source: ["aws.rds"]
+            detail: {eventName: ["CreateDBCluster", "CreateDBClusterSnapshot", "CreateDBInstance", "CreateDBInstanceReadReplica", "CreateDBSnapshot", "RestoreDBClusterFromS3", "RestoreDBClusterFromSnapshot", "RestoreDBClusterToPointInTime", "RestoreDBInstanceFromDBSnapshot", "RestoreDBInstanceFromS3", "RestoreDBInstanceToPointInTime"], errorCode: [{exists: false}]}
+          - source: ["aws.redshift-serverless"]
+            detail: {eventName: ["CreateWorkgroup"], errorCode: [{exists: false}]}
+          - source: ["aws.redshift"]
+            detail: {eventName: ["CreateCluster"], errorCode: [{exists: false}]}
+          - source: ["aws.resiliencehub"]
+            detail: {eventName: ["CreateApp"], errorCode: [{exists: false}]}
+          - source: ["aws.route53"]
+            detail: {eventName: ["CreateHostedZone"], errorCode: [{exists: false}]}
+          - source: ["aws.rtbfabric"]
+            detail: {eventName: ["CreateRequesterGateway", "CreateResponderGateway"], errorCode: [{exists: false}]}
+          - source: ["aws.s3"]
+            detail: {eventName: ["CreateBucket"], errorCode: [{exists: false}]}
+          - source: ["aws.sagemaker"]
+            detail: {eventName: ["CreateApp", "CreateDomain", "CreateEndpoint", "CreateNotebookInstance"], errorCode: [{exists: false}]}
+          - source: ["aws.scn"]
+            detail: {eventName: ["CreateInstance"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa3EventRule5:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-criacao-5"
+      Description: "PRM Etapa 3 - deteccao de criacao de recurso (grupo 5 de 6, ver infra/event_pattern.5.generated.json)"
+      State: ENABLED
+      EventPattern:
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        $or:
+          - source: ["aws.secretsmanager"]
+            detail: {eventName: ["CreateSecret"], errorCode: [{exists: false}]}
+          - source: ["aws.securityhub"]
+            detail: {eventName: ["EnableSecurityHub"], errorCode: [{exists: false}]}
+          - source: ["aws.ses"]
+            detail: {eventName: ["CreateConfigurationSet", "CreateEmailIdentity", "CreateTenant", "VerifyDomainIdentity", "VerifyEmailIdentity"], errorCode: [{exists: false}]}
+          - source: ["aws.sms-voice"]
+            detail: {eventName: ["CreateConfigurationSet", "CreatePool", "RequestPhoneNumber", "RequestSenderId"], errorCode: [{exists: false}]}
+          - source: ["aws.sns"]
+            detail: {eventName: ["CreateTopic"], errorCode: [{exists: false}]}
+          - source: ["aws.sqs"]
+            detail: {eventName: ["CreateQueue"], errorCode: [{exists: false}]}
+          - source: ["aws.ssm"]
+            detail: {eventName: ["CreateOpsItem"], errorCode: [{exists: false}]}
+          - source: ["aws.states"]
+            detail: {eventName: ["CreateStateMachine"], errorCode: [{exists: false}]}
+          - source: ["aws.storagegateway"]
+            detail: {eventName: ["CreateCachediSCSIVolume", "CreateNFSFileShare", "CreateSMBFileShare", "CreateStorediSCSIVolume"], errorCode: [{exists: false}]}
+          - source: ["aws.timestream"]
+            detail: {eventName: ["CreateDatabase"], errorCode: [{exists: false}]}
+          - source: ["aws.transfer"]
+            detail: {eventName: ["CreateServer"], errorCode: [{exists: false}]}
+          - source: ["aws.vpc-lattice"]
+            detail: {eventName: ["CreateServiceNetwork"], errorCode: [{exists: false}]}
+          - source: ["aws.workspaces-instances"]
+            detail: {eventName: ["CreateWorkspaceInstance"], errorCode: [{exists: false}]}
+          - source: ["aws.workspaces"]
+            detail: {eventName: ["CreateWorkspaces"], errorCode: [{exists: false}]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  # ---------------------------------------------------------------------
+  # Regra de evento NATIVO do EC2 (não CloudTrail) — cobre instâncias de
+  # QUALQUER origem (RunInstances, CreateFleet/Karpenter, Auto Scaling com
+  # MixedInstancesPolicy/Spot, node groups do EKS) e NÃO depende de uma
+  # trail do CloudTrail. Substitui o antigo `RunInstances` nas regras de
+  # CloudTrail. Pattern = event_mapping.NATIVE_EVENT_PATTERNS
+  # ["ec2_instance_running"] (guarda de deriva em
+  # test/unit/test_infra_event_patterns.py). Também dispara quando uma
+  # instância parada é iniciada — a revalidação da Etapa 2c torna isso
+  # idempotente (resultado `ja_ok`, sem escrita).
+  # ---------------------------------------------------------------------
+  Etapa3NativeEc2InstanceRunningRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-ec2-running"
+      Description: "PRM Etapa 3 - instancia EC2 entrou em running (evento nativo, qualquer origem)"
+      State: ENABLED
+      EventPattern:
+        source: ["aws.ec2"]
+        detail-type: ["EC2 Instance State-change Notification"]
+        detail: {state: ["running"]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  # Item 14 — pattern = event_mapping.NATIVE_EVENT_PATTERNS["ecs_task_running"].
+  # Tagueia a TASK via ecs:TagResource (nunca ecs:UpdateService — decisão
+  # de 2026-09-30); ligar propagateTags vira recomendação (recomendacoes.py).
+  Etapa3NativeEcsTaskRunningRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa3-ecs-task-running"
+      Description: "PRM Etapa 3 - task ECS Fargate entrou em RUNNING (evento nativo, item 14)"
+      State: ENABLED
+      EventPattern:
+        source: ["aws.ecs"]
+        detail-type: ["ECS Task State Change"]
+        detail: {lastStatus: ["RUNNING"], desiredStatus: ["RUNNING"], launchType: ["FARGATE"]}
+      Targets:
+        - Id: Etapa3StateMachineTarget
+          Arn: !Ref Etapa3StateMachine
+          RoleArn: !GetAtt Etapa3EventBridgeInvokeRole.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  # ---------------------------------------------------------------------
+  # Etapa 4 — alerta de drift/remoção da tag quase em tempo real.
+  # Pattern = event_mapping.DRIFT_EVENT_PATTERN (guarda de deriva em
+  # test_infra_event_patterns.py). Alvo é a Lambda direto (sem debounce):
+  # o handler relê o estado do recurso antes de alertar. Só alerta —
+  # reaplicar fica com a varredura recorrente (stack hub). Reaproveita a
+  # role da Etapa 3 (mesmas leituras de tag + sns:Publish no hub).
+  # ---------------------------------------------------------------------
+  Etapa4DriftFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_drift.handler
+      Role: !GetAtt Etapa3ExecutionRole.Arn
+      Environment:
+        Variables:
+          EXPECTED_TAG_VALUE: !Ref ExpectedTagValue
+          FILTRO_ESCOPO: !Ref FiltroEscopoTeste
+          SNS_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${HubRegion}:${AWS::AccountId}:${HubTopicName}"
+
+  Etapa4DriftRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-prm-etapa4-drift"
+      Description: "PRM Etapa 4 - remocao/substituicao de tags (alerta de drift da aws-apn-id)"
+      State: ENABLED
+      EventPattern:
+        detail-type: ["AWS API Call via CloudTrail"]
+        detail:
+          eventName:
+            - prefix: Untag
+            - prefix: RemoveTags
+            - DeleteTags
+            - PutBucketTagging
+            - DeleteBucketTagging
+            - ChangeTagsForResource
+            - UpdateTagsForResource
+          errorCode: [{exists: false}]
+      Targets:
+        - Id: Etapa4DriftTarget
+          Arn: !GetAtt Etapa4DriftFunction.Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: !Ref MaximumEventAgeInSeconds
+          DeadLetterConfig:
+            Arn: !GetAtt Etapa3EventsDlq.Arn
+
+  Etapa4DriftInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Etapa4DriftFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Etapa4DriftRule.Arn
+
+Outputs:
+  HubTopicArn:
+    Description: "Tópico SNS (na stack HUB) onde esta região publica os resultados."
+    Value: !Sub "arn:${AWS::Partition}:sns:${HubRegion}:${AWS::AccountId}:${HubTopicName}"
+
+  Etapa3EventsDlqUrl:
+    Description: "DLQ desta região — eventos que o EventBridge não conseguiu entregar e execuções que falharam."
+    Value: !Ref Etapa3EventsDlq
+
+  Etapa3StateMachineArn:
+    Value: !Ref Etapa3StateMachine
+
+  Etapa3FunctionArn:
+    Value: !GetAtt Etapa3Function.Arn

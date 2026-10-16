@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from aws_prm_tagging import decision
 
-EXPECTED = "pc:xxxxxxxxxxxxxxxxxxxxxxxxx"
+EXPECTED = "pc:5ugbbrmu7ud3u5hsipfzug61p"
 OUTRO_EXPECTED = "pc:outrocontrato123"
 
 

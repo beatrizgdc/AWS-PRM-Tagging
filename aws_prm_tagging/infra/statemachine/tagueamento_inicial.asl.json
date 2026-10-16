@@ -1,0 +1,77 @@
+{
+  "Comment": "PRM - tagueamento inicial (item 8, disparado pelo Custom Resource) e varredura recorrente (Etapa 4, disparada pelo EventBridge Scheduler) - mesma logica, campo origem diferencia. Uma execucao da Lambda por regiao; falha de uma regiao e publicada no SNS e nao interrompe as demais.",
+  "StartAt": "ListarRegioes",
+  "States": {
+    "ListarRegioes": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ListarRegioesArn}",
+        "Payload.$": "$"
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "PorRegiao"
+    },
+    "PorRegiao": {
+      "Type": "Map",
+      "ItemsPath": "$.regioes",
+      "MaxConcurrency": 4,
+      "ItemSelector": {
+        "regiao.$": "$$.Map.Item.Value",
+        "modo.$": "$.modo",
+        "origem.$": "$.origem"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {"Mode": "INLINE"},
+        "StartAt": "ProcessarRegiao",
+        "States": {
+          "ProcessarRegiao": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${ProcessarRegiaoArn}",
+              "Payload.$": "$"
+            },
+            "OutputPath": "$.Payload",
+            "Retry": [
+              {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 4,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.erro",
+                "Next": "PublicarFalhaDaRegiao"
+              }
+            ],
+            "End": true
+          },
+          "PublicarFalhaDaRegiao": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sns:publish",
+            "Parameters": {
+              "TopicArn": "${TopicArn}",
+              "Subject": "PRM tagueamento inicial - FALHA em uma regiao",
+              "Message.$": "States.JsonToString($)"
+            },
+            "ResultPath": null,
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

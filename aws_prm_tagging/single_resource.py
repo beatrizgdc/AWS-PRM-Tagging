@@ -31,7 +31,6 @@ conhecido (veio do evento), então o caso não se aplica.
 from __future__ import annotations
 
 import boto3
-from botocore.exceptions import ClientError
 
 from .iac_detection import detect_iac
 from .retry import with_backoff

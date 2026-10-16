@@ -562,7 +562,7 @@ recurso (`eventSource`/`eventName` do CloudTrail), indexada pela mesma
 com o CSV (testada em `test_event_mapping.py`): toda entrada do CSV precisa
 ter uma linha aqui, mesmo que `None` (ainda não mapeada).
 
-**Cobertura**: hoje cobre **69 dos ~85** serviços do CSV (92 eventos) —
+**Cobertura** (atualizada em 2026-10-02): **90 dos 92** códigos de serviço do CSV (94 linhas) — os 2 restantes (DRS e CodeStar) ficam sem evento por decisão, ver event_mapping.py. Histórico: a versão original cobria 69 dos ~85, com
 `eventSource`/`eventName` de cada linha checados contra o `botocore`
 instalado (`session.get_service_model(...)`, que dá o nome exato de cada
 operação e o `signingName`/`endpointPrefix` real de cada serviço), não só
@@ -586,7 +586,7 @@ quando um único pattern ultrapassaria a quota padrão de 2.048 caracteres do
 EventBridge (hoje, 5 regras — ver [infra/README.md](../infra/README.md)).
 `python3 -m aws_prm_tagging.event_mapping` (do diretório pai) regrava
 `infra/event_pattern.<N>.generated.json` — a única forma de manter
-`infra/template.yaml` sincronizado com esta tabela, já que o CloudFormation
+`infra/template-regional.yaml` sincronizado com esta tabela, já que o CloudFormation
 não tem como incluir um JSON externo dentro de `EventPattern` (dois testes,
 `test_event_mapping.py` e `test_infra_event_patterns.py`, travam qualquer
 divergência).

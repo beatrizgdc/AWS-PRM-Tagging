@@ -51,6 +51,22 @@
     },
     {
       "source": [
+        "aws.appstream"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateFleet",
+          "CreateImageBuilder"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
         "aws.appsync"
       ],
       "detail": {
@@ -88,6 +104,26 @@
         "eventName": [
           "CreateBackupPlan",
           "CreateBackupVault"
+        ],
+        "errorCode": [
+          {
+            "exists": false
+          }
+        ]
+      }
+    },
+    {
+      "source": [
+        "aws.bedrock-agentcore"
+      ],
+      "detail": {
+        "eventName": [
+          "CreateAgentRuntime",
+          "CreateBrowser",
+          "CreateCodeInterpreter",
+          "CreateGateway",
+          "CreateMemory",
+          "CreateWorkloadIdentity"
         ],
         "errorCode": [
           {
@@ -148,7 +184,10 @@
       ],
       "detail": {
         "eventName": [
-          "CreateDistribution"
+          "CreateDistribution",
+          "CreateDistribution2020_05_31",
+          "CreateDistributionWithTags",
+          "CreateDistributionWithTags2020_05_31"
         ],
         "errorCode": [
           {
@@ -190,66 +229,6 @@
     {
       "source": [
         "aws.codepipeline"
-      ],
-      "detail": {
-        "eventName": [
-          "CreatePipeline"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.cognito-identity"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateIdentityPool"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.cognito-idp"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateUserPool"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.connect"
-      ],
-      "detail": {
-        "eventName": [
-          "CreateInstance"
-        ],
-        "errorCode": [
-          {
-            "exists": false
-          }
-        ]
-      }
-    },
-    {
-      "source": [
-        "aws.datapipeline"
       ],
       "detail": {
         "eventName": [

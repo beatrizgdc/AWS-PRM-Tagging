@@ -68,10 +68,31 @@ def test_build_event_pattern_agrupa_por_event_source_via_or():
         assert alternativa["detail"]["eventName"], f"eventName vazio para '{fonte}'"
 
 
-def test_build_event_pattern_cobre_ec2_run_instances():
+def test_instancias_ec2_vem_pelo_evento_nativo_nao_pelo_cloudtrail():
+    """Instâncias passaram a ser detectadas pelo evento NATIVO "EC2 Instance
+    State-change Notification" (cobre RunInstances, CreateFleet/Karpenter,
+    ASG com MixedInstancesPolicy e não depende de trail). `RunInstances`
+    NÃO pode voltar para o pattern de CloudTrail — geraria processamento e
+    notificação em dobro para cada instância."""
     pattern = event_mapping.build_event_pattern()
     alternativa_ec2 = next(alt for alt in pattern["$or"] if alt["source"] == ["aws.ec2"])
-    assert "RunInstances" in alternativa_ec2["detail"]["eventName"]
+    assert "RunInstances" not in alternativa_ec2["detail"]["eventName"]
+    assert "CreateFleet" not in alternativa_ec2["detail"]["eventName"]
+
+    nativo = event_mapping.NATIVE_EVENT_PATTERNS["ec2_instance_running"]
+    assert nativo["source"] == ["aws.ec2"]
+    assert nativo["detail-type"] == ["EC2 Instance State-change Notification"]
+    assert nativo["detail"] == {"state": ["running"]}
+
+
+def test_lambda_e_cloudfront_incluem_nome_versionado_do_cloudtrail():
+    """Regressão do bug real: o CloudTrail grava `CreateFunction20150331` —
+    com só `CreateFunction` a regra nunca casava."""
+    pattern = event_mapping.build_event_pattern()
+    por_fonte = {alt["source"][0]: alt["detail"]["eventName"] for alt in pattern["$or"]}
+    assert "CreateFunction20150331" in por_fonte["aws.lambda"]
+    assert "CreateDistribution2020_05_31" in por_fonte["aws.cloudfront"]
+    assert "CreateDistributionWithTags" in por_fonte["aws.cloudfront"]
 
 
 def test_build_event_patterns_respeita_o_limite_de_tamanho():

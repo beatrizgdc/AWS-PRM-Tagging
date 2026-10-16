@@ -259,6 +259,10 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
         "motivo": motivo,
         "tag_similar_encontrada": tag_similar_encontrada,
         "tag_similar_chaves": list(resource.get("tag_similar_chaves", [])),
+        # Campos opcionais da Etapa 1 (item 13) — repassados sem afetar a
+        # decisão; ausentes em relatórios antigos.
+        "servico_faturamento": resource.get("servico_faturamento") or servico,
+        "cluster_eks": resource.get("cluster_eks"),
         "iac": {
             "tipo": iac["tipo"],
             "detectado": iac["tipo"] in _IAC_DETECTADO,

@@ -2,7 +2,7 @@
 
 Este documento cobre a camada de orquestração acima da execução por conta
 descrita em [producao.md](producao.md): como a automação PRM é distribuída
-para os ~80-90 clientes da EMPRESAX, cada um com sua própria AWS Organization
+para os ~80-90 clientes da Darede, cada um com sua própria AWS Organization
 isolada. `producao.md` responde "como rodar contra uma conta"; este
 documento responde "como entregar isso em todas as contas de todos os
 clientes, e como manter isso funcionando quando a estrutura de contas
@@ -15,14 +15,14 @@ execução do StackSet descrito abaixo. Esta decisão informa como as Etapas
 
 ## Contexto de negócio
 
-A EMPRESAX é uma parceira de consultoria AWS com múltiplos produtos de suporte
+A Darede é uma parceira de consultoria AWS com múltiplos produtos de suporte
 (MSP, FinOps, CaaS etc.) e aproximadamente 80-90 clientes, cada um com sua
-própria AWS Organization separada. A EMPRESAX tem acesso administrativo a
+própria AWS Organization separada. A Darede tem acesso administrativo a
 todas as contas payer desses clientes.
 
 Escopo confirmado: este projeto trata exclusivamente da tag exigida pelo
 PRM (`aws-apn-id` = `pc:<product-code>`). Não é uma iniciativa de governança
-de tags mais ampla da EMPRESAX.
+de tags mais ampla da Darede.
 
 ## Modelo de execução
 
@@ -38,12 +38,12 @@ Organizations de cada cliente.
 - **Reporte por push**: cada conta envia métricas/eventos para um destino
   central (Zabbix — ver seção "Dashboard central" abaixo), sem necessidade
   de acesso cross-account de leitura. Isso é o que permite ao modelo escalar
-  para ~80-90 Organizations sem a EMPRESAX precisar assumir role em cada uma
+  para ~80-90 Organizations sem a Darede precisar assumir role em cada uma
   para ler resultados.
 - **Pré-requisito único por cliente**: habilitar trusted access do
   StackSets com Organizations na conta payer daquele cliente. Isso é
   scriptável — feito uma vez por cliente, usando o acesso administrativo que
-  a EMPRESAX já tem à payer, antes do primeiro deploy do StackSet. (Validar o
+  a Darede já tem à payer, antes do primeiro deploy do StackSet. (Validar o
   comando exato/service principal contra a documentação AWS vigente no
   momento da implementação — o mecanismo é `organizations:EnableAWSServiceAccess`
   com o principal do serviço StackSets, via console CloudFormation > StackSets
@@ -58,7 +58,7 @@ Organizations de cada cliente.
 ## Estrutura de clientes/contratos
 
 - Sub-OUs geralmente separam **unidades de negócio/agências** dentro de um
-  cliente (ex.: CLIENTE-X -> MARCA-A, MARCA-B), **não ambientes** — muitos clientes
+  cliente (ex.: JBS -> Seara, Friboi), **não ambientes** — muitos clientes
   mantêm produção e desenvolvimento na mesma conta. Isso é consistente com a
   decisão de escopo de ambiente abaixo (tagueia-se tudo, sem distinção
   prod/dev).
@@ -78,7 +78,7 @@ Organizations de cada cliente.
   gerenciamento de cada cliente. Essa árvore é o insumo usado para decidir em
   qual sub-OU mirar cada instância do StackSet.
 - **Em aberto**: a fonte do mapeamento "qual nó da árvore de OUs pertence a
-  qual contrato/produto EMPRESAX" é informação de negócio, ainda a confirmar
+  qual contrato/produto Darede" é informação de negócio, ainda a confirmar
   com o gestor. `ou_tree.py` entrega a estrutura; a ligação estrutura →
   contrato não está automatizada e não deve ser assumida — é dado externo a
   este projeto até essa fonte ser definida.
@@ -117,7 +117,7 @@ ambiente é necessário em nenhuma etapa da automação.
    duas fontes:
    - uma **lista mestra de todos os clientes** (fonte interna, ainda a
      definir);
-   - uma **checagem ativa periódica**, usando credenciais de admin da EMPRESAX
+   - uma **checagem ativa periódica**, usando credenciais de admin da Darede
      contra cada payer da lista mestra, verificando se o trusted access do
      StackSets está habilitado e se o StackSet tem instância implantada. É a
      única parte de toda a arquitetura que usa acesso administrativo
@@ -137,9 +137,9 @@ si, que já está implementada e testada para 1/2a/2b/2c:
 | 1 — Mapeamento (`map`) | Descoberta somente-leitura, JSON de saída | CLI local/manual (estado atual deste repositório) |
 | 2a — Decisão (`decide`) | Classifica cada recurso em `taguear`/`pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` | CLI local/manual (estado atual deste repositório) |
 | 2b — Tagueamento, dry-run (`apply`) | Simula a chamada de API por recurso `taguear`, sem escrever | CLI local/manual (estado atual deste repositório) |
-| 2c — Tagueamento, execução real (`apply --live`) | Chama as APIs de escrita de verdade | CLI local/manual (estado atual deste repositório); ainda não validada contra sandbox nem com a lista completa de permissões IAM nativas por serviço — ver [producao.md](producao.md#permissões-iam-para-a-etapa-2c-apply---live-execução-real) |
-| 3 — Automação contínua | EventBridge + Step Functions (debounce) + Lambda reagindo a criação de recursos, validando tag existente antes de agir | Implementada para 69 dos ~85 serviços do CSV (código + suíte de testes em `test/unit/`, incluindo verificação estrutural contra o botocore real + template SAM em `infra/`) — **validada em sandbox em duas rodadas** (2026-09-23/24: deploy real + eventos CloudTrail reais, 5 bugs corrigidos; 2026-09-25: reconfirmação da revalidação em lote, do filtro de `errorCode` no EventBridge e da condição `aws:TagKeys`, sem necessidade de novo ajuste). Ver [infra/README.md](../infra/README.md) e [melhorias-futuras.md](melhorias-futuras.md) para o que falta mesclar na stack única e as pendências registradas. |
-| 4 — Varredura recorrente e auditoria | Repete a lógica da Etapa 1 periodicamente; alerta de drift/remoção via CloudTrail + EventBridge + SNS (near real-time) com a varredura periódica como backstop; verificação de SCP e de tag policies do Organizations (pendente aprovação do cliente); alimenta o dashboard | Ainda não implementada — Lambda agendada (EventBridge Scheduler) dentro da stack do StackSet |
+| 2c — Tagueamento, execução real (`apply --live`) | Chama as APIs de escrita de verdade | CLI local/manual — **validada na sandbox real em 2026-10-02** (10 cenários, inclusive SQS, ECR e DynamoDB; `test/manual-live-lote2/validar_etapa2c.sh`) e embutida no tagueamento inicial/varredura da stack hub (Lambda) |
+| 3 — Automação contínua | EventBridge + Step Functions (debounce) + Lambda reagindo a criação de recursos, validando tag existente antes de agir | Implementada para **90 dos 92** códigos de serviço do CSV (stack regional, `infra/template-regional.yaml`) — **validada na sandbox real em 2026-10-02** (Lambda, DynamoDB, IoT, S3, drift e DLQ; ver docs/plano-finalizacao.md) |
+| 4 — Varredura recorrente e auditoria | Repete a Etapa 1 → 2c periodicamente (backstop, `dry-run`/`live`); alerta de drift/remoção via CloudTrail + EventBridge + SNS (near real-time, só alerta); verificação de SCP e de tag policies do Organizations (`auditar-org`, conta de gerenciamento, pendente aprovação do cliente); alerta de mudança na lista oficial (`verificar-csv`, central); alimenta o dashboard via SNS | **Implementada (Lote 4, 2026-09-30)** — EventBridge Scheduler na stack hub (mesma state machine do tagueamento inicial) + Lambda de drift na stack regional + 2 subcomandos de CLI. Ver infra/README.md e docs/plano-finalizacao.md. |
 
 As Etapas 1-2c hoje só rodam como CLI local, encadeadas manualmente por
 quem executa (a saída em arquivo de uma alimenta a entrada da próxima) —
@@ -147,7 +147,7 @@ nenhuma delas está empacotada como Lambda ainda. A Etapa 3 já é (ver acima)
 — reaproveita os módulos de `aws_prm_tagging/` (em particular
 `decision.py`, `tag_execution.py`, mais os módulos próprios `event_mapping.py`/
 `event_parser.py`/`single_resource.py`/`publish.py`) diretamente como parte
-do pacote de deploy da função Lambda (`infra/template.yaml`, `CodeUri`
+do pacote de deploy da função Lambda (`infra/template-regional.yaml`, `CodeUri`
 apontando para o pacote inteiro — não uma Lambda Layer separada; migrar
 para Layer compartilhada entre as futuras funções das Etapas 1/2/4 fica
 para quando a stack única for montada de verdade, ver
@@ -162,7 +162,7 @@ Etapas 2b/2c como Lambda — ver [melhorias-futuras.md](melhorias-futuras.md).
 
 Decisões de negócio/rollout, específicas desta camada multi-cliente:
 
-- Fonte do mapeamento cliente/OU -> contrato/produto EMPRESAX.
+- Fonte do mapeamento cliente/OU -> contrato/produto Darede.
 - Lista mestra de clientes para o registro de rollout.
 - Quais dos ~80-90 clientes estão de fato em escopo.
 - Verificação de SCP e de tag policies do Organizations relacionadas à

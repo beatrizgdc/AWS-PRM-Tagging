@@ -1,31 +1,94 @@
 # Infraestrutura da Etapa 3 (automação contínua)
 
-Template AWS SAM (`template.yaml`) que empacota a Etapa 3 — detecção de
-criação de recurso via EventBridge, debounce via Step Functions, tagueamento
-real reaproveitando `decision.py` (Etapa 2a) e `tag_execution.py` (Etapa
-2c). Ver [docs/arquitetura.md](../docs/arquitetura.md) para o desenho
-completo e as decisões registradas.
+Dois templates (split do item 7 do plano, implementado em 2026-09-30):
 
-## Escopo — o que ESTE template não é
+| Template | Onde | Conteúdo |
+|---|---|---|
+| `template-hub.yaml` (SAM) | **1 vez por conta**, numa região (a "região hub") | Tópico SNS de relatório (`TopicName`, default `prm-compliance`) + assinatura de e-mail + **tagueamento inicial** (item 8: Custom Resource → Step Functions → uma Lambda por região) |
+| `template-regional.yaml` (SAM) | **Toda região ativa + `us-east-1` sempre** | Lambda, Step Functions (debounce), 6 regras de EventBridge, IAM, DLQ (SQS) |
 
-A arquitetura de destino é **uma única stack CloudFormation por conta
-cliente**, implantada via StackSet (ver
-[docs/arquitetura-multicliente.md](../docs/arquitetura-multicliente.md)),
-cobrindo:
+Por que `us-east-1` sempre: é a única região onde o EventBridge recebe
+eventos de serviços globais (Route 53, CloudFront) — confirmado em sandbox.
+Por que o tópico fica fora da stack regional: é peça única por conta
+(Etapa 3, tagueamento inicial e Etapa 4 publicam no mesmo lugar); a stack regional
+publica nele pelo ARN montado a partir de `HubRegion` + `HubTopicName`,
+sem `Fn::ImportValue` cross-region.
 
-- Etapa 1/2 — Custom Resource disparando mapeamento + tagueamento inicial na
-  criação da stack. **Não implementado ainda** (nenhum código de
-  empacotamento Lambda existe para isso hoje).
-- Etapa 3 — este template.
-- Etapa 4 — varredura recorrente/drift. **Não implementado ainda.**
+**Antes de implantar numa conta**, rode o preflight (somente leitura):
 
-Este `template.yaml` é implantável sozinho (para testar a Etapa 3 isolada
-numa conta sandbox), mas **não é a stack final**. Quando as Etapas 1/2/4
-forem implementadas, os recursos aqui (função Lambda, tópico SNS, IAM,
-Step Functions, regras de EventBridge) devem ser **mesclados** numa única
-stack — em particular, `PrmComplianceTopic` (o tópico SNS) deve ficar numa
-seção compartilhada e nunca duplicado por etapa, já que a Etapa 4 vai
-publicar no mesmo tópico (ver `publish.py`).
+```bash
+python3 -m aws_prm_tagging.main preflight --profile <perfil> --output prm_preflight.json
+```
+
+Ele devolve a lista de regiões para o StackSet regional e avisa se falta
+uma trail do CloudTrail registrando eventos de escrita (sem ela, as regras
+"AWS API Call via CloudTrail" não recebem eventos — só a regra nativa de
+EC2 funciona).
+
+## Rollout via StackSets (ordem)
+
+1. StackSet **hub** (`template-hub.yaml`), 1 região por conta.
+2. `sam build --template-file aws_prm_tagging/infra/template-regional.yaml`
+   + `sam package` para gerar o template com o código no S3 (StackSet não
+   aceita artefato local), e StackSet **regional** com as regiões do
+   preflight e os parâmetros `ExpectedTagValue` (override por sub-OU),
+   `HubRegion` e `HubTopicName`.
+3. Trusted access do StackSets com Organizations na payer do cliente
+   (pré-requisito, ver docs/arquitetura-multicliente.md).
+
+Roteiro de validação na sandbox (deploy manual com `sam deploy` em 2
+regiões, sem StackSet): `test/manual-live-lote2/README.md`, Parte B.
+
+## Tagueamento inicial (item 8)
+
+No `Create` da stack hub, o Custom Resource inicia a state machine
+`TagueamentoInicialStateMachine` e responde ao CloudFormation na hora (o
+tagueamento pode durar bem mais que a 1h de um Custom Resource). A state
+machine lista as regiões ativas e roda, em paralelo (até 4), uma Lambda
+por região com a Etapa 1 → 2a → 2b/2c completa (`pipeline.executar_regiao`
+— a mesma função do CLI). Cada região publica um resumo no tópico; falha
+de uma região (ex.: estouro dos 15 min) é publicada e não interrompe as
+outras.
+
+- `ModoTagueamentoInicial`: `dry-run` (default), `live`, `desligado`.
+- Rodar de novo: mudar `ReexecutarTagueamentoInicial`. Trocar só o modo
+  **não** dispara execução (evita escrita acidental num update).
+- `Delete` da stack nunca remove tags.
+- IAM da Lambda: mesma leitura documentada em `docs/producao.md` e mesma
+  escrita da Etapa 3 (com `aws:TagKeys`) — `test_tagueamento_inicial.py`
+  trava divergência entre os dois templates.
+
+## Etapa 4 — varredura recorrente e drift
+
+- **Varredura recorrente (hub)**: `VarreduraRecorrenteSchedule`
+  (EventBridge Scheduler, `AgendaVarredura`, default `rate(1 day)`) inicia
+  a MESMA state machine do tagueamento inicial com
+  `origem=varredura_recorrente`. `ModoVarreduraRecorrente`: `dry-run`
+  (default), `live` (reaplica a tag onde sumiu) ou `desligado` (sem
+  agendamento). Cada região só publica quando há novidade (algo a
+  taguear, conflito, tag similar, falha, mensagem na DLQ, região ativa
+  sem stack regional, `ContratoConfirmado=false`);
+  `PublicarVarreduraSemNovidade=true` publica sempre (heartbeat).
+- **Drift quase em tempo real (regional)**: `Etapa4DriftRule` →
+  `Etapa4DriftFunction`. Pattern em `event_mapping.DRIFT_EVENT_PATTERN`
+  (`Untag*`, `RemoveTags*`, `DeleteTags`, `Put/DeleteBucketTagging`,
+  `ChangeTagsForResource`, `UpdateTagsForResource`). Só alerta
+  (`drift_tag_removida`/`drift_tag_alterada`, com o principal que fez a
+  chamada), depois de reler o estado atual do recurso; não reaplica.
+- **DLQ com nome fixo** `prm-etapa3-dlq`: é por ela que a varredura lê a
+  profundidade da fila e detecta região sem stack regional.
+
+## DLQ (item 9)
+
+Cada região tem uma fila `Etapa3EventsDlq` (retenção de 14 dias) que
+recebe: (1) eventos que o EventBridge não conseguiu entregar ao Step
+Functions depois do `RetryPolicy` (`DeadLetterConfig` em todo alvo), e (2)
+execuções cuja Lambda falhou mesmo após o `Retry` (estado `Catch` →
+`EnviarParaDlq` → `FalhaRegistradaNaDlq`). A política da fila autoriza
+exatamente as regras da stack — `test_infra_event_patterns.py` trava
+qualquer regra nova sem entrada na política. Leitura periódica da DLQ fica
+para a Etapa 4 (um alarme do CloudWatch não pode notificar um SNS de outra
+região).
 
 ## Por que várias regras de EventBridge, não uma só
 
@@ -63,21 +126,42 @@ python3 -m aws_prm_tagging.event_mapping
 projeto, ver ["Onde rodar os comandos"](../README.md#onde-rodar-os-comandos)).
 Isso regrava `infra/event_pattern.<N>.generated.json`.
 
-**Depois disso, um passo manual**: o CloudFormation não tem como incluir um
+**Atualizado (2026-09-30):** o mesmo comando agora também **sincroniza
+automaticamente** os blocos `EventPattern` das regras `Etapa3EventRule<N>`
+já existentes em `template-regional.yaml` (`event_mapping.sync_template_event_patterns`).
+Só continua manual adicionar/remover um recurso `AWS::Events::Rule` quando
+o NÚMERO de patterns mudar.
+
+## Regra de evento nativo do EC2
+
+`Etapa3NativeEc2InstanceRunningRule` escuta "EC2 Instance State-change
+Notification" (`running`) — não é um evento de CloudTrail e **não depende
+de trail**. Substitui o antigo `RunInstances` e cobre instâncias de
+qualquer origem (CreateFleet/Karpenter, Auto Scaling com Spot/tipos
+mistos, node groups do EKS). O handler expande cada instância para os
+volumes EBS anexados (`resource_expansion.py`, via `ec2:DescribeInstances`).
+Pattern em `event_mapping.NATIVE_EVENT_PATTERNS`, com guarda de deriva em
+`test/unit/test_infra_event_patterns.py`.
+
+**Pré-requisito de produção:** as demais regras (CloudTrail) só recebem
+eventos se a conta tiver uma trail ativa registrando eventos de
+gerenciamento — ver `docs/plano-finalizacao.md`, achado A3.
+
+**Contexto histórico**: o CloudFormation não tem como incluir um
 JSON externo dentro de `AWS::Events::Rule.EventPattern` (ao contrário de
 `AWS::Serverless::StateMachine`, que usa `DefinitionUri` para o Step
-Functions). Os blocos `EventPattern` em `template.yaml` precisam ser colados
+Functions). Os blocos `EventPattern` em `template-regional.yaml` precisam ser colados
 manualmente a partir dos arquivos gerados. Dois testes existem justamente
 para nunca deixar isso divergir em silêncio:
 
 - `test/unit/test_event_mapping.py::test_arquivos_gerados_em_infra_nao_estao_desatualizados`
   — os arquivos gerados batem com `event_mapping.py` agora.
 - `test/unit/test_infra_event_patterns.py` — os blocos `EventPattern` de
-  `template.yaml` batem com os arquivos gerados.
+  `template-regional.yaml` batem com os arquivos gerados.
 
 Se o número de arquivos gerados mudar (uma nova regra é necessária),
 adicione/remova o recurso `AWS::Events::Rule` correspondente em
-`template.yaml` manualmente (copiando o `EventPattern` de
+`template-regional.yaml` manualmente (copiando o `EventPattern` de
 `event_pattern.<N>.generated.json`) — os dois testes acima apontam
 exatamente quando isso é necessário.
 
@@ -102,12 +186,12 @@ visível no console (a assinatura aparece, mas nunca confirmada) em vez de
 inexistente.
 
 **Trocar o e-mail padrão é UM ÚNICO lugar**: o valor de `Default` do
-parâmetro `NotificationEmail` em `infra/template.yaml` (seção
+parâmetro `NotificationEmail` em `infra/template-hub.yaml` (seção
 `Parameters`). Duas formas de usar isso:
 
 - **Trocar o default permanentemente** (todo deploy que não passar
   `--parameter-overrides` explícito usa o novo valor): editar essa única
-  linha em `template.yaml` e commitar.
+  linha em `template-regional.yaml` e commitar.
 - **Sobrescrever só num deploy específico**, sem tocar no template (ex.:
   um e-mail diferente por cliente/ambiente):
   ```bash
@@ -171,7 +255,7 @@ de verdade):
   própria Lambda, ao criar seu log group na primeira execução, gerou um
   evento `CreateLogGroup` real que a Etapa 3 processou e tentou taguear.
 
-Ambas corrigidas em `template.yaml` e reconfirmadas com um segundo smoke
+Ambas corrigidas em `template-regional.yaml` e reconfirmadas com um segundo smoke
 test depois do redeploy.
 
 ## Restrição de chave de tag (`aws:TagKeys`)
@@ -195,9 +279,13 @@ real.
 ## Build e deploy
 
 ```bash
-# do diretório uso-geral/tag/ (contém o Makefile e aws_prm_tagging/)
-sam build --template-file aws_prm_tagging/infra/template.yaml
-sam deploy --guided
+# do diretório que contém o Makefile e aws_prm_tagging/
+sam build --template-file aws_prm_tagging/infra/template-hub.yaml
+sam deploy --stack-name prm-hub --region <regiao-hub> --resolve-s3 --capabilities CAPABILITY_IAM \
+  --parameter-overrides NotificationEmail=<email> ExpectedTagValue=pc:<code> ModoTagueamentoInicial=dry-run
+sam build --template-file aws_prm_tagging/infra/template-regional.yaml
+sam deploy --stack-name prm-regional --region <cada-regiao> --resolve-s3 --capabilities CAPABILITY_IAM \
+  --parameter-overrides ExpectedTagValue=pc:<code> HubRegion=<regiao-hub>
 ```
 
 **Validado localmente (sem tocar em conta real) E contra uma conta sandbox

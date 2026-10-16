@@ -1,0 +1,488 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS PRM Resource Tagging - stack HUB (itens 7 e 8 do plano). Implantada UMA
+  vez por conta, numa única região (a "região hub"), ANTES das stacks
+  regionais. Contém o que é único por conta: o tópico SNS de relatório e o
+  TAGUEAMENTO INICIAL assíncrono (Custom Resource -> Step Functions ->
+  uma Lambda por região), que roda a Etapa 1 -> 2a -> 2b/2c em todas as
+  regiões ativas quando a stack é criada.
+
+Parameters:
+  TopicName:
+    Type: String
+    Default: prm-compliance
+    AllowedPattern: "^[A-Za-z0-9_-]{1,256}$"
+    Description: >
+      Nome FIXO do tópico (não derivado do nome da stack) — as stacks
+      regionais montam o ARN a partir dele (parâmetro HubTopicName). Os dois
+      precisam ser iguais.
+
+  NotificationEmail:
+    Type: String
+    Default: teste@exemplo.com
+    Description: >
+      E-mail assinado no tópico. O default é um PLACEHOLDER — a assinatura
+      fica em "PendingConfirmation" até alguém usar um endereço real e
+      clicar no link de confirmação que a AWS envia.
+
+  ExpectedTagValue:
+    Type: String
+    AllowedPattern: "^pc:[A-Za-z0-9]+$"
+    Description: "Valor da tag aws-apn-id (pc:<product code>) — o mesmo das stacks regionais."
+
+  ModoTagueamentoInicial:
+    Type: String
+    Default: dry-run
+    AllowedValues: [dry-run, live, desligado]
+    Description: >
+      dry-run (default): roda a Etapa 1 -> 2a -> 2b em todas as regiões e
+      publica no tópico o que SERIA feito, sem escrever nada. live: aplica a
+      tag (Etapa 2c, com revalidação). desligado: não roda. O guia PRM exige
+      consentimento do cliente antes de taguear — por isso live nunca é o
+      default.
+
+  ReexecutarTagueamentoInicial:
+    Type: String
+    Default: "1"
+    Description: >
+      Mudar este valor (ex.: "2") num update da stack roda o tagueamento
+      inicial de novo — ex.: depois de revisar um dry-run, trocar o modo para
+      live E mudar este valor.
+
+  # --- Etapa 4: varredura recorrente ---
+  ModoVarreduraRecorrente:
+    Type: String
+    Default: dry-run
+    AllowedValues: [dry-run, live, desligado]
+    Description: >
+      Etapa 4. dry-run (default): repete a Etapa 1 -> 2a -> 2b em todas as
+      regiões e reporta drift/cobertura sem escrever. live: reaplica a tag
+      onde ela sumiu (backstop da Etapa 3). desligado: sem agendamento.
+
+  AgendaVarredura:
+    Type: String
+    Default: rate(1 day)
+    Description: "Expressão do EventBridge Scheduler (rate(...) ou cron(...))."
+
+  ContratoConfirmado:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Conta que herdou o contrato (ExpectedTagValue) pelo default da OU via
+      auto-deployment do StackSet fica "false" até alguém confirmar que o
+      contrato é o certo para ela — vai em todo resumo publicado
+      (docs/arquitetura-multicliente.md).
+
+  PublicarVarreduraSemNovidade:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      "false": a varredura só publica o resumo de uma região quando há
+      novidade (algo a taguear, conflito, tag similar, falha, mensagem na
+      DLQ, região sem stack regional, contrato não confirmado). "true":
+      publica sempre (útil quando um consumidor do tópico precisa de
+      heartbeat diário).
+
+  RegioesVarredura:
+    Type: String
+    Default: ""
+    Description: >
+      Lista separada por vírgula (ex.: us-east-2) para restringir o
+      tagueamento inicial e a varredura recorrente a essas regiões. Vazio
+      (default) = todas as regiões ativas da conta.
+
+Conditions:
+  VarreduraAgendada: !Not [!Equals [!Ref ModoVarreduraRecorrente, desligado]]
+
+Resources:
+  PrmComplianceTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref TopicName
+      DisplayName: "AWS PRM - eventos de compliance de tagging"
+
+  PrmComplianceEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref PrmComplianceTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # ---------------------------------------------------------------------
+  # Tagueamento inicial (item 8)
+  # ---------------------------------------------------------------------
+  TagueamentoInicialRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        # Leitura: MESMA política documentada em docs/producao.md (Etapa 1 +
+        # descoberta nativa + preflight/recomendações). Guarda de deriva em
+        # test/unit/test_infra_hub.py.
+        - PolicyName: PrmTagueamentoInicialLeitura
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - acm:ListCertificates
+                  - apigateway:GET
+                  - autoscaling:DescribeAutoScalingGroups
+                  - backup:ListBackupVaults
+                  - bedrock:ListInferenceProfiles
+                  - bedrock:ListTagsForResource
+                  - cloudfront:ListDistributions
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetEventSelectors
+                  - cloudtrail:GetTrailStatus
+                  - codebuild:ListProjects
+                  - codepipeline:ListPipelines
+                  - dax:DescribeClusters
+                  - drs:DescribeReplicationConfigurationTemplates
+                  - dynamodb:ListTables
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeInstances
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeNatGateways
+                  - ec2:DescribeRegions
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeTransitGateways
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeVpnConnections
+                  - ecr:DescribeRepositories
+                  - ecs:DescribeServices
+                  - ecs:ListClusters
+                  - ecs:ListServices
+                  - ecs:ListTasks
+                  - eks:DescribeCluster
+                  - eks:DescribeNodegroup
+                  - eks:ListClusters
+                  - eks:ListNodegroups
+                  - elasticache:DescribeCacheClusters
+                  - elasticache:DescribeReplicationGroups
+                  - elasticache:DescribeServerlessCaches
+                  - elasticbeanstalk:DescribeEnvironments
+                  - elasticfilesystem:DescribeFileSystems
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTags
+                  - elasticmapreduce:ListClusters
+                  - es:ListDomainNames
+                  - firehose:ListDeliveryStreams
+                  - fsx:DescribeFileSystems
+                  - glue:ListJobs
+                  - iot:ListBillingGroups
+                  - iot:ListTagsForResource
+                  - iot:ListThings
+                  - kafka:ListClustersV2
+                  - kinesis:ListStreams
+                  - kms:DescribeKey
+                  - kms:ListKeys
+                  - lambda:ListFunctions
+                  - logs:DescribeLogGroups
+                  - memorydb:DescribeClusters
+                  - mq:ListBrokers
+                  - network-firewall:ListFirewalls
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBInstances
+                  - redshift:DescribeClusters
+                  - route53:ListHostedZones
+                  - s3:GetBucketLocation
+                  - s3:ListAllMyBuckets
+                  - sagemaker:ListEndpoints
+                  - sagemaker:ListNotebookInstances
+                  - secretsmanager:ListSecrets
+                  - sns:ListTopics
+                  - sqs:ListQueues
+                  - states:ListStateMachines
+                  - sts:GetCallerIdentity
+                  - tag:GetResources
+                  - transfer:ListServers
+                  - workspaces:DescribeWorkspaces
+                Resource: "*"
+        # Escrita: MESMAS ações da Lambda da Etapa 3 (template-regional.yaml),
+        # com a mesma restrição aws:TagKeys = [aws-apn-id].
+        # Releitura antes de escrever (revalidação da 2c) — MESMAS ações de
+        # PrmEtapa3RevalidationRead da stack regional. Faltava
+        # eks:ListTagsForResource: 2 node groups/clusters EKS "falhou" na
+        # varredura da sandbox em 2026-10-02.
+        - PolicyName: PrmTagueamentoInicialRevalidacao
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - eks:ListTagsForResource
+                  - bedrock:ListTagsForResource
+                  - elasticloadbalancing:DescribeTags
+                  - ec2:DescribeInstances
+                Resource: "*"
+        - PolicyName: PrmTagueamentoInicialEscritaGenerica
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:TagResources
+                  - eks:TagResource
+                  - bedrock:TagResource
+                  - elasticloadbalancing:AddTags
+                Resource: "*"
+                Condition:
+                  ForAllValues:StringEquals:
+                    aws:TagKeys: [aws-apn-id]
+        - PolicyName: PrmTagueamentoInicialEscritaNativa
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - acm:TagResource
+                  - acm-pca:TagCertificateAuthority
+                  - apigateway:TagResource
+                  - appsync:TagResource
+                  - athena:TagResource
+                  - backup:TagResource
+                  - cassandra:TagResource
+                  - clouddirectory:TagResource
+                  - cloudfront:TagResource
+                  - cloudhsm:AddTagsToResource
+                  - codepipeline:TagResource
+                  - cognito-identity:TagResource
+                  - cognito-idp:TagResource
+                  - connect:TagResource
+                  - datapipeline:AddTags
+                  - appstream:TagResource
+                  - bedrock-agentcore:TagResource
+                  - comprehend:TagResource
+                  - datasync:TagResource
+                  - glue:TagResource
+                  - iot:TagResource
+                  - iotsitewise:TagResource
+                  - omics:TagResource
+                  - quicksight:TagResource
+                  - sagemaker:AddTags
+                  - securityhub:TagResource
+                  - dax:TagResource
+                  - workspaces-instances:TagResource
+                  - deadline:TagResource
+                  - directconnect:TagResource
+                  - dms:AddTagsToResource
+                  - ds:AddTagsToResource
+                  - dsql:TagResource
+                  - dynamodb:TagResource
+                  - ec2:CreateTags
+                  - ecr:TagResource
+                  - ecs:TagResource
+                  - elasticache:AddTagsToResource
+                  - elasticbeanstalk:UpdateTagsForResource
+                  - elasticfilesystem:TagResource
+                  - elasticmapreduce:AddTags
+                  - es:AddTags
+                  - finspace:TagResource
+                  - firehose:TagDeliveryStream
+                  - fsx:TagResource
+                  - gamelift:TagResource
+                  - gameliftstreams:TagResource
+                  - glacier:AddTagsToVault
+                  - healthlake:TagResource
+                  - kafka:TagResource
+                  - kendra:TagResource
+                  - kinesis:TagResource
+                  - kinesisanalytics:TagResource
+                  - kinesisvideo:TagResource
+                  - kms:TagResource
+                  - lambda:TagResource
+                  - logs:TagResource
+                  - m2:TagResource
+                  - mediaconvert:TagResource
+                  - medialive:CreateTags
+                  - mediapackage:TagResource
+                  - medical-imaging:TagResource
+                  - memorydb:TagResource
+                  - mobiletargeting:TagResource
+                  - mq:CreateTags
+                  - network-firewall:TagResource
+                  - networkmanager:TagResource
+                  - payment-cryptography:TagResource
+                  - rds:AddTagsToResource
+                  - redshift:CreateTags
+                  - redshift-serverless:TagResource
+                  - route53:ChangeTagsForResource
+                  - rtbfabric:TagResource
+                  - s3:GetBucketTagging
+                  - s3:PutBucketTagging
+                  - scn:TagResource
+                  - secretsmanager:TagResource
+                  - ses:TagResource
+                  - sms-voice:TagResource
+                  - sns:TagResource
+                  - sqs:TagQueue
+                  - ssm:AddTagsToResource
+                  - states:TagResource
+                  - storagegateway:AddTagsToResource
+                  - timestream:TagResource
+                  - transfer:TagResource
+                  - vpc-lattice:TagResource
+                  - workspaces:CreateTags
+                Resource: "*"
+                Condition:
+                  ForAllValues:StringEquals:
+                    aws:TagKeys: [aws-apn-id]
+        - PolicyName: PrmVarreduraSaudeRegional
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Etapa 4: profundidade da DLQ de cada stack regional (nome fixo).
+              - Effect: Allow
+                Action:
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                Resource: !Sub "arn:${AWS::Partition}:sqs:*:${AWS::AccountId}:prm-etapa3-dlq"
+        - PolicyName: PrmTagueamentoInicialPublicar
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref PrmComplianceTopic
+
+  ListarRegioesFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_initial_tagging.listar_regioes
+      Runtime: python3.12
+      Timeout: 60
+      Role: !GetAtt TagueamentoInicialRole.Arn
+      Environment:
+        Variables:
+          REGIOES_PERMITIDAS: !Ref RegioesVarredura
+
+  ProcessarRegiaoFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_initial_tagging.processar_regiao
+      Runtime: python3.12
+      # Máximo da Lambda. Uma região por invocação; se uma conta tiver uma
+      # região grande demais para 15 min, a state machine publica a falha
+      # daquela região e quem opera roda o CLI (map/decide/apply --regioes).
+      Timeout: 900
+      MemorySize: 1024
+      Role: !GetAtt TagueamentoInicialRole.Arn
+      Environment:
+        Variables:
+          EXPECTED_TAG_VALUE: !Ref ExpectedTagValue
+          SNS_TOPIC_ARN: !Ref PrmComplianceTopic
+          CONTRATO_CONFIRMADO: !Ref ContratoConfirmado
+          PUBLICAR_SEM_NOVIDADE: !Ref PublicarVarreduraSemNovidade
+
+  TagueamentoInicialStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/tagueamento_inicial.asl.json
+      DefinitionSubstitutions:
+        ListarRegioesArn: !GetAtt ListarRegioesFunction.Arn
+        ProcessarRegiaoArn: !GetAtt ProcessarRegiaoFunction.Arn
+        TopicArn: !Ref PrmComplianceTopic
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ListarRegioesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessarRegiaoFunction
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt PrmComplianceTopic.TopicName
+
+  TagueamentoInicialCRFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_initial_tagging.custom_resource
+      Runtime: python3.12
+      Timeout: 60
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref TagueamentoInicialStateMachine
+      Policies:
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt TagueamentoInicialStateMachine.Name
+
+  TagueamentoInicial:
+    Type: Custom::PrmTagueamentoInicial
+    Properties:
+      ServiceToken: !GetAtt TagueamentoInicialCRFunction.Arn
+      Modo: !Ref ModoTagueamentoInicial
+      Reexecutar: !Ref ReexecutarTagueamentoInicial
+
+  # ---------------------------------------------------------------------
+  # Etapa 4 — varredura recorrente: a MESMA state machine do tagueamento
+  # inicial, disparada pelo EventBridge Scheduler com origem diferente.
+  # ---------------------------------------------------------------------
+  VarreduraSchedulerRole:
+    Type: AWS::IAM::Role
+    Condition: VarreduraAgendada
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: IniciarVarredura
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref TagueamentoInicialStateMachine
+
+  VarreduraRecorrenteSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: VarreduraAgendada
+    Properties:
+      Description: "PRM Etapa 4 - varredura recorrente (Etapa 1 -> 2a -> 2b/2c em todas as regioes ativas)"
+      ScheduleExpression: !Ref AgendaVarredura
+      FlexibleTimeWindow:
+        Mode: FLEXIBLE
+        MaximumWindowInMinutes: 60
+      Target:
+        Arn: !Ref TagueamentoInicialStateMachine
+        RoleArn: !GetAtt VarreduraSchedulerRole.Arn
+        Input: !Sub '{"modo": "${ModoVarreduraRecorrente}", "origem": "varredura_recorrente"}'
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+
+Outputs:
+  PrmComplianceTopicArn:
+    Description: "Tópico de relatório central (Etapa 3, tagueamento inicial e Etapa 4)."
+    Value: !Ref PrmComplianceTopic
+  HubRegion:
+    Description: "Informar este valor no parâmetro HubRegion das stacks regionais."
+    Value: !Ref AWS::Region
+  TagueamentoInicialExecutionArn:
+    Description: "Execução do Step Functions disparada (vazio se desligado)."
+    Value: !GetAtt TagueamentoInicial.ExecutionArn

@@ -61,6 +61,7 @@ def _build_resource(
     tags: dict,
     expected_tag_value: str,
     tipo_recurso: str | None = None,
+    cluster_eks: str | None = None,
 ) -> dict:
     status_tag, valor_encontrado = get_tag_status(tags, expected_tag_value)
     iac = detect_iac(tags)
@@ -75,7 +76,25 @@ def _build_resource(
         "tag_similar_encontrada": bool(tag_similar_chaves),
         "tag_similar_chaves": tag_similar_chaves,
         "iac": iac,
+        # Item 13 do plano: node/volume/load balancer de EKS são COBRADOS
+        # como Amazon EC2 / Elastic Load Balancing, não como Amazon EKS. O
+        # campo `servico` continua "Amazon EKS" (é ele que roteia a API de
+        # escrita e o escopo em decision.py); este campo é só para o
+        # relatório/dashboard somar o gasto no serviço certo — o mesmo
+        # rótulo que a Etapa 3 já produz para um node novo.
+        "servico_faturamento": _SERVICO_FATURAMENTO_EKS.get(tipo_recurso, servico)
+        if servico == _SERVICO_EKS_NOME
+        else servico,
+        "cluster_eks": cluster_eks,
     }
+
+
+_SERVICO_EKS_NOME = "Amazon EKS"
+_SERVICO_FATURAMENTO_EKS = {
+    TIPO_RECURSO_NODE: "Amazon EC2",
+    TIPO_RECURSO_EBS_VOLUME: "Amazon EC2",
+    TIPO_RECURSO_LOAD_BALANCER: "Elastic Load Balancing",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +630,7 @@ def discover_eks_resources(
                 cluster.get("tags", {}),
                 expected_tag_value,
                 tipo_recurso=TIPO_RECURSO_CLUSTER,
+                cluster_eks=cluster_name,
             )
         )
 
@@ -655,6 +675,7 @@ def discover_eks_resources(
                     nodegroup.get("tags", {}),
                     expected_tag_value,
                     tipo_recurso=TIPO_RECURSO_NODE_GROUP,
+                    cluster_eks=cluster_name,
                 )
             )
             for asg in nodegroup.get("resources", {}).get("autoScalingGroups", []):
@@ -673,7 +694,13 @@ def discover_eks_resources(
         for arn, tags in _instances_arns_and_tags(ec2_client, account_id, region, instance_ids):
             results.append(
                 _build_resource(
-                    arn, servico_nome, region, tags, expected_tag_value, tipo_recurso=TIPO_RECURSO_NODE
+                    arn,
+                    servico_nome,
+                    region,
+                    tags,
+                    expected_tag_value,
+                    tipo_recurso=TIPO_RECURSO_NODE,
+                    cluster_eks=cluster_name,
                 )
             )
         for arn, tags in _volumes_arns_and_tags(ec2_client, account_id, region, instance_ids):
@@ -685,6 +712,7 @@ def discover_eks_resources(
                     tags,
                     expected_tag_value,
                     tipo_recurso=TIPO_RECURSO_EBS_VOLUME,
+                    cluster_eks=cluster_name,
                 )
             )
 
@@ -697,6 +725,7 @@ def discover_eks_resources(
                     tags,
                     expected_tag_value,
                     tipo_recurso=TIPO_RECURSO_LOAD_BALANCER,
+                    cluster_eks=cluster_name,
                 )
             )
 

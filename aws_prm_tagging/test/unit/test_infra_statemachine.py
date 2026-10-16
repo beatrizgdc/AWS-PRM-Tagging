@@ -6,7 +6,7 @@ Language (ASL).
 O arquivo no repositório NÃO é JSON válido por si só — tem placeholders
 `${DebounceSeconds}`/`${LambdaArn}` que só viram JSON válido depois da
 substituição que o CloudFormation faz via `DefinitionSubstitutions` (ver
-`infra/template.yaml`). Este teste faz essa mesma substituição com valores
+`infra/template-regional.yaml`). Este teste faz essa mesma substituição com valores
 de exemplo antes de validar, para não precisar depender do CloudFormation
 nem de nenhuma chamada de API."""
 from __future__ import annotations
@@ -21,6 +21,7 @@ _ASL_PATH = (
 _SUBSTITUICOES_DE_EXEMPLO = {
     "DebounceSeconds": "1800",
     "LambdaArn": "arn:aws:lambda:us-east-1:000000000000:function:exemplo",
+    "DlqUrl": "https://sqs.us-east-1.amazonaws.com/000000000000/dlq",
 }
 
 
@@ -67,6 +68,10 @@ def test_todo_estado_terminal_ou_tem_next_ou_e_terminal():
     definicao = _carregar_definicao()
     for nome, estado in definicao["States"].items():
         tipo = estado.get("Type")
+        if tipo == "Choice":
+            # Pela ASL, Choice não tem Next/End: segue por Choices/Default.
+            assert estado.get("Choices") and "Default" in estado, f"Choice '{nome}' sem Choices/Default"
+            continue
         e_terminal_por_tipo = tipo in ("Succeed", "Fail")
         tem_next = "Next" in estado
         tem_end_true = estado.get("End") is True
@@ -99,3 +104,33 @@ def test_retry_do_lambda_invoke_tem_campos_obrigatorios():
         assert isinstance(retry["IntervalSeconds"], int)
         assert isinstance(retry["MaxAttempts"], int)
         assert isinstance(retry["BackoffRate"], (int, float))
+
+
+def test_falha_da_lambda_vai_para_a_dlq_e_termina_em_fail():
+    """Item 9: depois do Retry, qualquer erro da Lambda é capturado, o evento
+    original (+ erro) vai para a DLQ e a execução termina como falha
+    (visível no console/métricas do Step Functions)."""
+    definicao = _carregar_definicao()
+    tarefa = definicao["States"]["ProcessarRecursoRecemCriado"]
+    captura = tarefa["Catch"][0]
+    assert captura["ErrorEquals"] == ["States.ALL"]
+    envio = definicao["States"][captura["Next"]]
+    assert envio["Resource"] == "arn:aws:states:::sqs:sendMessage"
+    assert envio["Parameters"]["QueueUrl"].startswith("https://sqs.")
+    assert definicao["States"][envio["Next"]]["Type"] == "Fail"
+
+
+def test_task_ecs_pula_o_debounce_e_o_resto_espera():
+    """Item 14: `ECS Task State Change` vai direto para a Lambda; qualquer
+    outro evento passa pelo Wait do debounce."""
+    definicao = _carregar_definicao()
+    escolha = definicao["States"][definicao["StartAt"]]
+    assert escolha["Type"] == "Choice"
+    regra = escolha["Choices"][0]
+    condicoes = {(c["Variable"], next(k for k in c if k != "Variable")): next(v for k, v in c.items() if k != "Variable") for c in regra["And"]}
+    assert condicoes[("$.detail-type", "StringEquals")] == "ECS Task State Change"
+    # Regressão: sem IsPresent, um evento sem detail-type quebra o Choice com
+    # States.Runtime ANTES da Lambda — erro não capturado, evento fora da DLQ.
+    assert condicoes[("$.detail-type", "IsPresent")] is True
+    assert definicao["States"][regra["Next"]]["Type"] == "Task"
+    assert definicao["States"][escolha["Default"]]["Type"] == "Wait"
