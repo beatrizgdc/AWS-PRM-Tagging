@@ -1,66 +1,26 @@
-"""Extração do(s) recurso(s) recém-criado(s) a partir de um evento do
-EventBridge (formato "AWS API Call via CloudTrail" — ver `event_mapping.py`
-para como o event pattern que entrega esses eventos é construído).
+"""Extrai os recursos recém-criados de um evento do EventBridge.
 
-Módulo puro: nenhuma chamada de rede — só leitura do payload do evento já
-recebido pela Lambda. Quando o payload não é suficiente para montar um ARN
-com confiança, a função devolve lista vazia — não há fallback de API aqui
-(isso fica a cargo do chamador, ver `docs/melhorias-futuras.md`: por ora,
-falha de extração é só logada, sem chamada de API adicional; a Etapa 4
-continua sendo o backstop).
+Módulo puro: só lê o payload do evento, sem chamadas de rede. Sem dados
+suficientes para montar o ARN com confiança, devolve lista vazia (a falha é
+logada pelo handler e a Etapa 4 é o backstop).
 
-## Por que `parse_creation_event` devolve uma LISTA
+`parse_creation_event` devolve uma lista porque há APIs de lote
+(`RunInstances`, `CreateWorkspaces`): um evento pode criar N recursos.
 
-Algumas APIs de criação são de lote — `ec2:RunInstances` pode criar várias
-instâncias numa única chamada (`responseElements.instancesSet.items` é uma
-lista), `workspaces:CreateWorkspaces` idem. Um único evento de CloudTrail
-pode então corresponder a N recursos, não só 1 — o handler da Etapa 3 (ver
-`handler_continuous_tagging.py`) itera sobre essa lista e processa cada
-recurso independentemente.
+Extração:
 
-## Dois níveis de confiança na extração — e por que existe um terceiro, mais
-## fino, dentro do próprio nível "dedicado"
+1. Extractors dedicados (`_REGISTRY`), com caminhos conferidos contra os
+   shapes do botocore (`test_event_parser_botocore.py`).
+2. Fallback genérico (`_extract_generic`) para um evento mapeado sem
+   extractor: procura uma chave terminada em "arn" em `responseElements`,
+   nunca inventa ARN.
 
-1. **Extractors dedicados** (`_REGISTRY` abaixo) — para os serviços mapeados
-   em `event_mapping.py`. Cada campo/caminho usado foi checado contra o
-   shape real da operação no `botocore` instalado localmente (não vem só de
-   memória) — ver `event_mapping.py` para o processo de verificação.
-2. **Fallback genérico best-effort** (`_extract_generic`) — só para o raro
-   caso de um evento mapeado sem entrada em `_REGISTRY` (não deveria
-   acontecer com a tabela atual, mas existe como rede de segurança):
-   procura recursivamente por uma chave terminando em "arn" dentro de
-   `responseElements`; nunca inventa um ARN.
-
-Dentro do nível "dedicado", uma distinção adicional importa: o *protocolo*
-de API de cada serviço determina se a capitalização exata do shape do
-botocore é uma boa aposta para o `responseElements` real do CloudTrail.
-
-- **Serviços `json`/`rest-json`/`smithy-rpc-v2-cbor`** (a grande maioria
-  dos mapeados): a experiência documentada é que o CloudTrail preserva os
-  nomes de campo tal como a própria API os devolve — usamos `_direct`/
-  `_constructed` com a capitalização exata do botocore, alta confiança.
-- **Serviços `query`/`ec2`/`rest-xml`** (`ec2`, `rds`, `elasticache`,
-  `redshift`, `elasticbeanstalk`, `sns`, `s3`, `route53`, `cloudfront`,
-  `elasticloadbalancing`/elbv2): o CloudTrail historicamente aplica uma
-  conversão XML→JSON com convenção própria (tipicamente primeira letra
-  minúscula) — usamos `_direct_ci`/`_constructed_ci` (tenta a capitalização
-  exata E a variante com a primeira letra minúscula) para esses, ou, onde
-  possível, preferimos construir o ARN a partir de `requestParameters`
-  (mais simples, menos superfície de erro) em vez de confiar num campo de
-  resposta com capitalização incerta. `ec2` especificamente tem uma
-  estrutura própria adicional bem conhecida (`"instancesSet": {"items":
-  [...]}`) tratada em extractors dedicados, não pelos helpers genéricos.
-
-**8 dos 9 serviços de protocolo `query`/`ec2`/`rest-xml` já foram
-validados contra um evento CloudTrail real capturado em sandbox**
-(2026-09-23/24) — achou e corrigiu 3 bugs reais (RDS `CreateDBInstance`,
-ElastiCache `CreateCacheCluster`, Elastic Beanstalk `CreateApplication`);
-confirmou S3, SNS, Route 53, ELB e Redshift corretos como estavam. Só
-CloudFront (`CreateDistribution`) segue sem evento real capturado (pulado
-por custo de tempo de propagação, não de dinheiro) — ver
-[docs/melhorias-futuras.md](docs/melhorias-futuras.md) e
-[test/manual-live-etapa3/README.md](test/manual-live-etapa3/README.md)
-para o resultado completo, serviço a serviço.
+O CloudTrail nem sempre preserva a capitalização do botocore (protocolos
+`query`/`ec2`/`rest-xml`, e vários `json` gravam em lowerCamelCase), então a
+leitura é tolerante a capitalização por padrão. Onde possível, o ARN é
+construído a partir de `requestParameters`, que é sempre presente. Os
+extractors de protocolo XML foram validados com eventos reais, exceto o
+`CreateDistribution` do CloudFront.
 """
 from __future__ import annotations
 
@@ -78,8 +38,8 @@ class ExtractedResource:
     servico: str
     regiao: str
     tipo_recurso: str | None = None
-    # MVP2: recurso derivado (ex.: volume EBS de uma instância) aponta para
-    # o recurso de origem — herda dele a decisão de IaC na Etapa 3.
+    # Recurso derivado (ex.: volume de uma instância): herda a decisão
+    # de IaC do recurso de origem.
     origem_arn: str | None = None
 
 
@@ -91,24 +51,14 @@ class _SpecificExtractor:
     product_service_code: str
     arn_builder: ArnBuilder
     tipo_recurso: str | None = None
-    # Opcional: decide o product_service_code a partir do próprio evento,
-    # quando o eventSource é compartilhado por mais de uma linha do CSV
-    # (hoje: rds.amazonaws.com para RDS/DocumentDB/Neptune — o campo
-    # `requestParameters.engine` desambigua sem nenhuma chamada de API).
-    # Devolve None para cair no `product_service_code` fixo acima.
+    # Decide o código a partir do evento quando o eventSource é
+    # compartilhado (rds.amazonaws.com: RDS/DocumentDB/Neptune pelo `engine`).
+    # None = usa `product_service_code`.
     product_code_resolver: Callable[[dict], str | None] | None = None
 
 
-# Ambiguidade conhecida, mesma de `services.classify_arn`/`_service_by_name`:
-# o código "AmazonVPC" é compartilhado por 2 linhas do CSV ("AWS Transit
-# Gateway" e "Amazon VPC Lattice"). Resolver por código pega sempre a
-# PRIMEIRA linha ("AWS Transit Gateway") — correto para os eventos de EC2
-# (`CreateVpc`/`CreateTransitGateway`, que são mesmo Transit Gateway/rede),
-# mas errado para `vpc-lattice.amazonaws.com`, cujo evento já identifica o
-# serviço sem ambiguidade nenhuma. Bug real encontrado em code review: essa
-# correção existia em `services.py` mas nunca tinha chegado aqui — todo
-# evento de VPC Lattice saía rotulado "AWS Transit Gateway" no relatório
-# (a tag aplicada nunca estava errada, só o rótulo `servico`).
+# "AmazonVPC" tem duas linhas no CSV (Transit Gateway e VPC Lattice); por
+# código sai sempre a primeira. Eventos do VPC Lattice usam o nome certo.
 _SERVICE_NAME_OVERRIDE_POR_EVENT_SOURCE = {
     "vpc-lattice.amazonaws.com": "Amazon VPC Lattice",
 }
@@ -126,11 +76,7 @@ def _svc_name(services: list[Service], product_service_code: str, event_source: 
     return None
 
 
-# ---------------------------------------------------------------------------
-# Helpers genéricos — cobrem a maioria dos extractors dedicados: ler um
-# campo (direto ou construindo o ARN a partir de um ID) em um caminho fixo
-# dentro de responseElements/requestParameters.
-# ---------------------------------------------------------------------------
+# --- Helpers: ler o ARN (ou um ID para montá-lo) num caminho fixo do evento ---
 
 
 def _read_path(node: dict, path: tuple[str, ...], tolerant_casing: bool) -> object:
@@ -147,11 +93,8 @@ def _read_path(node: dict, path: tuple[str, ...], tolerant_casing: bool) -> obje
 
 @dataclass(frozen=True)
 class _DirectPath:
-    """ARN já vem pronto em `responseElements`, no `path` dado. Uma classe
-    (não uma closure) de propósito: `path`/`tolerant_casing` ficam
-    inspecionáveis por fora — é o que permite `test_event_parser_botocore.py`
-    verificar cada extractor dedicado contra o shape real da operação no
-    botocore instalado, sem precisar reimplementar a leitura em cada teste."""
+    """ARN pronto em `responseElements`, no `path` dado. É classe (e não
+        closure) para que os testes inspecionem `path` contra o botocore."""
 
     path: tuple[str, ...]
     tolerant_casing: bool = False
@@ -180,19 +123,13 @@ class _ConstructedPath:
 
 
 def _direct(*path: str, tolerant_casing: bool = True) -> ArnBuilder:
-    # Default mudou para True (2026-09-30): o CloudTrail grava vários
-    # serviços de protocolo json/rest-json em lowerCamelCase no
-    # `responseElements` (ex.: Lambda `functionArn`, DynamoDB
-    # `tableDescription.tableArn`, KMS `keyMetadata.arn`), diferente do
-    # shape PascalCase do botocore. `_read_path` tenta a capitalização
-    # exata PRIMEIRO e só depois a variante — nunca piora um caso que já
-    # funcionava. Ver docs/plano-finalizacao.md, achado A2.
+    # Tolerante por padrão: o CloudTrail grava vários serviços json em
+    # lowerCamelCase. A capitalização exata é tentada primeiro.
     return _DirectPath(path, tolerant_casing)
 
 
 def _direct_ci(*path: str) -> ArnBuilder:
-    """Como `_direct`, mas tolerante à capitalização (ver docstring do
-    módulo — serviços de protocolo query/ec2/rest-xml)."""
+    """Alias de `_direct` tolerante a capitalização."""
     return _direct(*path, tolerant_casing=True)
 
 
@@ -204,25 +141,12 @@ def _constructed_ci(template: str, source: str, *path: str) -> ArnBuilder:
     return _constructed(template, source, *path, tolerant_casing=True)
 
 
-# ---------------------------------------------------------------------------
-# Extractors com lógica própria — batch (EC2, WorkSpaces), pré-processamento
-# do valor (Route 53 tira o prefixo "/hostedzone/"), ou estrutura de
-# CloudTrail conhecida e diferente do shape "lógico" do botocore (EC2).
-# ---------------------------------------------------------------------------
+# --- Extractors com lógica própria (lote, pré-processamento, shape EC2) ---
 
 
 def _ext_ec2_run_instances(detail: dict, account_id: str, region: str) -> list[str]:
-    # Estrutura conhecida de eventos reais de CloudTrail para EC2 (protocolo
-    # "ec2", com o empacotamento "xSet"/"items" herdado da API XML antiga) —
-    # não é o shape "lógico" que o botocore expõe para o SDK.
-    #
-    # `isinstance` defensivo (bug real encontrado em code review): `.get(
-    # "instancesSet", {})` só usa o default `{}` quando a CHAVE não existe —
-    # se vier presente com valor `None` (`{"instancesSet": null}`), o
-    # default nunca entra em jogo e o `.get("items")` seguinte quebra com
-    # `AttributeError`, derrubando a invocação Lambda inteira em vez de
-    # degradar para lista vazia (o princípio que a docstring do módulo
-    # declara). Mesmo raciocínio para `item` não ser um dict.
+    # Shape do CloudTrail para EC2 ("xSet"/"items"). Os `isinstance` evitam
+    # quebrar a invocação quando um campo vem `null`.
     instances_set = (detail.get("responseElements") or {}).get("instancesSet")
     items = instances_set.get("items") if isinstance(instances_set, dict) else None
     items = items if isinstance(items, list) else []
@@ -239,26 +163,20 @@ def _ext_ec2_create_volume(detail: dict, account_id: str, region: str) -> list[s
 
 
 def _ext_ec2_create_vpc(detail: dict, account_id: str, region: str) -> list[str]:
-    # `isinstance` defensivo — mesmo motivo de `_ext_ec2_run_instances`
-    # acima: `responseElements` = `{"vpc": null}` quebraria com
-    # `AttributeError` sem essa checagem.
     vpc = (detail.get("responseElements") or {}).get("vpc")
     vpc_id = vpc.get("vpcId") if isinstance(vpc, dict) else None
     return [f"arn:aws:ec2:{region}:{account_id}:vpc/{vpc_id}"] if vpc_id else []
 
 
 def _ext_ec2_create_transit_gateway(detail: dict, account_id: str, region: str) -> list[str]:
-    # `isinstance` defensivo — mesmo motivo de `_ext_ec2_create_vpc` acima.
     tgw = (detail.get("responseElements") or {}).get("transitGateway")
     tgw_id = tgw.get("transitGatewayId") if isinstance(tgw, dict) else None
     return [f"arn:aws:ec2:{region}:{account_id}:transit-gateway/{tgw_id}"] if tgw_id else []
 
 
 def _ext_s3_create_bucket(detail: dict, account_id: str, region: str) -> list[str]:
-    # S3 (rest-xml) tem, em versões recentes da API, um campo BucketArn
-    # direto na resposta — mas construir a partir do nome pedido
-    # (requestParameters, sempre presente, sem incerteza de capitalização)
-    # é mais robusto contra variação de versão de API/SDK do chamador.
+    # Construído a partir do nome pedido (mais robusto que o BucketArn da
+    # resposta, que depende da versão da API).
     bucket = (detail.get("requestParameters") or {}).get("bucketName")
     return [f"arn:aws:s3:::{bucket}"] if bucket else []
 
@@ -282,30 +200,16 @@ def _ext_route53_create_hosted_zone(detail: dict, account_id: str, region: str) 
 
 
 def _ext_elbv2_create_load_balancer(detail: dict, account_id: str, region: str) -> list[str]:
-    # elasticloadbalancing.amazonaws.com/CreateLoadBalancer é compartilhado
-    # por DOIS serviços — elbv2 (ALB/NLB) e o Classic ELB (pacote `elb`) —
-    # com o MESMO eventSource e eventName (confirmado via botocore:
-    # signingName/endpointPrefix idênticos), mas shapes de resposta
-    # completamente diferentes. Bug real encontrado em code review: o
-    # extractor só sabia ler o shape do elbv2
-    # (`responseElements.LoadBalancers[...]`); Classic ELB devolve só
-    # `{"DNSName": ...}`, sem ARN nenhum na resposta — todo Classic ELB
-    # (ainda comum via Terraform `aws_elb`) nunca era tagueado,
-    # silenciosamente (lista vazia, sem erro). Os dois protocolos usam
-    # nomes de campo DIFERENTES no request (`Name` no elbv2, confirmado
-    # em evento real capturado em sandbox como `"name"`; `LoadBalancerName`
-    # no Classic ELB, verificado contra o shape do botocore) — isso serve
-    # de sinal confiável de qual dos dois é, sem ambiguidade.
+    # elbv2 (ALB/NLB) e Classic ELB têm o mesmo eventSource/eventName, mas
+    # shapes diferentes. O request distingue: `Name` no elbv2, `LoadBalancerName`
+    # no Classic (que não devolve ARN).
     lbs = _read_path(detail.get("responseElements") or {}, ("LoadBalancers",), tolerant_casing=True) or []
     if isinstance(lbs, list) and lbs:
         arn = lbs[0].get("LoadBalancerArn", lbs[0].get("loadBalancerArn")) if isinstance(lbs[0], dict) else None
         if isinstance(arn, str) and arn.startswith("arn:"):
             return [arn]
 
-    # Não veio no shape do elbv2 — tenta Classic ELB, construindo o ARN a
-    # partir do nome pedido (formato estável documentado pela AWS:
-    # arn:...:loadbalancer/<nome>, sem o segmento "app/"/"net/" que
-    # ALB/NLB usam).
+    # Classic ELB: arn:...:loadbalancer/<nome> (sem "app/"/"net/").
     nome_classic = _read_path(detail.get("requestParameters") or {}, ("LoadBalancerName",), tolerant_casing=True)
     if isinstance(nome_classic, str) and nome_classic:
         return [f"arn:aws:elasticloadbalancing:{region}:{account_id}:loadbalancer/{nome_classic}"]
@@ -323,14 +227,8 @@ def _ext_workspaces_create_workspaces(detail: dict, account_id: str, region: str
     ]
 
 
-# ---------------------------------------------------------------------------
-# Extractors adicionados em 2026-09-30 (docs/plano-finalizacao.md, Lote 1).
-# Princípio comum: tentar primeiro o ARN pronto na resposta (tolerante a
-# capitalização) e, se não vier, CONSTRUIR a partir de um identificador
-# pedido na requisição — a mesma estratégia já validada em sandbox para
-# S3/Elastic Beanstalk/Redshift. Nunca inventa um valor: sem identificador,
-# devolve lista vazia.
-# ---------------------------------------------------------------------------
+# --- Extractors que tentam o ARN pronto e, sem ele, constroem a partir de um
+# identificador da requisição. Sem identificador, lista vazia. ---
 
 _INSTANCE_ID_RE = re.compile(r"^i-[0-9a-f]{8,17}$")
 
@@ -407,15 +305,9 @@ def _ext_ec2_by_id_key(key_lower: str, arn_template: str, id_prefix: str) -> Arn
 
 
 def _ext_ec2_create_fleet(detail: dict, account_id: str, region: str) -> list[str]:
-    # CreateFleet (Karpenter, ASG com MixedInstancesPolicy/Spot, EC2 Fleet
-    # tipo "instant") — o shape do CloudTrail para esta operação tem
-    # empacotamento XML→JSON próprio e não foi capturado em sandbox ainda.
-    # Em vez de depender de um caminho exato, coleta qualquer string com o
-    # formato inconfundível de ID de instância dentro de responseElements.
-    # OBS: a regra nativa "EC2 Instance State-change Notification" (ver
-    # event_mapping.NATIVE_EVENT_PATTERNS) já cobre instâncias de QUALQUER
-    # origem — este extractor é defesa em profundidade, não o caminho
-    # principal.
+    # CreateFleet: o empacotamento XML→JSON varia, então coleta qualquer ID
+    # de instância em responseElements. Defesa em profundidade: a regra nativa
+    # de EC2 já cobre instâncias de qualquer origem.
     ids = _find_strings(detail.get("responseElements") or {}, lambda v: bool(_INSTANCE_ID_RE.match(v)))
     return [f"arn:aws:ec2:{region}:{account_id}:instance/{i}" for i in ids]
 
@@ -452,10 +344,9 @@ def _ext_dynamodb_table(*request_keys: str) -> ArnBuilder:
 
 
 def _ext_rds(arn_field: str, wrapper: str, id_keys: tuple[str, ...], arn_kind: str) -> ArnBuilder:
-    """RDS/Aurora/DocumentDB/Neptune. Confirmado em sandbox (CreateDBInstance)
-    que o CloudTrail ACHATA a resposta (`dBInstanceArn` na raiz); por
-    segurança também tenta o shape com wrapper do botocore e, por último,
-    constrói a partir do identificador pedido."""
+    """RDS/Aurora/DocumentDB/Neptune. O CloudTrail grava a resposta achatada
+        (`dBInstanceArn` na raiz); tenta também o shape com wrapper do botocore
+        e, por último, constrói a partir do identificador pedido."""
     return _first_of(
         _direct(arn_field),
         _direct(wrapper, arn_field),
@@ -588,23 +479,14 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ),
     # --- S3 (rest-xml — construído a partir de requestParameters) ---
     ("s3.amazonaws.com", "CreateBucket"): _SpecificExtractor("AmazonS3", _ext_s3_create_bucket),
-    # --- Protocolo query/ec2/rest-xml — leitura tolerante a capitalização ---
-    # Confirmado em evento real capturado em sandbox: ao contrário do shape
-    # documentado do botocore (que embrulha a resposta em `{"DBInstance":
-    # {...}}`), o CloudTrail grava os campos JÁ ACHATADOS — `dBInstanceArn`
-    # direto na raiz de `responseElements`, sem o wrapper. `CreateDBCluster`
-    # (Aurora) segue o mesmo padrão de shape no botocore (`{"DBCluster":
-    # {...}}`) mas não foi testado com um evento real nesta sessão — corrigido
-    # por analogia com `CreateDBInstance`, não confirmado independentemente.
+    # O CloudTrail grava a resposta achatada (sem o wrapper do botocore).
     ("rds.amazonaws.com", "CreateDBInstance"): _SpecificExtractor(
         "AmazonRDS", _direct_ci("DBInstanceArn"), product_code_resolver=_rds_engine_resolver
     ),
     ("rds.amazonaws.com", "CreateDBCluster"): _SpecificExtractor(
         "AmazonRDS", _direct_ci("DBClusterArn"), product_code_resolver=_rds_engine_resolver
     ),
-    # Mesmo achatamento confirmado em evento real (ver CreateDBInstance
-    # acima): `aRN` vem direto na raiz de `responseElements`, sem o wrapper
-    # `CacheCluster` que o shape do botocore documenta.
+    # Resposta achatada: `aRN` na raiz.
     ("elasticache.amazonaws.com", "CreateCacheCluster"): _SpecificExtractor(
         "AmazonElastiCache", _direct_ci("ARN")
     ),
@@ -614,10 +496,7 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ),
     ("elasticbeanstalk.amazonaws.com", "CreateApplication"): _SpecificExtractor(
         "AWSElasticBeanstalk",
-        # Confirmado em evento real capturado em sandbox: `responseElements`
-        # vem `null` para este evento (não `{"Application": {...}}` como um
-        # `_direct_ci` assumiria) — o ARN precisa ser construído a partir do
-        # nome pedido, igual ao caminho do S3.
+        # `responseElements` vem `null`: constrói a partir do nome pedido.
         _constructed_ci(
             "arn:aws:elasticbeanstalk:{region}:{account_id}:application/{value}",
             "requestParameters",
@@ -633,10 +512,7 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
         "AmazonCloudFront",
         _constructed_ci("arn:aws:cloudfront::{account_id}:distribution/{value}", "responseElements", "Distribution", "Id"),
     ),
-    # Variante que já nasce com tags — mesmo recurso, outra operação (o
-    # console usa esta). O eventName real no CloudTrail pode vir com sufixo
-    # de versão de API (ex.: "...2020_05_31") — normalizado em
-    # `normalize_event_name`.
+    # Variante com tags (usada pelo console).
     ("cloudfront.amazonaws.com", "CreateDistributionWithTags"): _SpecificExtractor(
         "AmazonCloudFront", _ext_cloudfront_distribution
     ),
@@ -645,17 +521,8 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ),
     ("sqs.amazonaws.com", "CreateQueue"): _SpecificExtractor("AWSQueueService", _ext_sqs_create_queue),
     ("workspaces.amazonaws.com", "CreateWorkspaces"): _SpecificExtractor("AmazonWorkSpaces", _ext_workspaces_create_workspaces),
-    # --- Protocolo json/rest-json/smithy — capitalização do botocore confiável ---
-    # BUG CORRIGIDO (2026-09-30): o eventName real do Lambda no CloudTrail é
-    # "CreateFunction20150331" (sufixo de versão da API — documentado pela
-    # AWS), então a regra do EventBridge com "CreateFunction" nunca casava
-    # e nenhuma função Lambda era tagueada pela Etapa 3. O parser agora
-    # normaliza o sufixo (`normalize_event_name`) e o event pattern lista os
-    # dois nomes. O CloudTrail também grava `functionArn` em lowerCamelCase
-    # — extractor tolerante + fallback pelo nome pedido.
-    # --- Deadline Cloud e WorkSpaces Core Managed Instances: formatos de ARN
-    # confirmados na Service Authorization Reference da AWS (2026-09-30) —
-    # a resposta da API só traz IDs. ---
+    # --- Protocolo json/rest-json/smithy ---
+    # Deadline Cloud e WorkSpaces Core: a resposta só traz IDs.
     ("deadline.amazonaws.com", "CreateFarm"): _SpecificExtractor(
         "AWSDeadlineCloud", _constructed("arn:aws:deadline:{region}:{account_id}:farm/{value}", "responseElements", "farmId")
     ),
@@ -667,7 +534,6 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
             "arn:aws:workspaces-instances:{region}:{account_id}:workspaceinstance/{value}", "responseElements", "WorkspaceInstanceId"
         ),
     ),
-    # --- Item 10 (aprovado em 2026-09-30) ---
     ("appstream.amazonaws.com", "CreateFleet"): _SpecificExtractor("AmazonAppStream", _direct("Fleet", "Arn")),
     ("appstream.amazonaws.com", "CreateImageBuilder"): _SpecificExtractor("AmazonAppStream", _direct("ImageBuilder", "Arn")),
     ("bedrock-agentcore.amazonaws.com", "CreateAgentRuntime"): _SpecificExtractor("AmazonBedrockAgentCore", _direct("agentRuntimeArn")),
@@ -712,11 +578,9 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ("securityhub.amazonaws.com", "EnableSecurityHub"): _SpecificExtractor(
         "AWSSecurityHub", lambda detail, account_id, region: [f"arn:aws:securityhub:{region}:{account_id}:hub/default"]
     ),
-    # --- Serviços que entraram no CSV em 2026-09-30 ---
     ("scn.amazonaws.com", "CreateInstance"): _SpecificExtractor(
         "AWSSupplyChain",
-        # Formato confirmado pelo pattern de ARN do modelo botocore
-        # (arn:aws:scn:<regiao>:<conta>:instance/<uuid>); a resposta só traz o ID.
+        # ARN instance/<uuid>; a resposta só traz o ID.
         _constructed("arn:aws:scn:{region}:{account_id}:instance/{value}", "responseElements", "instance", "instanceId"),
     ),
     ("dax.amazonaws.com", "CreateCluster"): _SpecificExtractor("AmazonDAX", _direct("Cluster", "ClusterArn")),
@@ -734,17 +598,14 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ),
     ("gameliftstreams.amazonaws.com", "CreateStreamGroup"): _SpecificExtractor("AmazonGameLiftStreams", _direct("Arn")),
     ("gameliftstreams.amazonaws.com", "CreateApplication"): _SpecificExtractor("AmazonGameLiftStreams", _direct("Arn")),
-    # RTB Fabric: formato confirmado pelo pattern de ARN do modelo
-    # (arn:aws:rtbfabric:<regiao>:<conta>:gateway/<id>); resposta só traz o ID.
+    # RTB Fabric: ARN gateway/<id>; a resposta só traz o ID.
     ("rtbfabric.amazonaws.com", "CreateRequesterGateway"): _SpecificExtractor(
         "AWSRTBFabric", _constructed("arn:aws:rtbfabric:{region}:{account_id}:gateway/{value}", "responseElements", "gatewayId")
     ),
     ("rtbfabric.amazonaws.com", "CreateResponderGateway"): _SpecificExtractor(
         "AWSRTBFabric", _constructed("arn:aws:rtbfabric:{region}:{account_id}:gateway/{value}", "responseElements", "gatewayId")
     ),
-    # SES — nenhuma operação de criação devolve ARN (exceto CreateTenant).
-    # Construído a partir do nome pedido; formato de identidade confirmado
-    # pela documentação do modelo sesv2 (arn:aws:ses:<regiao>:<conta>:identity/<nome>).
+    # SES: só CreateTenant devolve ARN; o resto é construído pelo nome.
     ("ses.amazonaws.com", "CreateEmailIdentity"): _SpecificExtractor(
         "AmazonSES", _constructed("arn:aws:ses:{region}:{account_id}:identity/{value}", "requestParameters", "EmailIdentity")
     ),
@@ -764,8 +625,7 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
     ),
     ("ses.amazonaws.com", "CreateTenant"): _SpecificExtractor("AmazonSES", _first_of(_direct("TenantArn"))),
     ("lambda.amazonaws.com", "CreateFunction"): _SpecificExtractor("AWSLambda", _ext_lambda_function),
-    # DynamoDB grava `tableDescription.tableArn` (lowerCamelCase) — o
-    # extractor anterior (PascalCase exato) nunca casaria com evento real.
+    # DynamoDB grava `tableDescription.tableArn` (lowerCamelCase).
     ("dynamodb.amazonaws.com", "CreateTable"): _SpecificExtractor("AmazonDynamoDB", _ext_dynamodb_table("TableName")),
     ("dynamodb.amazonaws.com", "RestoreTableFromBackup"): _SpecificExtractor(
         "AmazonDynamoDB", _ext_dynamodb_table("TargetTableName")
@@ -920,11 +780,7 @@ _REGISTRY: dict[tuple[str, str], _SpecificExtractor] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Fallback genérico best-effort — rede de segurança para um evento mapeado
-# em event_mapping.py sem entrada em _REGISTRY (não deveria acontecer com a
-# tabela atual, mas defensivo).
-# ---------------------------------------------------------------------------
+# --- Fallback genérico para evento mapeado sem extractor ---
 
 
 def _find_arn_recursive(obj, depth: int = 0) -> str | None:
@@ -952,9 +808,8 @@ def _extract_generic(detail: dict) -> list[str]:
 
 
 def _build_reverse_index() -> dict[tuple[str, str], str]:
-    # Mantém a PRIMEIRA ocorrência: AmazonDocDB/AmazonNeptune reaproveitam
-    # regras do RDS (mesmo eventSource) e não podem sobrescrever AmazonRDS
-    # aqui — a desambiguação real é feita por `product_code_resolver`.
+    # Mantém a primeira ocorrência: DocDB/Neptune reaproveitam regras do RDS;
+    # a desambiguação é do `product_code_resolver`.
     index: dict[tuple[str, str], str] = {}
     for code, rules in mapped_services().items():
         for rule in rules:
@@ -962,10 +817,8 @@ def _build_reverse_index() -> dict[tuple[str, str], str]:
     return index
 
 
-# Sufixos de versão de API que o CloudTrail acrescenta ao eventName de
-# alguns serviços (documentado pela AWS para Lambda: "CreateFunction20150331",
-# "UpdateFunctionConfiguration20150331v2"; CloudFront usa o formato de data
-# da API, ex.: "CreateDistribution2020_05_31").
+# Sufixos de versão que o CloudTrail acrescenta ao eventName (Lambda
+# "CreateFunction20150331", CloudFront "CreateDistribution2020_05_31").
 _SUFIXO_VERSAO_EVENT_NAME = re.compile(r"(\d{8}(v\d+)?|\d{4}_\d{2}_\d{2})$")
 
 
@@ -977,10 +830,7 @@ def normalize_event_name(event_name: str) -> str:
 _MAPPED_EVENTS = _build_reverse_index()
 
 
-# ---------------------------------------------------------------------------
-# Eventos NATIVOS de serviço (não CloudTrail) — não exigem trail e cobrem o
-# recurso independentemente de qual API o criou.
-# ---------------------------------------------------------------------------
+# --- Eventos nativos de serviço (não exigem trail) ---
 
 DETAIL_TYPE_EC2_STATE_CHANGE = "EC2 Instance State-change Notification"
 DETAIL_TYPE_ECS_TASK_STATE_CHANGE = "ECS Task State Change"
@@ -988,9 +838,8 @@ TIPO_RECURSO_ECS_TASK = "task"
 
 
 def _parse_ecs_task_change(event: dict, services: list[Service]) -> list[ExtractedResource]:
-    """`ECS Task State Change` (RUNNING, Fargate) — item 14. O ARN da task
-    vem pronto no evento. Só ARN no formato longo (com o nome do cluster)
-    aceita tag; o formato curto antigo é ignorado aqui."""
+    """`ECS Task State Change` (RUNNING, Fargate). Só o ARN longo (com o
+        cluster) aceita tag."""
     detail = event.get("detail") or {}
     task_arn = detail.get("taskArn")
     region = event.get("region")
@@ -1005,13 +854,10 @@ def _parse_ecs_task_change(event: dict, services: list[Service]) -> list[Extract
 
 
 def _parse_ec2_state_change(event: dict, services: list[Service]) -> list[ExtractedResource]:
-    """`EC2 Instance State-change Notification` (estado `running`): cobre
-    instâncias criadas por RunInstances, CreateFleet (Karpenter), Auto
-    Scaling (inclusive MixedInstancesPolicy/Spot, que usa CreateFleet por
-    baixo), Spot Fleet e node groups do EKS — todos caminhos que o
-    evento de CloudTrail `RunInstances` sozinho não cobre (itens 11 e 13 do
-    plano). Também dispara em cada START de uma instância parada — a
-    revalidação da Etapa 2c torna isso idempotente (vira `ja_ok`)."""
+    """`EC2 Instance State-change Notification` (`running`): cobre
+        RunInstances, CreateFleet (Karpenter), Auto Scaling, Spot Fleet e node
+        groups do EKS. Também dispara a cada start; a revalidação torna isso
+        idempotente (`ja_ok`)."""
     detail = event.get("detail") or {}
     instance_id = detail.get("instance-id")
     account_id = event.get("account")
@@ -1031,17 +877,13 @@ def _parse_ec2_state_change(event: dict, services: list[Service]) -> list[Extrac
     ]
 
 
-# ---------------------------------------------------------------------------
-# Ponto de entrada
-# ---------------------------------------------------------------------------
+# --- Ponto de entrada ---
 
 
 def parse_creation_event(event: dict, services: list[Service] | None = None) -> list[ExtractedResource]:
-    """Extrai 0, 1 ou N `ExtractedResource` de um evento do EventBridge —
-    formato "AWS API Call via CloudTrail" ou um evento nativo de serviço
-    suportado (hoje: EC2 Instance State-change Notification). Devolve lista
-    vazia sempre que não há confiança suficiente para montar um ARN — nunca
-    um valor parcial/adivinhado."""
+    """Extrai 0, 1 ou N recursos de um evento "AWS API Call via CloudTrail"
+        ou de um evento nativo suportado (EC2 running, ECS task). Sem confiança
+        para montar o ARN, devolve lista vazia."""
     services = services if services is not None else load_services()
 
     if event.get("detail-type") == DETAIL_TYPE_EC2_STATE_CHANGE:

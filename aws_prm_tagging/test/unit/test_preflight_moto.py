@@ -1,4 +1,4 @@
-"""Preflight (achado A3 + passo 2 do item 7) contra AWS simulada (moto)."""
+"""Preflight contra AWS simulada (moto)."""
 from __future__ import annotations
 
 import pytest

@@ -5,6 +5,11 @@ from typing import Optional
 
 TAG_KEY = "aws-apn-id"
 
+# Product code da Darede no AWS PRM — o mesmo para todos os clientes.
+# Usado como padrão por CLI, modo interativo, scripts e templates; pode ser
+# trocado por parâmetro (ex.: outro contrato).
+VALOR_PADRAO = "pc:825bh0xhwumf14tg27cthnoss"
+
 STATUS_SEM_TAG = "sem_tag"
 STATUS_OK = "ok"
 STATUS_CONFLITO = "conflito"

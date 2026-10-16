@@ -2,6 +2,12 @@
 
 02/10/2026 · Cópia em Markdown do documento compartilhado "Automação de Tagueamento AWS PRM — MVP 1".
 
+> **Documento histórico.** A arquitetura, as Etapas e a operação continuam
+> valendo, mas o [MVP-2.md](MVP-2.md) substitui a regra de decisão
+> (`conflito` e `revisar_tag_similar` não existem mais: outro parceiro é
+> sobrescrito e todo IaC é pulado), as salvaguardas que dependiam dela, o
+> rollout (StackSets) e as pendências ([pendencias.md](pendencias.md)).
+
 ## Visão geral
 
 A automação aplica e mantém a tag `aws-apn-id = pc:<product code>` em todos os recursos elegíveis das contas dos clientes, para que o consumo AWS desses recursos seja atribuído à Darede no programa **AWS Partner Revenue Measurement (PRM)**, pelo método de *resource tagging*.

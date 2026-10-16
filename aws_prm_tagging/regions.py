@@ -9,10 +9,8 @@ from .retry import with_backoff
 
 logger = logging.getLogger(__name__)
 
-# PRM hoje só é suportado em regiões comerciais (não European Sovereign Cloud
-# nem GovCloud/China) — conforme FAQ do guia oficial. describe_regions já só
-# devolve regiões da partition da sessão, então isso é reforço, não filtro
-# adicional de partition.
+# O PRM só é suportado em regiões comerciais (FAQ do guia). describe_regions
+# já devolve só a partition da sessão; isto é reforço.
 _ACTIVE_OPT_IN_STATUSES = {"opt-in-not-required", "opted-in"}
 
 

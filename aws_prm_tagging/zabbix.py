@@ -1,4 +1,4 @@
-"""Integração com o Zabbix (MVP2, item 1).
+"""Integração com o Zabbix.
 
 Desenho: o SNS continua sendo o barramento único. Uma Lambda própria
 (`handler_zabbix.py`, stack `template-zabbix.yaml`) assina o tópico — o

@@ -107,7 +107,7 @@ def test_retry_do_lambda_invoke_tem_campos_obrigatorios():
 
 
 def test_falha_da_lambda_vai_para_a_dlq_e_termina_em_fail():
-    """Item 9: depois do Retry, qualquer erro da Lambda é capturado, o evento
+    """depois do Retry, qualquer erro da Lambda é capturado, o evento
     original (+ erro) vai para a DLQ e a execução termina como falha
     (visível no console/métricas do Step Functions)."""
     definicao = _carregar_definicao()
@@ -121,7 +121,7 @@ def test_falha_da_lambda_vai_para_a_dlq_e_termina_em_fail():
 
 
 def test_task_ecs_pula_o_debounce_e_o_resto_espera():
-    """Item 14: `ECS Task State Change` vai direto para a Lambda; qualquer
+    """`ECS Task State Change` vai direto para a Lambda; qualquer
     outro evento passa pelo Wait do debounce."""
     definicao = _carregar_definicao()
     escolha = definicao["States"][definicao["StartAt"]]

@@ -81,7 +81,7 @@ def test_regra_nativa_ec2_bate_com_event_mapping():
 
 
 def test_toda_regra_tem_dlq_e_a_politica_da_fila_autoriza_exatamente_as_regras():
-    """Item 9: todo alvo de regra precisa ter DeadLetterConfig apontando para
+    """todo alvo de regra precisa ter DeadLetterConfig apontando para
     a DLQ da região, e a política da fila precisa autorizar TODAS as regras
     (uma regra nova sem entrada na política perderia os eventos com
     AccessDenied silencioso na hora de mandar para a DLQ)."""
@@ -100,13 +100,13 @@ def test_toda_regra_tem_dlq_e_a_politica_da_fila_autoriza_exatamente_as_regras()
 
 
 def test_regional_nao_tem_topico_sns_e_hub_tem():
-    """Item 7: o tópico é peça única por conta — nunca duplicado por região."""
+    """o tópico é peça única por conta — nunca duplicado por região."""
     regional = _load_template()
     assert not any(r["Type"].startswith("AWS::SNS::") for r in regional["Resources"].values())
     with open(_INFRA_DIR / "template-hub.yaml", encoding="utf-8") as f:
         hub = yaml.load(f, Loader=_PermissiveLoader)
     tipos = [r["Type"] for r in hub["Resources"].values()]
-    # Desde o item 8 o hub também tem o tagueamento inicial; o que importa
+    # O hub também tem o tagueamento inicial; o que importa
     # aqui é que o tópico existe UMA vez (no hub) e nunca na regional.
     assert tipos.count("AWS::SNS::Topic") == 1
 

@@ -1,15 +1,6 @@
-"""Publicação de resultados individuais no tópico SNS central — o modelo de
-"reporte por push" já descrito em
-[docs/arquitetura-multicliente.md](docs/arquitetura-multicliente.md), mas
-sem nenhuma implementação no repositório antes deste módulo (`report.py`,
-Etapa 1, só grava JSON local; `tag_execution.py`, Etapas 2b/2c, só devolve
-um dict — nenhum dos dois publica nada).
+"""Publicação de resultados individuais no tópico SNS (reporte por push).
 
-Construído como núcleo compartilhado (mesmo nível de `report.py`/
-`decision.py`), não acoplado à Etapa 3 de propósito: a Etapa 4 (varredura
-recorrente, fora do escopo deste projeto por ora) vai precisar publicar
-exatamente esta mesma forma de evento — reaproveitar isso depois evita
-duplicar o código de publicação entre as duas etapas.
+Núcleo compartilhado pelas Etapas 3 e 4 e pela varredura recorrente.
 """
 from __future__ import annotations
 
@@ -70,8 +61,8 @@ def build_outcome_payload(
         "resultado": resultado,
         "detalhe_erro": detalhe_erro,
         "motivo": motivo,
-        # MVP2: o que havia antes (valor de outro parceiro / chave parecida),
-        # o que a escrita fez e, para IaC, a ferramenta e a evidência.
+        # O que havia antes (valor de outro parceiro / chave parecida), o que a
+        # escrita fez e, para IaC, a ferramenta e a evidência.
         "estado_anterior": estado_anterior,
         "acao": acao,
         "iac": iac,

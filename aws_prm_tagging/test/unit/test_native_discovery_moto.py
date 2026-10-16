@@ -1,4 +1,4 @@
-"""Descoberta nativa (item 1) contra AWS SIMULADA (moto) — offline, sem
+"""Descoberta nativa contra AWS SIMULADA (moto) — offline, sem
 credencial, sem custo.
 
 Três garantias:
@@ -13,8 +13,8 @@ Três garantias:
    código real: os recursos sem tag terminam tagueados.
 
 Limitação: o moto não cobre todos os serviços na Tagging API (ex.: ECR,
-API Gateway, Kinesis) — para esses a consistência de ARN fica para a
-validação na sandbox (docs/plano-finalizacao.md).
+API Gateway, Kinesis); para esses a consistência de ARN depende de
+validação em conta real.
 """
 from __future__ import annotations
 
@@ -220,26 +220,35 @@ def test_map_regioes_rejeita_regiao_inativa(aws, tmp_path, monkeypatch):
     assert main.run(["map", "--expected-tag-value", VALOR, "--regioes", "xx-nada-1", "--output", str(tmp_path / "m.json")]) == 1
 
 
-def test_producao_md_cobre_permissoes_de_leitura():
-    """A política de leitura documentada precisa conter toda ação exigida
-    pela descoberta nativa e pelo preflight — senão quem seguir o doc
-    recebe AccessDenied (que vira falhas_descoberta) sem saber por quê."""
-    from pathlib import Path
-
-    doc = (Path(native_discovery.__file__).parent / "docs" / "producao.md").read_text(encoding="utf-8")
-    from aws_prm_tagging import recomendacoes
+def test_politica_iam_cobre_permissoes_de_leitura():
+    """A política gerada (`politica-iam`, lida do template do hub) precisa
+    conter toda ação exigida pela descoberta nativa, pelas recomendações e
+    pelo preflight — senão a Lambda ou quem roda o CLI recebe AccessDenied
+    (que vira falhas_descoberta) sem saber por quê."""
+    from aws_prm_tagging import politica_iam, recomendacoes
 
     exigidas = set(native_discovery.required_iam_actions()) | set(recomendacoes.IAM_LEITURA) | {
         "cloudtrail:DescribeTrails",
         "cloudtrail:GetTrailStatus",
         "cloudtrail:GetEventSelectors",
+        "cloudtrail:LookupEvents",
     }
-    faltando = sorted(a for a in exigidas if f'"{a}"' not in doc)
-    assert faltando == [], f"docs/producao.md sem: {faltando}"
+    faltando = sorted(exigidas - set(politica_iam.acoes_leitura()))
+    assert faltando == [], f"template-hub.yaml (role do tagueamento inicial) sem: {faltando}"
 
 
+def test_politica_iam_escrita_sempre_restrita_a_aws_apn_id():
+    from aws_prm_tagging import politica_iam
+
+    pol = politica_iam.politica(com_escrita=True)
+    escrita = [st for st in pol["Statement"] if st["Sid"] != "PrmLeitura"]
+    assert escrita and all(
+        st["Condition"] == {"ForAllValues:StringEquals": {"aws:TagKeys": ["aws-apn-id"]}} for st in escrita
+    )
+    acoes = {a for st in escrita for a in (st["Action"] if isinstance(st["Action"], list) else [st["Action"]])}
+    assert {"tag:TagResources", "ec2:CreateTags", "apigateway:PUT"} <= acoes
 def test_ecs_service_sem_tag_e_descoberto(aws):
-    """Item 14 (parte moto): service ECS sem tag entra na descoberta nativa.
+    """service ECS sem tag entra na descoberta nativa.
     O `run_task` Fargate do moto tem bug interno — as tasks são cobertas no
     teste seguinte, com client falso."""
     ecs = aws.client("ecs", region_name=R)

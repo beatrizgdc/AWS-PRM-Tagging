@@ -158,13 +158,8 @@ class _ClientQueBrasaComErroInesperado:
 
 
 def test_falha_inesperada_ainda_publica_no_sns(cloudtrail_event_factory, fake_session_factory):
-    """Bug real encontrado em code review: antes desta correção, uma falha
-    inesperada (qualquer exceção que não seja `ClientError` na leitura
-    inicial) só aparecia no CloudWatch Logs — nunca no tópico SNS. Isso
-    contraria o princípio que `publish.py` declara ("publicar não é
-    opcional"). A execução do Step Functions continua marcada como falha
-    (`RuntimeError` propagado no final), mas agora o recurso também aparece
-    no relatório de compliance."""
+    """Falha inesperada (não `ClientError`) também é publicada no SNS, e a
+        execução continua marcada como falha (`RuntimeError` no final)."""
     arn = "arn:aws:s3:::bucket-vai-quebrar"
     sns_client = _FakeSnsClient()
     session = fake_session_factory({"resourcegroupstaggingapi": _ClientQueBrasaComErroInesperado()})

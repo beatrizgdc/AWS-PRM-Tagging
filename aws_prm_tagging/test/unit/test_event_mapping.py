@@ -86,7 +86,7 @@ def test_instancias_ec2_vem_pelo_evento_nativo_nao_pelo_cloudtrail():
 
 
 def test_lambda_e_cloudfront_incluem_nome_versionado_do_cloudtrail():
-    """Regressão do bug real: o CloudTrail grava `CreateFunction20150331` —
+    """Regressão: o CloudTrail grava `CreateFunction20150331` —
     com só `CreateFunction` a regra nunca casava."""
     pattern = event_mapping.build_event_pattern()
     por_fonte = {alt["source"][0]: alt["detail"]["eventName"] for alt in pattern["$or"]}
@@ -122,7 +122,7 @@ def test_arquivos_gerados_em_infra_nao_estao_desatualizados():
     AGORA — se este teste falhar, rode
     `python3 -m aws_prm_tagging.event_mapping` (do diretório pai) e
     commite os arquivos atualizados (e ajuste o número de regras em
-    `infra/template.yaml` se a contagem mudou — ver `infra/README.md`)."""
+    `infra/template-regional.yaml` se a contagem mudou)."""
     esperados = event_mapping.build_event_patterns()
 
     arquivos = sorted(glob.glob(str(_INFRA_DIR / "event_pattern.*.generated.json")))

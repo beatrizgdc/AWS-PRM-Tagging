@@ -1,19 +1,7 @@
-"""`resource_discovery.discover_*` — visibilidade de falha de API no
-retorno da função, não só no log.
+"""`resource_discovery.discover_*`: falha de API aparece no retorno
+(`(recursos, falhas)` -> `falhas_descoberta`), não só no log.
 
-Antes, uma falha de `ClientError` (ex.: `AccessDenied`, throttling
-esgotado, erro no meio da paginação) era capturada dentro de cada
-`discover_*` e só ia para o log — nunca propagava para `main.py`, que só
-conseguia ver falha via `except Exception` (bug de programação, não falha
-de API esperada). Como `falhas_descoberta` é o que a Etapa 4/dashboard lê
-(nunca o log da execução), essas falhas ficavam invisíveis no relatório na
-prática. Agora cada `discover_*` devolve `(recursos, falhas)` e `main.py`
-só propaga as duas listas.
-
-Usa fakes simples (sem moto/LocalStack), no mesmo espírito de
-`test_tag_execution_execucao.py` — suficiente para cobrir o roteamento de
-falha -> `falhas_descoberta`, não a integração real com a AWS (isso
-continua em `test/localstack/`).
+Fakes simples (sem moto), no espírito de `test_tag_execution_execucao.py`.
 """
 from __future__ import annotations
 
@@ -76,10 +64,8 @@ class _FakeBedrockClientTagFalha:
 
 
 def test_discover_bedrock_resources_falha_ao_ler_tags_vira_falha_mas_mantem_recurso():
-    """O recurso não pode ficar invisível (ver limitação do Resource
-    Explorer em melhorias-futuras.md), mas o relatório de compliance não
-    pode mais dizer "sem_tag" com certeza quando a leitura falhou — a falha
-    agora fica registrada lado a lado."""
+    """O recurso continua no relatório, mas com a falha de leitura ao lado
+        (não "sem_tag" com falsa certeza)."""
     session = _FakeSession({"bedrock": _FakeBedrockClientTagFalha()})
     recursos, falhas = resource_discovery.discover_bedrock_resources(
         session, "us-east-1", _service_list(), "pc:teste"
@@ -100,15 +86,8 @@ class _FakeBedrockClientAccessDeniedGeral:
 
 
 def test_discover_bedrock_resources_access_denied_geral_tambem_vira_falha_descoberta():
-    """Regressão do bug corrigido: uma versão anterior tratava
-    `AccessDeniedException`/`UnrecognizedClientException` ao listar profiles
-    como "região sem Bedrock, esperado" e NÃO registrava falha — testado e
-    comprovado errado (ver melhorias-futuras.md): `AccessDenied` tipicamente
-    é falta de permissão IAM, não ausência regional do serviço, e as duas
-    coisas não dão pra distinguir com segurança só pelo código do erro. Sem
-    registrar a falha, uma role sem `bedrock:ListInferenceProfiles` produzia
-    "0 profiles" com confiança total em toda região, escondendo um problema
-    de permissão real na conta inteira."""
+    """AccessDenied ao listar profiles vira falha: costuma ser falta de
+        permissão, não ausência do serviço na região."""
     session = _FakeSession({"bedrock": _FakeBedrockClientAccessDeniedGeral()})
     recursos, falhas = resource_discovery.discover_bedrock_resources(
         session, "us-east-1", _service_list(), "pc:teste"

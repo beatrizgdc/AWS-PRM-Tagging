@@ -3,7 +3,7 @@ API (`tag_execution.route_strategy`) — Etapa 2b.
 
 `select_taggable` é o único ponto de entrada aceito pelo resto do módulo:
 cobre aqui que ele filtra estritamente pelas decisões que tagueiam
-(`taguear`, `taguear_com_tag_similar`, `sobrescrever` — MVP2) e que o
+(`taguear`, `taguear_com_tag_similar`, `sobrescrever`) e que o
 tipo devolvido (`TaggableResource`) não carrega o campo `decisao` — a
 garantia estrutural descrita no docstring de `tag_execution.py` (não dá
 para repassar um recurso `pular_iac`/`ja_ok` adiante por engano,

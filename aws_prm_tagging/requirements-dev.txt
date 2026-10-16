@@ -1,3 +1,4 @@
+boto3[crt]>=1.43
 pytest>=8.0
 pyyaml>=6.0
 cfn-lint>=1.0

@@ -10,13 +10,13 @@ set -uo pipefail
 
 uso() {
   cat <<'EOF'
-uso: deploy/implantar_conta.sh --profile P --valor pc:XXXX [--email E] [opções]
+uso: deploy/implantar_conta.sh --profile P [opções]
 
-obrigatórios:
+obrigatório:
   --profile P               perfil AWS da conta do cliente
-  --valor pc:XXXX           valor da tag aws-apn-id (product code do contrato)
 
 opções:
+  --valor pc:XXXX           valor da tag aws-apn-id (default: pc:825bh0xhwumf14tg27cthnoss, o da Darede)
   --email E                 e-mail que recebe as notificações (confirmar a assinatura);
                             sem ele, os resultados ficam só no tópico SNS (ex.: Zabbix)
   --topico-central ARN      publica no tópico central da organização (template-central.yaml)
@@ -36,7 +36,7 @@ EOF
   exit 1
 }
 
-PROFILE=""; VALOR=""; EMAIL=""; HUB="us-east-1"; REGIOES=""; MODO_INI="dry-run"; MODO_VAR="dry-run"
+PROFILE=""; VALOR="pc:825bh0xhwumf14tg27cthnoss"; EMAIL=""; HUB="us-east-1"; REGIOES=""; MODO_INI="dry-run"; MODO_VAR="dry-run"
 REEXEC="1"; CONTRATO="false"; REG_VAR=""; SIM=0; MOSTRAR=0; PREFIXO="prm-tagging"
 CENTRAL=""; KMS_CENTRAL=""; ARQ="arm64"
 while [[ $# -gt 0 ]]; do
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "opção desconhecida: $1"; uso;;
   esac
 done
-[[ -n "$PROFILE" && -n "$VALOR" ]] || uso
+[[ -n "$PROFILE" ]] || uso
 [[ -z "$CENTRAL" || -n "$KMS_CENTRAL" ]] || { echo "--topico-central exige --kms-central"; exit 1; }
 [[ "$ARQ" =~ ^(arm64|x86_64)$ ]] || { echo "--arquitetura: arm64 ou x86_64"; exit 1; }
 [[ "$VALOR" =~ ^pc:[A-Za-z0-9]+$ ]] || { echo "--valor precisa ser pc:<código alfanumérico>"; exit 1; }

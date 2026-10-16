@@ -4,13 +4,13 @@ Responde duas perguntas, por conta:
 
 1. **Há uma trail do CloudTrail registrando eventos de gerenciamento de
    ESCRITA em cada região?** Sem isso, as regras "AWS API Call via
-   CloudTrail" do EventBridge simplesmente não recebem eventos (exigência
-   documentada pela AWS — achado A3 do plano). A regra nativa de EC2
+   CloudTrail" do EventBridge não recebem eventos (exigência documentada
+   pela AWS). A regra nativa de EC2
    continua funcionando sem trail; o resto da Etapa 3 não.
 2. **Em quais regiões implantar a stack regional?** Regiões ativas da
    conta (mesmo critério da Etapa 1) + `us-east-1` SEMPRE — é a única
    região onde o EventBridge recebe eventos de serviços globais (Route 53,
-   CloudFront), mesmo que a conta não tenha nada lá (item 7).
+   CloudFront), mesmo que a conta não tenha nada lá.
 
 Nenhuma escrita. Permissões: `ec2:DescribeRegions`,
 `cloudtrail:DescribeTrails`, `cloudtrail:GetTrailStatus`,

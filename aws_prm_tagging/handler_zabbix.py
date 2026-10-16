@@ -1,4 +1,4 @@
-"""Lambda que encaminha ao Zabbix as mensagens do tópico PRM (MVP2, item 1).
+"""Lambda que encaminha ao Zabbix as mensagens do tópico PRM.
 
 Assinada no tópico SNS (central da organização ou de uma conta) pela stack
 `infra/template-zabbix.yaml`. Ver `zabbix.py` para o mapeamento de itens.

@@ -1,25 +1,16 @@
-"""Tagueamento inicial assíncrono — item 8 do plano.
+"""Tagueamento inicial assíncrono e varredura recorrente (stack hub).
 
-Três handlers, todos na stack HUB (uma vez por conta):
+1. `custom_resource`: Custom Resource do CloudFormation. No `Create` (e no
+   `Update` quando `ReexecutarTagueamentoInicial` muda) inicia a state
+   machine e responde na hora, pois o tagueamento pode passar do limite de
+   1 h do Custom Resource. No `Delete` não faz nada (nunca remove tags).
+2. `listar_regioes`: regiões ativas da conta (mesmo critério da Etapa 1).
+3. `processar_regiao`: um item do `Map`, Etapas 1 -> 2a -> 2b/2c numa região
+   (`pipeline.executar_regiao`), com o resumo publicado no tópico do hub.
+   Se a região estourar 15 min, a state machine publica a falha.
 
-1. `custom_resource` — Custom Resource do CloudFormation. No `Create` (e no
-   `Update` quando o parâmetro `ReexecutarTagueamentoInicial` muda), INICIA
-   a state machine do tagueamento inicial e responde ao CloudFormation na
-   hora. O tagueamento em si pode levar muito mais que o limite de 1h de um
-   Custom Resource — por isso é assíncrono. No `Delete` não faz nada (a
-   automação nunca remove tags).
-2. `listar_regioes` — primeiro passo da state machine: regiões ativas da
-   conta (mesmo critério da Etapa 1).
-3. `processar_regiao` — um item do `Map`: Etapa 1 -> 2a -> 2b/2c para UMA
-   região (`pipeline.executar_regiao`) e publica o resumo no tópico do hub.
-   Uma Lambda por região mantém cada execução bem abaixo dos 15 min na
-   maioria das contas; se estourar, a state machine captura e publica a
-   falha da região (quem opera roda o CLI para aquela região).
-
-Modo (`MODO_TAGUEAMENTO_INICIAL`): `dry-run` (default — nada é escrito, o
-resumo mostra o que seria feito), `live` ou `desligado`. O guia PRM exige
-consentimento do cliente antes de taguear; `dry-run` como default deixa
-essa decisão explícita no deploy.
+`MODO_TAGUEAMENTO_INICIAL`: `dry-run` (padrão), `live` ou `desligado`. O guia
+PRM exige consentimento do cliente antes de taguear.
 """
 from __future__ import annotations
 
@@ -60,8 +51,8 @@ def _responder(event: dict, context, status: str, dados: dict | None = None, mot
         }
     ).encode()
     url = event["ResponseURL"]
-    # MVP2 (segurança): o CloudFormation sempre manda uma URL pré-assinada
-    # HTTPS do S3. Qualquer outra coisa (file://, http://) é recusada.
+    # O CloudFormation sempre manda uma URL pré-assinada HTTPS do S3; outra
+    # coisa (file://, http://) é recusada.
     if not str(url).startswith("https://"):
         raise ValueError("ResponseURL precisa ser https://")
     req = urllib.request.Request(
@@ -145,9 +136,7 @@ def _saude_regional(session: boto3.Session, regiao: str) -> dict:
 
 def _tem_novidade(resumo: dict) -> bool:
     if resumo.get("regiao_bloqueada_por_scp"):
-        # Estado conhecido da organização (SCP de restrição de regiões): não
-        # dá para descobrir nada nem implantar a stack regional ali. Visto
-        # na sandbox em 2026-10-02: 13 e-mails por varredura só por isso.
+        # SCP de restrição de regiões: nada a descobrir nem implantar ali.
         return False
     return bool(
         set(resumo["por_categoria"]) - _SEM_NOVIDADE
@@ -177,11 +166,10 @@ def processar_regiao(event: dict, context=None, *, session: boto3.Session | None
     # us-east-1 (dry-run)") — ASCII, como o SNS exige no Subject.
     resumo["categoria_final"] = f"resumo {regiao} ({modo})"
     resumo.update(_saude_regional(session, regiao))
-    # MVP2 (item 3): confirma que a Lambda usa o SDK da layer, não o do runtime.
+    # Confirma que a Lambda usa o SDK da layer, não o do runtime.
     resumo["versao_boto3"] = boto3.__version__
-    # Conta que herdou o contrato pelo default da OU (auto-deployment do
-    # StackSet) não é considerada validada até alguém confirmar —
-    # docs/arquitetura-multicliente.md. Parâmetro ContratoConfirmado do hub.
+    # Conta que herdou o valor pelo default da OU (auto-deployment) só conta
+    # como validada após confirmação (parâmetro ContratoConfirmado do hub).
     resumo["contrato_confirmado"] = os.environ.get("CONTRATO_CONFIRMADO", "false").lower() == "true"
 
     publicar = (

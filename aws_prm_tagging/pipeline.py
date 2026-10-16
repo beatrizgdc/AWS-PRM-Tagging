@@ -1,7 +1,7 @@
 """Pipeline Etapa 1 -> 2a -> 2b/2c como funções reutilizáveis.
 
-Usado pelo CLI (`main.py map`) e pela Lambda do tagueamento inicial (item 8,
-`handler_initial_tagging.py`) — uma única implementação da descoberta, para
+Usado pelo CLI (`main.py map`) e pela Lambda do tagueamento inicial
+(`handler_initial_tagging.py`) — uma única implementação da descoberta, para
 os dois caminhos nunca divergirem.
 """
 from __future__ import annotations
@@ -61,10 +61,8 @@ def descobrir_regioes(
                 logger.exception("Falha inesperada na descoberta %s em %s — continuando", nome, regiao)
                 recursos, f = [], [{"regiao": regiao, "etapa": nome, "erro": str(exc)}]
             if nome == "generico" and any(_negado_por_scp(x) for x in f):
-                # Região inteira bloqueada por SCP (ex.: restrição de
-                # regiões da organização): UMA entrada, e nada mais é
-                # tentado nela — as outras etapas falhariam pela mesma
-                # causa (visto na sandbox: 4 falhas idênticas por região).
+                # Região inteira bloqueada por SCP: uma entrada só, e nada mais é
+                # tentado nela (as outras etapas falhariam pela mesma causa).
                 regioes_negadas_scp.add(regiao)
                 falhas.append({"regiao": regiao, "etapa": ETAPA_REGIAO_NEGADA_SCP, "erro": f[0]["erro"]})
                 break
@@ -74,9 +72,8 @@ def descobrir_regioes(
             logger.warning("Região %s bloqueada por SCP — pulada", regiao)
             continue
 
-        # Item 1: pulado quando o GetResources da região foi negado
-        # (tipicamente SCP de restrição de região — mesma causa derrubaria
-        # os ~50 enumeradores).
+        # Pulado quando o GetResources da região foi negado (SCP de região
+        # derrubaria todos os enumeradores pela mesma causa).
         negado = any(
             f["regiao"] == regiao and f["etapa"] == "generico" and "AccessDenied" in f["erro"] for f in falhas
         )
@@ -110,9 +107,8 @@ def descobrir_regioes(
         logger.info("Descoberta nativa: %d recurso(s) sem nenhuma tag acrescentados", len(novos))
     todos.extend(novos)
 
-    # MVP2: Terraform/OpenTofu/Pulumi quase nunca deixam tag — o histórico
-    # do CloudTrail (userAgent das chamadas de escrita) pega os recursos
-    # que a heurística de tags perde. Só para candidatos a tagueamento.
+    # Terraform/OpenTofu/Pulumi quase nunca deixam tag: o histórico do
+    # CloudTrail pega o que a heurística perde. Só para candidatos a tagueamento.
     if historico_cloudtrail and todos:
         stats = cloudtrail_iac.enriquecer_iac(session, todos, orcamento_cloudtrail_s)
         falhas.extend(stats["falhas"])
@@ -178,8 +174,7 @@ def executar_regiao(
         # Região inteira negada por SCP: estado conhecido da organização, não
         # novidade (a varredura recorrente não publica por isso).
         "regiao_bloqueada_por_scp": any(f.get("etapa") == ETAPA_REGIAO_NEGADA_SCP for f in falhas),
-        # MVP2: relatório do cliente resumido (lista completa: CLI 'apply' /
-        # 'iniciar', que grava o relatório inteiro em arquivo).
+        # Relatório do cliente resumido (completo: CLI `apply` / `iniciar`).
         "por_acao": execucao.get("resumo", {}).get("por_acao", {}),
         "cliente_resumo": rel_cliente["resumo"],
         "iac_amostra": [

@@ -1,9 +1,6 @@
-"""`cfn-lint` contra `infra/template.yaml` — validação estática (sem AWS,
-sem Docker) das regras de CloudFormation/SAM: tipos de recurso válidos,
-propriedades obrigatórias, referências (`!Ref`/`!GetAtt`) que resolvem para
-um recurso que existe, etc. Roda via `pytest.importorskip` — some
-silenciosamente se `cfn-lint` não estiver instalado no ambiente (não é uma
-dependência de runtime do projeto, só de desenvolvimento/CI)."""
+"""`cfn-lint` contra os templates de `infra/` (validação estática, sem AWS).
+Pulado se `cfn-lint` não estiver instalado (dependência só de dev/CI).
+"""
 from __future__ import annotations
 
 from pathlib import Path

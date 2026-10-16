@@ -1,7 +1,13 @@
-# Automação de Tagueamento AWS PRM — MVP 2
+# Automação de Tagueamento AWS PRM — MVP 2 (v1)
 
-13/10/2026 · Complementa o [MVP-1.md](MVP-1.md), que continua valendo para
+16/10/2026 · Complementa o [MVP-1.md](MVP-1.md), que continua valendo para
 tudo o que não está aqui (arquitetura base, Etapas 1 a 4, CLI, operação).
+Pendências em [pendencias.md](pendencias.md).
+
+**Valor da tag:** `pc:825bh0xhwumf14tg27cthnoss`, o product code da Darede, é
+o padrão em todo lugar (CLI, modo interativo, scripts e templates). `--valor`
+/ `--expected-tag-value` / `ExpectedTagValue` só são necessários para outro
+contrato.
 
 ## O que mudou
 
@@ -9,20 +15,23 @@ O MVP2 atende os seis pedidos de 13/10/2026:
 
 | # | Pedido | O que foi feito | Validação |
 | --- | --- | --- | --- |
-| 6 | Regra nova da AWS: pode sobrescrever outro parceiro; IaC não é tagueado e vai para lista do cliente | Decisão nova, detecção de Terraform/OpenTofu/CloudFormation/CDK/Pulumi (tags e CloudTrail), relatório do cliente com IaC e estado anterior | Local (moto). Sandbox: guia passos B, C, E |
-| 3 | SDK atual nas Lambdas | boto3/botocore 1.43.113, fixados por hash, numa Lambda Layer | Local (`sam build`). Sandbox: passo D (`versao_boto3`) |
-| 2 | Rollout por StackSets | Templates expandidos sem transform, bucket de artefatos por região na payer, CLI `stackset.py`, tópico central opcional | Local (moto + CloudFormation falso). Payer de teste: opcional O3 |
-| 4 | Modo interativo | `python3 iniciar.py`: mapear, simular, taguear e implantar, com resumo e confirmação | Local (sessões simuladas) |
+| 6 | Regra nova da AWS: pode sobrescrever outro parceiro; IaC não é tagueado e vai para lista do cliente | Decisão nova, detecção de Terraform/OpenTofu/CloudFormation/CDK/Pulumi (tags e CloudTrail), relatório do cliente com IaC e estado anterior | Local (moto) e sandbox |
+| 3 | SDK atual nas Lambdas | boto3/botocore 1.43.113, fixados por hash, numa Lambda Layer | Local (`sam build`) e sandbox |
+| 2 | Rollout por StackSets | Templates expandidos sem transform, bucket de artefatos por região na payer, CLI `stackset.py`, tópico central opcional | Local (moto + CloudFormation falso). Payer de teste: pendente |
+| 4 | Modo interativo | `python3 iniciar.py`: mapear, simular, taguear e implantar, com resumo e confirmação | Local (sessões simuladas) e sandbox |
 | 1 | Zabbix | Lambda que assina o tópico e envia por API (`history.push`) ou trapper; template de importação | Local (servidor trapper falso). Zabbix real: quando o acesso sair |
 | 5 | Well-Architected + segurança | Revisão dos 6 pilares, bandit/checkov/pip-audit/cfn-lint, correções aplicadas | Local |
 
 Achado no caminho: duas ações de IAM do MVP1 não existiam
-(`apigateway:TagResource` e `cloudhsm:AddTagsToResource`). Tagueamento de
-API Gateway e CloudHSM teria falhado com `AccessDenied` na conta real.
-Corrigido para `apigateway:PUT` em `/tags/*` e `cloudhsm:TagResource`,
-sempre com a condição `aws:TagKeys = [aws-apn-id]`.
+(`apigateway:TagResource` e `cloudhsm:AddTagsToResource`). Corrigido para
+`apigateway:PUT` em `/tags/*` e `cloudhsm:TagResource`, sempre com a condição
+`aws:TagKeys = [aws-apn-id]`.
 
-Testes automatizados: **608** (eram 505), todos passando no pacote.
+A política IAM mínima para rodar o CLI ou o modo interativo sai de
+`python3 -m aws_prm_tagging.main politica-iam` (`--com-escrita` inclui o
+`apply --live`), gerada do próprio template do hub.
+
+Testes automatizados: **609**, todos passando.
 
 ## 1. Regra de negócio nova
 
@@ -163,10 +172,9 @@ Os templates do StackSet são CloudFormation puro, gerados do SAM pelo
 nem de `CAPABILITY_AUTO_EXPAND`, e cabem no limite de 51.200 bytes do
 corpo do template.
 
-**O valor do contrato é por OU:** cada `implantar` aplica o `pc:` como
-override daquela OU. OUs com contratos diferentes são implantações
-separadas. Ainda falta a lista OU → contrato de cada cliente (informação
-de negócio).
+**O valor é por OU:** cada `implantar` aplica o `pc:` (padrão: o da Darede;
+outro com `--valor`) como override daquela OU. OUs com valores diferentes
+são implantações separadas.
 
 ### Passo a passo (conta payer)
 
@@ -175,7 +183,7 @@ de negócio).
 | 1. Empacotar (local) | `python3 deploy/stacksets/empacotar.py --versao 2.0.0` | `dist/stacksets/2.0.0/` no computador | — | apagar a pasta |
 | 2. Tópico central (opcional) | `aws cloudformation deploy --template-file aws_prm_tagging/infra/template-central.yaml --stack-name prm-central --parameter-overrides OrgId=o-... NotificationEmail=...` | tópico, chave KMS, fila e DLQ | ~US$ 1/mês (chave KMS) + uso | `aws cloudformation delete-stack --stack-name prm-central` |
 | 3. Publicar artefatos | `python3 deploy/stacksets/stackset.py publicar --profile payer --dist dist/stacksets/2.0.0 --regioes us-east-1,sa-east-1,...` | 1 bucket por região (~17 MB cada) | centavos/mês | `stackset.py remover --somente-artefatos ...` |
-| 4. Implantar numa OU | `python3 deploy/stacksets/stackset.py implantar --profile payer --dist dist/stacksets/2.0.0 --ou ou-xxxx-yyyyyyyy --valor pc:XXXX --hub-regiao us-east-1 [--topico-central-arn ... --kms-central-arn ...]` | StackSets e uma stack por conta e região | por uso (ver Custos) | `stackset.py remover --ou ... --regioes ... --hub-regiao ...` |
+| 4. Implantar numa OU | `python3 deploy/stacksets/stackset.py implantar --profile payer --dist dist/stacksets/2.0.0 --ou ou-xxxx-yyyyyyyy --hub-regiao us-east-1 [--topico-central-arn ... --kms-central-arn ...]` | StackSets e uma stack por conta e região | por uso (ver Custos) | `stackset.py remover --ou ... --regioes ... --hub-regiao ...` |
 | 5. Acompanhar | `python3 deploy/stacksets/stackset.py status --profile payer` | — | — | — |
 
 Sobre cada comando:
@@ -240,7 +248,7 @@ tentativas, a mensagem vai para a DLQ (14 dias) e o alarme dispara.
 | --- | --- | --- |
 | **Segurança** | Menor privilégio, criptografia, segredos, entrada externa, supply chain | Tópico SNS do hub criptografado (`alias/aws/sns`, sem custo). Tópico central com KMS próprio, rotação e acesso só da organização + TLS. Buckets de artefatos privados, versionados, só organização + TLS. Token do Zabbix no SSM SecureString (nunca em variável de ambiente). SDK fixado por hash. URLs validadas. Ações IAM corrigidas. |
 | **Confiabilidade** | Retentativas, DLQs, isolamento de falha, idempotência, timeouts | DLQ também para erro da função de drift (antes só falha de entrega). Timeout da Etapa 3 de 60 para 120 s (histórico do CloudTrail sob throttling, com tentativas curtas). StackSet com tolerância a falha por região/conta. Zabbix com DLQ e alarme. |
-| **Excelência operacional** | Implantação, observabilidade, runbooks, remoção sem resíduo | Log groups dentro das stacks, com retenção (30 dias, parâmetro `RetencaoLogsDias`) e removidos junto (no MVP1 ficavam órfãos). Modo interativo. `versao_boto3` no resumo. CLI de StackSets com plano/confirmação/status. Guia de sandbox do MVP2. |
+| **Excelência operacional** | Implantação, observabilidade, runbooks, remoção sem resíduo | Log groups dentro das stacks, com retenção (30 dias, parâmetro `RetencaoLogsDias`) e removidos junto (no MVP1 ficavam órfãos). Modo interativo. `versao_boto3` no resumo. CLI de StackSets com plano/confirmação/status. Roteiro de validação em `test/sandbox/`. |
 | **Eficiência de desempenho** | Memória, concorrência, chamadas de API | arm64 (Graviton) como padrão (`Arquitetura`). Histórico do CloudTrail só para candidatos, com orçamento de tempo. Zip de código único compartilhado entre funções e stacks. |
 | **Otimização de custos** | Custo parado, custo por evento, alarmes | Nada cobra por hora. arm64 ~20% mais barato por GB-s. Sem alarme por região (a varredura diária já lê a DLQ de cada região; um alarme por região e conta custaria US$ 0,10 cada). Logs com retenção. |
 | **Sustentabilidade** | Recursos ociosos, arquitetura | Tudo serverless e acionado por evento. Graviton. Varredura com agenda ajustável (diária por padrão; semanal reduz o consumo). |
@@ -280,16 +288,17 @@ Por conta, em uso normal (conferir na calculadora da AWS para volumes reais):
   - `NotificationEmail` passou a ser opcional (vazio = sem e-mail). Para manter o e-mail, passe `--email` de novo.
 - **`implantar_conta.sh`** ganhou `--topico-central`/`--kms-central` e `--arquitetura`.
 
-## 9. Validação: o que falta na AWS real
+## 9. Validação
 
-O guia `aws_prm_tagging/test/GUIA-SANDBOX-MVP2.md` traz cada passo com o
-que cria, o custo e a remoção. Pendências que dependem de acesso:
+Validado na sandbox (us-east-1) com o roteiro `aws_prm_tagging/test/sandbox/GUIA.md`:
+regra nova (sobrescrita, chave parecida, Terraform e Pulumi pulados), detecção
+de IaC pelo histórico do CloudTrail, relatório do cliente, modo interativo,
+layer do SDK e implantação das stacks.
+
+Falta, por depender de acesso (detalhes em [pendencias.md](pendencias.md)):
 
 | Pendência | Depende de |
 | --- | --- |
-| Regra nova, IaC por userAgent, layer, log groups, relatório do cliente | sandbox (guia, passos B a F) |
-| Publicação entre regiões (pendente do MVP1) | sandbox (opcional O1) |
-| Instância EC2 de IaC pelo histórico | sandbox (opcional O2, ~US$ 0,002) |
+| Zabbix | acesso ao Zabbix (versão, URL, rede, token) |
 | StackSets de ponta a ponta | conta payer de uma organização de teste |
-| Zabbix | acesso ao Zabbix |
 | `auditar-org` e tagueamento em escala (live) | conta de cliente, com consentimento |

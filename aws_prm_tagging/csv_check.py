@@ -1,17 +1,14 @@
-"""Etapa 4 — alerta quando a lista oficial de serviços muda (ideia do gestor,
-registrada em docs/melhorias-futuras.md).
+"""Etapa 4: alerta quando a lista oficial de serviços muda.
 
-Compara a tabela "Resource Tagging Included Services" publicada na página
-oficial do guia com o CSV empacotado (`data/...csv`) e com o mapeamento de
-eventos (`event_mapping.py`). Motivação concreta: em 2026-09-30 o CSV do
-projeto estava 8 serviços atrás da página, e o link de download do zip
-oficial devolvia 404 — por isso a fonte é a TABELA da página, não o zip.
+Compara a tabela "Resource Tagging Included Services" da página oficial do
+guia com o CSV empacotado (`data/...csv`) e com o mapeamento de eventos
+(`event_mapping.py`). A fonte é a tabela da página, não o zip oficial (que
+já ficou desatualizado e com link quebrado).
 
-Roda centralmente (CLI/CI na Darede), não em cada conta de cliente: o CSV é
-o mesmo para todos, e rodar em ~80 contas geraria o mesmo alerta 80 vezes.
-Exige acesso de saída à internet (docs.aws.amazon.com).
+Roda centralmente (CLI/CI na Darede), não em cada conta: o CSV é o mesmo
+para todos. Exige acesso de saída a docs.aws.amazon.com.
 
-Código de saída do subcomando: 0 = sem diferença, 3 = diferença encontrada.
+Código de saída: 0 = sem diferença, 3 = diferença encontrada.
 """
 from __future__ import annotations
 

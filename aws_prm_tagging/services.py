@@ -1,43 +1,18 @@
-"""Lista de serviços elegíveis ao PRM (Resource Tagging) e classificação de ARNs.
+"""Serviços elegíveis ao PRM (Resource Tagging) e classificação de ARNs.
 
-A lista de serviços é extraída integralmente do CSV oficial
-(`data/resource-tagging-included-services.csv`, fonte de verdade fornecida pela
-AWS) — nunca hardcoded aqui. O que este módulo adiciona é um mapeamento técnico
-entre o "namespace" de serviço usado nos ARNs (ex.: "ec2", "s3", "rds") e o
-"Product Service Code" da linha correspondente do CSV, necessário porque a
-Resource Groups Tagging API devolve ARNs, não códigos de billing, e o CSV não
-traz essa correspondência.
+A lista vem do CSV oficial da AWS (`data/resource-tagging-included-services.csv`).
+Este módulo acrescenta o mapeamento do namespace do ARN (ex.: "ec2", "s3")
+para o Product Service Code do CSV, porque a Tagging API devolve ARNs.
 
-Esse mapeamento é heurístico/best-effort e tem duas limitações conhecidas,
-documentadas para os próximos estágios:
+Casos especiais em `classify_arn`:
 
-1. Namespace "rds" é compartilhado por Amazon RDS, Aurora, Amazon DocumentDB e
-   Amazon Neptune (todos usam ARNs `arn:aws:rds:...`). Sem chamar a API
-   específica de cada engine (para inspecionar o atributo Engine), não é
-   possível diferenciar com certeza — todos os recursos "rds" são
-   classificados como "Amazon Relational Database Service (RDS)".
-2. Namespace "ec2" é compartilhado por Amazon EC2 e pelos recursos de rede que
-   a AWS fatura sob o código "AmazonVPC" (Transit Gateway, VPC, Peering,
-   Direct Connect Gateway). Usamos o tipo de recurso dentro do ARN
-   (ex.: "instance", "volume" vs. "vpc", "transit-gateway") para desambiguar
-   na função `classify_arn`.
-
-O código "AmazonVPC" também é compartilhado no CSV por DUAS linhas ("AWS
-Transit Gateway" e "Amazon VPC Lattice") — ao contrário da limitação nº 2
-acima, aqui não é ambiguidade real: o namespace "vpc-lattice" do ARN já
-identifica o recurso sem dúvida nenhuma. `classify_arn` desambigua isso por
-nome (`_service_by_name`) em vez de por código, para não deixar
-`_service_by_code` pegar sempre a primeira linha com esse código (que
-rotularia todo recurso VPC Lattice como "AWS Transit Gateway" no
-relatório — a tag aplicada não mudaria, só o campo "servico").
-
-O namespace "ssm" também precisa de tratamento à parte: a linha do CSV para
-"AWS Systems Manager" traz a nota "OpsCenter only", mas o namespace "ssm"
-nos ARNs cobre muito mais que isso (parameters, documents, maintenance
-windows, associations...). Sem desambiguar, o passo genérico taguearia todo
-tipo de recurso SSM, não só OpsItems — inflando o relatório e indo contra a
-nota do CSV. `classify_arn` usa o tipo de recurso do ARN (mesmo padrão já
-usado para "ec2") para aceitar só `opsitem`.
+- "rds" cobre RDS, Aurora, DocumentDB e Neptune; sem chamar a API não dá para
+  separar, então tudo sai como RDS (na Etapa 3 o `engine` do evento separa).
+- "ec2" cobre EC2 e a rede faturada como "AmazonVPC"; o tipo de recurso do
+  ARN desambigua.
+- "AmazonVPC" tem duas linhas no CSV (Transit Gateway e VPC Lattice); o
+  namespace "vpc-lattice" é resolvido por nome, não por código.
+- "ssm": o CSV inclui só o OpsCenter, então só o tipo `opsitem` entra.
 """
 from __future__ import annotations
 
@@ -79,9 +54,7 @@ def load_services() -> list[Service]:
     return services
 
 
-# namespace do ARN (arn:aws:<namespace>:...) -> Product Service Code do CSV.
-# Serviços tratados via lógica dedicada (Bedrock, EKS) são deliberadamente
-# omitidos daqui e nunca classificados pela descoberta genérica.
+# Bedrock e EKS ficam de fora: têm descoberta dedicada.
 _NAMESPACE_TO_CODE: dict[str, str] = {
     "apigateway": "AmazonApiGateway",
     "appstream": "AmazonAppStream",
@@ -89,11 +62,8 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "athena": "AmazonAthena",
     "dsql": "AuroraDSQL",
     "backup": "AWSBackup",
-    # "bedrock" (foundation-model / inference-profile) fica de fora de propósito:
-    # só application inference profiles contam para atribuição e não são bem
-    # cobertos pela Resource Groups Tagging API — tratados via lógica dedicada
-    # em resource_discovery.py. AgentCore não é caso especial no guia e usa
-    # tagging genérico normalmente.
+    # "bedrock" fica de fora: só application inference profiles contam e são
+    # tratados em resource_discovery.py. AgentCore usa o passo genérico.
     "bedrock-agentcore": "AmazonBedrockAgentCore",
     "acm": "AWSCertificateManager",
     "acm-pca": "AWSCertificateManager",
@@ -116,8 +86,7 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "directconnect": "AWSDirectConnect",
     "ds": "AWSDirectoryService",
     "dynamodb": "AmazonDynamoDB",
-    # DAX: linha própria no CSV desde 2026-09-30 (antes a linha de DynamoDB
-    # dizia "Excludes DAX" e o namespace ficava de fora de propósito).
+    # DAX tem linha própria no CSV.
     "dax": "AmazonDAX",
     # ec2: desambiguado em classify_arn (AmazonEC2 vs AmazonVPC).
     "ecr": "AmazonECR",
@@ -172,24 +141,16 @@ _NAMESPACE_TO_CODE: dict[str, str] = {
     "sqs": "AWSQueueService",
     "states": "AmazonStates",
     "storagegateway": "AWSStorageGateway",
-    # ssm: desambiguado em classify_arn — o CSV só inclui OpsCenter, não o
-    # namespace "ssm" inteiro (ver docstring do módulo).
+    # ssm: só opsitem (classify_arn).
     "timestream": "AmazonTimestream",
     "transfer": "AWSTransfer",
-    # "vpc-lattice" fica de fora de propósito: compartilha o código
-    # "AmazonVPC" com "AWS Transit Gateway" no CSV — tratado à parte em
-    # `classify_arn` via `_service_by_name`, não por este mapeamento de
-    # código (ver docstring do módulo).
+    # "vpc-lattice" é resolvido por nome em `classify_arn` (código compartilhado).
     "workspaces": "AmazonWorkSpaces",
-    # Serviços que entraram no CSV em 2026-09-30 (ver reference/FONTE-CSV.md).
-    # Amazon EVS não tem namespace próprio aqui de propósito: só o EC2
-    # subjacente conta ("Only includes underlying Amazon EC2 use"), e as
-    # instâncias já são cobertas pelo namespace "ec2".
+    # Amazon EVS não tem namespace próprio: só o EC2 subjacente conta.
     "mobiletargeting": "AmazonPinpoint",  # AWS End User Messaging (apps Pinpoint)
     "sms-voice": "AmazonPinpoint",  # AWS End User Messaging SMS/Voice
     "workspaces-instances": "AmazonWorkSpacesInstances",
-    # Namespace de ARN do Amazon Connect Decisions (ex-AWS Supply Chain) é
-    # "scn" — confirmado pelos patterns de ARN do modelo botocore.
+    # Amazon Connect Decisions (ex-AWS Supply Chain): namespace "scn".
     "scn": "AWSSupplyChain",
     "gameliftstreams": "AmazonGameLiftStreams",
     "rtbfabric": "AWSRTBFabric",
@@ -214,8 +175,7 @@ _EC2_COMPUTE_RESOURCE_TYPES = {
     "reserved-instances",
     "security-group",
     "network-interface-attachment",
-    # NAT Gateway é cobrado sob Amazon EC2 ("EC2-Other"), não AmazonVPC —
-    # antes caía no rótulo "AWS Transit Gateway" no relatório.
+    # NAT Gateway é cobrado como EC2 ("EC2-Other").
     "natgateway",
 }
 
@@ -254,15 +214,11 @@ def classify_arn(arn: str, services: list[Service]) -> Optional[Service]:
         return _service_by_code(services, code)
 
     if namespace == "vpc-lattice":
-        # Ver docstring do módulo — namespace inequívoco, mas o código
-        # "AmazonVPC" é compartilhado com "AWS Transit Gateway" no CSV, e
-        # _service_by_code pegaria sempre a primeira linha com esse código.
+        # Código compartilhado no CSV: resolve por nome.
         return _service_by_name(services, "Amazon VPC Lattice")
 
     if namespace == "ssm":
-        # CSV: "OpsCenter only" — só o tipo de recurso "opsitem" está em
-        # escopo, não o namespace "ssm" inteiro (parameters, documents,
-        # maintenance windows...). Ver docstring do módulo.
+        # CSV: "OpsCenter only".
         resource_part = parts[5]
         resource_type = resource_part.split("/", 1)[0].split(":", 1)[0]
         if resource_type != "opsitem":

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  AWS PRM Resource Tagging - integração com o Zabbix (MVP2, item 1). Uma
+  AWS PRM Resource Tagging - integração com o Zabbix. Uma
   Lambda assinada no tópico SNS da automação (o central da organização ou o
   de uma conta) que envia cada mensagem ao Zabbix como itens trapper.
   Importar antes, no Zabbix, infra/zabbix/template-prm-tagging.yaml e

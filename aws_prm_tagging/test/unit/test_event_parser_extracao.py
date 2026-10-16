@@ -145,13 +145,8 @@ def test_evento_sem_detail_devolve_lista_vazia():
 
 
 def test_rds_create_db_instance_le_arn_achatado_confirmado_em_sandbox(cloudtrail_event_factory):
-    """Confirmado com um evento REAL capturado em sandbox (ver
-    test/manual-live-etapa3/README.md, 2026-09-23): ao contrário do shape
-    documentado do botocore (que embrulha a resposta em `{"DBInstance":
-    {...}}`), o CloudTrail grava `dBInstanceArn` já ACHATADO, direto na raiz
-    de `responseElements` — sem o wrapper. Bug real, não hipotético (a
-    versão anterior deste extractor procurava por `DBInstance.DBInstanceArn`
-    e nunca encontraria nada num evento de produção)."""
+    """Evento real: o CloudTrail grava `dBInstanceArn` achatado na raiz de
+        `responseElements`, sem o wrapper `DBInstance` do botocore."""
     event = cloudtrail_event_factory(
         event_source="rds.amazonaws.com",
         event_name="CreateDBInstance",
@@ -216,7 +211,7 @@ def test_elasticbeanstalk_create_application_constroi_arn_do_request(cloudtrail_
 
 
 def test_vpc_lattice_resolve_servico_pelo_nome_nao_pelo_codigo_ambiguo(cloudtrail_event_factory):
-    """Bug real encontrado em code review: o código `AmazonVPC` é
+    """Regressão: o código `AmazonVPC` é
     compartilhado no CSV por 2 linhas ("AWS Transit Gateway" primeiro,
     "Amazon VPC Lattice" depois) — resolver por código sozinho sempre pega
     a primeira, rotulando todo evento de VPC Lattice como "AWS Transit
@@ -246,7 +241,7 @@ def test_ec2_create_vpc_continua_resolvendo_transit_gateway(cloudtrail_event_fac
 
 
 def test_ec2_create_vpc_com_vpc_nulo_nao_quebra(cloudtrail_event_factory):
-    """Bug real encontrado em code review: `responseElements: {"vpc":
+    """Regressão: `responseElements: {"vpc":
     null}` (chave presente, valor `None`) quebrava com `AttributeError` —
     `.get("vpc", {})` só usa o default quando a CHAVE não existe. Devolve
     lista vazia, não exceção (princípio declarado na docstring do
@@ -312,7 +307,7 @@ def test_elbv2_create_load_balancer_le_arn_do_response(cloudtrail_event_factory)
 
 
 def test_classic_elb_create_load_balancer_constroi_arn_do_request(cloudtrail_event_factory):
-    """Bug real encontrado em code review: `elasticloadbalancing.amazonaws.
+    """Regressão: `elasticloadbalancing.amazonaws.
     com`/`CreateLoadBalancer` é compartilhado pelo Classic ELB (pacote
     `elb`) e pelo elbv2 (ALB/NLB) — mesmo eventSource/eventName, shapes de
     resposta diferentes. Classic ELB devolve só `{"DNSName": ...}`, sem

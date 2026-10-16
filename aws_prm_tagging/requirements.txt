@@ -1,1 +1,2 @@
-boto3>=1.43
+boto3[crt]>=1.43
+pyyaml>=6.0

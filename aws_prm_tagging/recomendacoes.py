@@ -1,5 +1,4 @@
-"""Recomendações de tagueamento NA ORIGEM — itens 12 e 14 do plano (decisão
-de 2026-09-30). Somente leitura.
+"""Recomendações de tagueamento na origem. Somente leitura.
 
 ## Por que existe
 
@@ -18,7 +17,7 @@ alcança o que gera a cobrança:
 - **DRS**: os recursos de replicação nascem com as tags de
   `stagingAreaTags` do replication configuration template.
 - **IoT Core**: o consumo é atribuído pelo billing group — as things
-  precisam estar num billing group tagueado (validação de 2026-09-30).
+  precisam estar num billing group tagueado.
 
 A Etapa 3 continua tagueando reativamente como rede de segurança; estas
 recomendações tornam o resultado durável e cobrem o que a reação não
@@ -83,9 +82,7 @@ def _tem_tag_prm(specs: Iterable[dict], resource_type: str, valor: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# EKS (item 12)
-# ---------------------------------------------------------------------------
+# --- EKS ---
 
 
 def _eks(session, regiao: str, valor: str) -> list[dict]:
@@ -198,9 +195,7 @@ def _eks(session, regiao: str, valor: str) -> list[dict]:
     return recs
 
 
-# ---------------------------------------------------------------------------
-# ECS (item 14)
-# ---------------------------------------------------------------------------
+# --- ECS ---
 
 
 def _ecs(session, regiao: str, valor: str) -> list[dict]:
@@ -227,14 +222,12 @@ def _ecs(session, regiao: str, valor: str) -> list[dict]:
     return recs
 
 
-# ---------------------------------------------------------------------------
-# DRS e IoT (item 10, validação de 2026-09-30)
-# ---------------------------------------------------------------------------
+# --- DRS e IoT ---
 
 
-# Códigos que significam "o serviço não está em uso nesta conta/região" —
-# estado normal, não falha. Achado na sandbox em 2026-09-30: o DRS devolve
-# UninitializedAccountException em toda conta que nunca o habilitou.
+# Códigos que significam "serviço não usado nesta conta/região" (estado
+# normal, não falha): o DRS devolve UninitializedAccountException em conta
+# que nunca o habilitou.
 _SERVICO_NAO_INICIALIZADO = frozenset({"UninitializedAccountException"})
 
 

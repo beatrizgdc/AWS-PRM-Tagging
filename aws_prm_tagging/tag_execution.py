@@ -1,220 +1,44 @@
-"""Execução do tagueamento (Etapa 2b: dry-run; Etapa 2c: escrita real) a
-partir do relatório de decisão da Etapa 2a (`decision.build_decision_report`).
+"""Execução do tagueamento: Etapa 2b (dry-run) e Etapa 2c (escrita real).
 
-Um único ponto de entrada, `run_tagging_execution`, atende as duas etapas —
-`dry_run=True` (default) é a Etapa 2b, `dry_run=False` é a Etapa 2c. A
-única coisa que muda entre os dois modos é qual `Executor` está por baixo
-(`DryRunExecutor`, que só loga, vs. `LiveExecutor`, que chama boto3 de
-verdade) — todo o resto (roteamento de API, agrupamento em lotes,
-revalidação, classificação de erro, montagem do relatório final) é
-exatamente o mesmo código, nunca duplicado entre as duas etapas. Em
-`dry_run=True`, nenhuma chamada de ESCRITA é feita na conta — só leitura
-(revalidação, salvo com `revalidate=False`).
+`run_tagging_execution` atende as duas etapas; só o `Executor` muda
+(`DryRunExecutor` loga, `LiveExecutor` chama a AWS). Roteamento de API,
+lotes, revalidação, classificação de erro e relatório são o mesmo código.
 
-## Garantia estrutural de que só `decisao == "taguear"` gera uma chamada
+Garantia estrutural: `select_taggable` converte cada recurso que tagueia
+(`taguear`, `taguear_com_tag_similar`, `sobrescrever`) num
+`TaggableResource`, que não tem campo `decisao`. Nada além disso chega aos
+executores.
 
-`select_taggable()` é o único ponto de entrada aceito pelo resto do módulo.
-Ela converte cada recurso do relatório de decisão em um `TaggableResource`
-— um tipo que **não tem campo `decisao`**. Todas as funções abaixo
-(`route_strategy`, `_processar_genericos`/`_processar_dedicados`, os
-métodos de `Executor`) recebem `TaggableResource`, nunca o dict bruto do
-relatório 2a. Não existe caminho de código que aceite
-`pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` como parâmetro — é um erro de tipo, não uma
-condição que alguém possa esquecer de checar.
+APIs de escrita por tipo de recurso:
 
-## Mapeamento de API por tipo de recurso
+- genérico: `tag:TagResources`, até 20 ARNs por chamada; falha parcial vem
+  em `FailedResourcesMap`;
+- cluster e node group do EKS: `eks:TagResource` (a API de tags não cobre);
+- application inference profile do Bedrock: `bedrock:TagResource`;
+- load balancer de EKS: `elasticloadbalancing:AddTags`, 1 ARN por chamada.
 
-Confirmado na documentação oficial da AWS (API references, não a página-
-índice de "supported services", que é renderizada via JS):
+Revalidação: antes de agir, o estado atual de cada recurso é relido (todas
+as tags, não só a `aws-apn-id`) e passa pela mesma regra de
+`decision.py`:
 
-- Caminho genérico (`tag:TagResources`, Resource Groups Tagging API): cobre
-  a maioria dos serviços do CSV, incluindo os nodes EC2 e volumes EBS
-  descobertos como sub-recursos de EKS (são instâncias/volumes comuns por
-  baixo do capô — mesmo caminho de escrita que qualquer EC2 genérico).
-  Aceita até 20 ARNs por chamada (`ResourceARNList`, limite documentado —
-  não 50, como uma fonte não oficial sugeriu numa busca inicial). Resposta
-  traz `FailedResourcesMap` para falha parcial dentro de um lote "bem
-  sucedido" no nível HTTP.
-- `eks:TagResource` — cluster e node group do EKS. API dedicada porque a
-  Resource Groups Tagging API não cobre esses dois tipos (mesmo motivo pelo
-  qual `resource_discovery.py` já usa um client `eks` dedicado para
-  *ler* esses recursos, em vez do passo genérico). `resourceArn` é
-  singular — 1 recurso por chamada, sem batch.
-- `bedrock:TagResource` — application inference profiles. Mesma razão e
-  mesma limitação de 1 recurso por chamada que EKS.
-- `elasticloadbalancing:AddTags` — load balancers associados a um cluster
-  EKS. O parâmetro `ResourceArns` é formalmente um array, mas não há
-  confirmação oficial de que múltiplos ARNs num único `AddTags` funcionem
-  (há relatos de rejeição). Decisão conservadora: tratado como 1 ARN por
-  chamada, igual EKS/Bedrock — otimizar para lote fica para validação
-  empírica em sandbox na Etapa 2c, não é suposição usada aqui.
+1. valor já correto -> `ja_tagueado` (sem escrita; torna reexecuções
+   idempotentes);
+2. IaC detectado -> `iac_detectado_na_revalidacao` (sem escrita);
+3. senão, segue para a escrita; o estado lido vira `estado_anterior`.
 
-## Revalidação e idempotência
+Se a leitura de revalidação falhar, o recurso nunca é escrito
+(`revalidacao_falhou`, ou `recurso_nao_encontrado_na_revalidacao` quando o
+recurso sumiu). Por isso o modo live exige revalidação
+(`RevalidacaoObrigatoriaError`).
 
-Toda execução (dry-run ou, futuramente, live) revalida o estado atual do
-recurso imediatamente antes de agir sobre ele — controlável via
-`revalidate=False` em `run_tagging_execution`, default `True`. Dois motivos:
+Erros de escrita: throttling é absorvido por `retry.with_backoff`; o resto
+vira `erro_permissao`, `recurso_nao_encontrado` ou `erro` (código original
+em `detalhe_erro`). Uma falha nunca interrompe os demais lotes.
 
-1. Condição de corrida: o recurso pode ter sido deletado, tido a tag
-   alterada, ou passado a ser gerenciado por IaC, entre a execução da
-   Etapa 1/2a e a execução desta etapa.
-2. Idempotência entre execuções: se uma execução anterior já tiver
-   tagueado um recurso (ou outra automação já tiver aplicado a tag), rodar
-   de novo sobre o mesmo relatório de decisão não deve gerar uma nova
-   chamada de escrita para esse recurso. Isso é o que torna reexecuções
-   idempotentes por construção: o estado atual do recurso na AWS *é* a
-   fonte da verdade de "já foi feito ou não", sem precisar de nenhum
-   arquivo de progresso separado.
-
-**A revalidação reaplica a MESMA regra de precedência de `decision.py`**
-(`_classificar_estado_revalidado`, usada tanto pelo caminho genérico quanto
-pelos dedicados) — não só confere se a tag já está com o valor esperado.
-Quatro desfechos possíveis, nesta ordem (idêntica à de `decision._decidir`):
-
-1. Valor atual == valor esperado → `"ja_tagueado"`. Nenhuma chamada de
-   escrita.
-2. Valor atual presente e DIFERENTE do esperado → `"conflito_na_revalidacao"`.
-   Nenhuma chamada de escrita — um valor conflitante nunca é sobrescrito
-   automaticamente, apareça ele já na Etapa 2a ou só no momento da escrita.
-   IaC é irrelevante aqui (mesma regra de `decision.py`: um conflito nunca
-   vira "pular IaC" só porque o recurso também é gerenciado por IaC).
-3. Tag ausente E IaC detectado (só verificado quando a tag está mesmo
-   ausente — ver item 2) → `"iac_detectado_na_revalidacao"`. Nenhuma
-   chamada de escrita — cobre o recurso que passou a ser gerenciado por
-   IaC depois da Etapa 1/2a e antes desta execução.
-4. Tag ausente, sem IaC, mas uma tag de grafia parecida (ex.: `AWS-APN-ID`)
-   apareceu entre a Etapa 2a e esta execução →
-   `"tag_similar_encontrada_na_revalidacao"`. Nenhuma chamada de escrita —
-   mesma razão de `decision.py`: aplicar `aws-apn-id` por cima criaria uma
-   segunda chave quase-duplicada em vez de corrigir o erro original.
-5. Nenhum dos quatro → segue para a tentativa de escrita normal.
-
-(Uma versão anterior deste módulo só verificava o item 1, tratando "sem
-tag" e "tag com valor diferente" da mesma forma — o que faria uma execução
-real tentar sobrescrever um valor conflitante encontrado só no momento da
-escrita. Corrigido: a checagem agora é sempre de 4 vias, nunca só 2. O item
-4 acima foi adicionado depois — uma versão anterior revalidava IaC mas não
-tag similar, então um `AWS-APN-ID` criado depois da Etapa 2a passava
-despercebido e o `--live` aplicava `aws-apn-id` por cima, gerando duas
-chaves quase-duplicadas no recurso.)
-
-A leitura de revalidação busca o conjunto COMPLETO de tags de cada
-recurso (não só a `aws-apn-id`) — precisa disso para o item 3 acima —, por
-estratégia:
-
-- Genérico: uma varredura por região via `tag:GetResources` sem
-  `TagFilters` (a versão anterior filtrava por `TagFilters=[{"Key":
-  "aws-apn-id"}]`, mas isso escondia qualquer outra tag do resultado,
-  inclusive as de IaC), parando assim que todos os ARNs pedidos já foram
-  encontrados. Um ARN que não aparece na varredura significa "sem tag
-  nenhuma hoje" — o que inclui tanto "nunca teve tag" quanto (raro)
-  "recurso foi deletado"; qualquer um dos dois casos é seguro seguir para a
-  tentativa de tagueamento (se deletado, a chamada real falha de forma
-  limpa e é reportada, sem dano).
-- EKS (cluster/node group): `eks:ListTagsForResource`, 1 ARN por chamada
-  (mesma limitação da escrita) — já devolve o conjunto completo de tags,
-  sem custo extra para checar IaC.
-- Bedrock: `bedrock:ListTagsForResource`, 1 ARN por chamada — já usado do
-  mesmo jeito em `resource_discovery.discover_bedrock_resources`, também
-  já completo.
-- ELB: `elasticloadbalancing:DescribeTags`, até 20 ARNs por chamada (só a
-  leitura aceita lote; a escrita não — ver acima). Mesmo client já usado em
-  `resource_discovery.discover_eks_resources`, também já completo.
-
-**Se a leitura de revalidação falhar** (ex.: `AccessDenied` na permissão de
-leitura, throttling esgotado), o recurso NUNCA prossegue para a tentativa de
-escrita — nem em dry-run, nem em live. (Uma versão anterior deste módulo
-deixava a tentativa prosseguir quando a revalidação falhava — o que, em modo
-live, significava tentar `tag:TagResources`/etc. sobre um recurso cujo
-estado atual era desconhecido, arriscando sobrescrever um conflito que a
-leitura de revalidação falhou em enxergar. Corrigido: falha de leitura vira
-o mesmo tipo de "não escrever" que um conflito genuíno.) Por isso
-`dry_run=False` (live) nunca aceita `revalidate=False` — ver
-`RevalidacaoObrigatoriaError` — sem a revalidação ligada, a escrita real
-perderia essa proteção inteira.
-
-Dentro desse caso, o resultado se divide em dois, pelo código do erro
-(`_classificar_estado_revalidado`): se for um dos códigos de "recurso não
-encontrado" (`_CODIGOS_RECURSO_NAO_ENCONTRADO` — ex.: um load balancer
-apagado entre a Etapa 1 e esta execução) →
-`"recurso_nao_encontrado_na_revalidacao"`; qualquer outro erro (permissão,
-throttling esgotado, etc.) → `"revalidacao_falhou"`, genérico. Mesma
-distinção operacional que já existe na classificação de erro de ESCRITA
-(`_classificar_erro_aws`): "recurso sumiu" é o relatório da Etapa 1 estar
-desatualizado, esperado ocasionalmente — não deveria disparar o mesmo alerta
-que uma falha de permissão ou throttling esgotado, que geralmente exige
-ação.
-
-## Classificação de erro na escrita real (`LiveExecutor`)
-
-Toda chamada de escrita é decorada com `retry.with_backoff()` — throttling
-é absorvido silenciosamente e só vira erro no relatório se esgotar todas as
-tentativas. Erros definitivos são classificados em 3 categorias
-(`_classificar_erro_aws`), pelo `Code` devolvido pela AWS:
-
-- `RESULTADO_ERRO_PERMISSAO` — `AccessDenied`/variantes. Categoria própria
-  porque é operacionalmente diferente de um erro pontual: precisa de ajuste
-  de política IAM, não é transitório.
-- `RESULTADO_RECURSO_NAO_ENCONTRADO` — o recurso sumiu entre a Etapa 1 e
-  esta execução (`ResourceNotFoundException` e variantes por serviço).
-  Também categoria própria: não é falha operacional, é o relatório da
-  Etapa 1 estar desatualizado — esperado ocasionalmente, não deveria
-  disparar o mesmo alerta que `AccessDenied`.
-- `RESULTADO_ERRO` — qualquer outro código (`ValidationException`, tipo não
-  suportado, etc.) — o código/mensagem originais ficam em `detalhe_erro`
-  mesmo assim.
-
-Uma falha (de qualquer categoria) nunca aborta o resto da execução: no
-caminho genérico, se a chamada de lote inteira levantar exceção, só os
-ARNs DAQUELE lote viram falha — o próximo lote/região segue normalmente.
-No caminho dedicado, cada recurso é uma chamada isolada por natureza (sem
-batch). `tag:TagResources` também pode devolver sucesso HTTP com falha
-parcial (`FailedResourcesMap`) — cada ARN listado ali vira falha
-individual, os demais do mesmo lote viram sucesso.
-
-## Idade máxima do relatório de decisão
-
-`max_decision_age_hours` em `run_tagging_execution` (opcional, `None` =
-sem checagem) recusa agir — levanta `DecisionReportDesatualizadoError` —
-quando `decision_report["descoberta_executada_em"]` (propagado por
-`decision.build_decision_report` a partir do `executado_em` da Etapa 1) é
-mais velho que o limite. Isso é ortogonal à revalidação por recurso: a
-revalidação cobre "esse recurso específico mudou de estado"; a idade do
-relatório cobre "esse universo de recursos pode estar amplamente
-desatualizado" (recursos novos não apareceriam de jeito nenhum,
-independente de revalidação).
-
-## Relatório final (`build_execution_report`)
-
-O relatório interno de `_processar_genericos`/`_processar_dedicados` só
-cobre recursos `decisao == "taguear"` (a única categoria que passa por
-`select_taggable`). O relatório final de saída da Etapa 2b/2c cobre todas
-as categorias que fazem sentido para um humano/dashboard —
-`tagueado_sucesso` (só live) / `simulado_sucesso` (só dry-run, NUNCA
-misturado com sucesso real na mesma categoria) / `falhou` /
-`pulado_iac` / `revisar_tag_similar` / `conflito` / `ja_ok` /
-`erro_classificacao` — então `build_execution_report` mescla três grupos:
-
-- Os `taguear` (resultado desta execução, mapeado por
-  `_categoria_final_do_resultado` — inclui os pulados na revalidação:
-  `ja_tagueado` vira `ja_ok`, `conflito_na_revalidacao` vira `conflito`,
-  `iac_detectado_na_revalidacao` vira `pulado_iac`,
-  `tag_similar_encontrada_na_revalidacao` vira `revisar_tag_similar`,
-  `revalidacao_falhou`/`recurso_nao_encontrado_na_revalidacao` viram `falhou`).
-- Os `pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito` que a própria
-  Etapa 2a já decidiu — nunca passam por este módulo, nunca geram chamada
-  nenhuma, entram carregados direto no relatório final com a mesma
-  categoria.
-- Os `erros` da Etapa 2a (recursos malformados que nem chegaram a ser
-  classificados) — antes ficavam presos em `decision_report["erros"]` e
-  nunca apareciam no relatório desta etapa; agora entram como
-  `erro_classificacao`, com a mensagem original em `detalhe_erro`.
-
-Campo `origem` (`"decisao"` / `"revalidacao"` / `"execucao"`) preserva em
-qual momento a classificação foi de fato feita — útil para auditoria e para
-a Etapa 4 distinguir, por exemplo, um conflito visto já na descoberta
-original de um conflito que só apareceu no momento da escrita (possível
-tag de outro parceiro AWS aplicada nesse meio-tempo).
+O relatório final (`build_execution_report`) junta o resultado dos que
+tagueiam, os `pular_iac`/`ja_ok` decididos na Etapa 2a e os erros de
+classificação, com `categoria_final` e `origem` (`decisao`, `revalidacao`
+ou `execucao`).
 """
 from __future__ import annotations
 
@@ -258,15 +82,11 @@ class ApiStrategy(str, Enum):
 _SERVICO_EKS = "Amazon EKS"
 _SERVICO_BEDROCK = "Amazon Bedrock"
 
-# Mesma regra de precedência de `decision.py` (MVP2): IaC detectado bloqueia
-# a escrita com a tag ausente OU com outro valor; só o valor já correto
-# vem antes.
+# IaC bloqueia a escrita com a tag ausente ou com outro valor (como em decision.py).
 _IAC_DETECTADO = IAC_DETECTADO
 
-# (servico, tipo_recurso) -> estratégia dedicada. Qualquer combinação fora
-# desta tabela (inclui tipo_recurso=None, o caso comum) usa o caminho
-# genérico — inclui de propósito os nodes/volumes EBS do EKS, que não
-# entram aqui (ver docstring do módulo).
+# (servico, tipo_recurso) -> API dedicada. O resto, inclusive nodes e volumes
+# do EKS (são EC2/EBS comuns), usa o caminho genérico.
 _ESTRATEGIA_DEDICADA: dict[tuple[str, str], ApiStrategy] = {
     (_SERVICO_EKS, "cluster"): ApiStrategy.EKS_CLUSTER,
     (_SERVICO_EKS, "node_group"): ApiStrategy.EKS_NODE_GROUP,
@@ -284,15 +104,8 @@ RESULTADO_ERRO_PERMISSAO = "erro_permissao"
 RESULTADO_RECURSO_NAO_ENCONTRADO = "recurso_nao_encontrado"
 RESULTADO_ERRO = "erro"
 
-# Categoria final de um recurso no relatório de execução (`categoria_final`
-# em `build_execution_report`) — mais grossa que `resultado` acima, pensada
-# para dashboard/leitura humana. Ver `_categoria_final_do_resultado`.
-#
-# `CATEGORIA_SIMULADO_SUCESSO` é separada de `CATEGORIA_TAGUEADO_SUCESSO` de
-# propósito: um dry-run nunca deveria contar como "tagueado" num dashboard
-# que agregue por `categoria_final` sem também filtrar por `modo` — cada
-# relatório já carrega `modo` no topo, mas um resultado simulado e um real
-# não deveriam cair no mesmo balde de contagem por padrão.
+# Categoria final, para leitura humana/dashboard. Simulado (dry-run) e
+# tagueado (live) são categorias diferentes para nunca se somarem.
 CATEGORIA_TAGUEADO_SUCESSO = "tagueado_sucesso"
 CATEGORIA_SIMULADO_SUCESSO = "simulado_sucesso"
 CATEGORIA_FALHOU = "falhou"
@@ -308,13 +121,8 @@ _TODAS_AS_CATEGORIAS_FINAIS = (
     CATEGORIA_ERRO_CLASSIFICACAO,
 )
 
-# Códigos de erro AWS conhecidos, mapeados para uma categoria de resultado
-# própria — o resto (throttling esgotado, validação, tipo não suportado
-# etc.) cai em RESULTADO_ERRO genérico, com o código original preservado em
-# `detalhe_erro`. Não é uma lista exaustiva — só os casos operacionalmente
-# distintos o suficiente para merecer contagem própria no relatório (ver
-# seção 4 do plano da Etapa 2c: permissão precisa de ajuste de política,
-# "não encontrado" é relatório desatualizado, não falha operacional).
+# Códigos com contagem própria: permissão pede ajuste de IAM; "não
+# encontrado" é relatório desatualizado. O resto vira RESULTADO_ERRO.
 _CODIGOS_ERRO_PERMISSAO = frozenset({"AccessDenied", "AccessDeniedException", "UnauthorizedException"})
 _CODIGOS_RECURSO_NAO_ENCONTRADO = frozenset(
     {
@@ -322,9 +130,7 @@ _CODIGOS_RECURSO_NAO_ENCONTRADO = frozenset(
         "NoSuchEntity",
         "ClusterNotFoundException",
         "NodegroupNotFoundException",
-        # Códigos do ELBv2 — API modelada (shape name == Code), não estilo
-        # legado sem sufixo. Alta confiança, mas não confirmado em sandbox
-        # (ver melhorias-futuras.md).
+        # ELBv2 (nome do shape == código do erro).
         "LoadBalancerNotFoundException",
         "TargetGroupNotFoundException",
         "ListenerNotFoundException",
@@ -336,10 +142,7 @@ _CODIGOS_RECURSO_NAO_ENCONTRADO = frozenset(
 
 @dataclass(frozen=True)
 class ResourceOutcome:
-    """Resultado de uma tentativa de tagueamento (real ou simulada) sobre um
-    único recurso — devolvido por `Executor.tag_single` e por cada valor de
-    `Executor.tag_generic_batch`. `detalhe_erro` só é preenchido quando
-    `resultado` não é um sucesso."""
+    """Resultado de uma tentativa sobre um recurso. `detalhe_erro` só em falha."""
 
     resultado: str
     detalhe_erro: dict | None = None
@@ -357,19 +160,12 @@ def _classificar_erro_aws(codigo: str, mensagem: str) -> ResourceOutcome:
 
 @dataclass(frozen=True)
 class _RevalidatedState:
-    """Estado atual de um recurso, apurado com SUCESSO imediatamente antes
-    de agir sobre ele — a MESMA checagem de precedência de `decision.py`
-    (valor presente sempre decide antes de olhar IaC/tag similar; IaC tem
-    precedência sobre tag similar; os dois só importam quando a tag está
-    ausente), reaplicada no momento da escrita, não só no momento da
-    decisão original da Etapa 2a. Ver `_classificar_estado_revalidado`."""
+    """Estado atual do recurso, lido com sucesso logo antes da escrita."""
 
     valor_atual: str | None
     iac_tipo: str
     tag_similar_encontrada: bool
-    # MVP2: o estado lido aqui é o "antes" da escrita — vai para
-    # `estado_anterior` no relatório/SNS (sobrescrita e chave parecida) e
-    # `iac` alimenta a lista de recursos de IaC para o cliente.
+    # "Antes" da escrita: vira `estado_anterior` no relatório e no SNS.
     tags_similares: tuple[tuple[str, str | None], ...] = ()
     iac: dict | None = field(default=None, compare=False, hash=False)
 
@@ -396,40 +192,26 @@ def _revalidated_state_from_tags(tags: dict[str, str], tag_key: str) -> _Revalid
 
 @dataclass(frozen=True)
 class _RevalidationFailure:
-    """A leitura de revalidação foi TENTADA mas FALHOU (erro de permissão,
-    throttling esgotado, etc.) — distinto de "nunca tentada"
-    (`revalidate=False`, onde o dict de estado por região/estratégia fica
-    vazio e o recurso é tratado como pendente normalmente, sem nenhuma
-    garantia). Um recurso marcado com isso NUNCA prossegue para a
-    tentativa de escrita, em nenhum dos dois modos (dry-run ou live) — sem
-    saber o estado atual do recurso, a resposta segura é não arriscar
-    sobrescrever um conflito que a leitura falhou em enxergar."""
+    """A leitura de revalidação falhou: o recurso não é escrito em nenhum
+    modo, porque o estado atual é desconhecido."""
 
     detalhe_erro: dict | None = None
 
 
 @dataclass(frozen=True)
 class TaggableResource:
-    """Recurso elegível para tagueamento — só existe para recursos com
-    `decisao == "taguear"` no relatório da Etapa 2a. Deliberadamente sem o
-    campo `decisao`: ver docstring do módulo."""
+    """Recurso a taguear. Sem campo `decisao` de propósito (ver docstring do módulo)."""
 
     arn: str
     servico: str
     regiao: str
     tipo_recurso: str | None
-    # Estado anterior visto na Etapa 2a — usado quando não há revalidação
-    # (dry-run com --no-revalidate). Com revalidação, vale o estado lido
-    # na hora da escrita.
+    # Estado visto na Etapa 2a; usado só quando não há revalidação.
     estado_anterior: dict | None = field(default=None, compare=False, hash=False)
 
 
 def select_taggable(decision_report: dict) -> list[TaggableResource]:
-    """Único ponto de entrada aceito pelo resto deste módulo. Filtra
-    `decision_report["recursos"]` (saída de `decision.build_decision_report`)
-    para os recursos cuja decisão gera escrita (`DECISOES_QUE_TAGUEIAM`:
-    `taguear`, `taguear_com_tag_similar`, `sobrescrever`) e descarta
-    explicitamente o campo `decisao` na conversão para `TaggableResource`."""
+    """Converte os recursos que tagueiam em `TaggableResource`, descartando a `decisao`."""
     resources = decision_report.get("recursos") or []
     return [
         TaggableResource(
@@ -473,24 +255,10 @@ def _get_resources_batch(client, arns: list[str]) -> dict:
 def _revalidate_generic(
     session: boto3.Session, regiao: str, arns: set[str], tag_key: str
 ) -> dict[str, _RevalidatedState | _RevalidationFailure]:
-    """Lê o estado atual dos ARNs genéricos revalidados nesta região, em
-    lotes de até 20 (`ResourceARNList`, mesmo limite de `TagResources`) —
-    NUNCA varre a região inteira sem filtro (uma versão anterior deste
-    módulo paginava `GetResources` sem `ResourceARNList`, parando cedo só
-    se o alvo aparecesse nas primeiras páginas; para poucos ARNs — o caso
-    comum da Etapa 3, que revalida 1-poucos recursos por invocação — isso
-    podia escanear TODOS os recursos tagueados da região à toa, com risco
-    real de estourar o timeout da Lambda numa conta de cliente grande).
-    `ResourceARNList` filtra QUAIS recursos vêm na resposta, mas cada um
-    ainda vem com o conjunto COMPLETO de tags — continua sem `TagFilters`
-    (esse sim perderia campos, já que filtra por CHAVE de tag, não por
-    ARN) pelo mesmo motivo de sempre: revalidar exige todas as tags de cada
-    recurso, não só a `aws-apn-id`, pra reconfirmar o status de IaC no
-    momento da escrita (ver docstring do módulo).
+    """Lê as tags completas dos ARNs em lotes de 20 (`ResourceARNList`).
 
-    Se um lote falhar, só os ARNs DESSE lote viram `_RevalidationFailure`
-    — lotes que já tinham sido lidos com sucesso mantêm seu estado normal
-    (são conhecidos de verdade)."""
+    Sem `TagFilters`: a revalidação precisa de todas as tags para checar IaC.
+    Lote com erro vira `_RevalidationFailure` só para os ARNs daquele lote."""
     client = session.client("resourcegroupstaggingapi", region_name=regiao)
     resultado: dict[str, _RevalidatedState | _RevalidationFailure] = {}
     for lote in _chunk(sorted(arns), _TAMANHO_MAX_LOTE_GETRESOURCES):
@@ -517,9 +285,7 @@ def _revalidate_generic(
             encontrados.add(arn)
         for arn in lote:
             if arn not in encontrados:
-                # GetResources não devolve recurso sem NENHUMA tag (mesma
-                # limitação documentada em single_resource.py) — tratado
-                # como "sem tag", não como falha.
+                # GetResources não devolve recurso sem nenhuma tag: "sem tag".
                 resultado[arn] = _ESTADO_SEM_TAGS
     return resultado
 
@@ -561,16 +327,8 @@ def _revalidate_elb(
         try:
             resp = elb_describe_tags(client, lote)
         except ClientError:
-            # A chamada do lote inteiro falhou — comportamento conhecido do
-            # DescribeTags de load balancers quando 1 ARN do lote não existe
-            # mais (ex.: apagado entre a Etapa 1 e esta execução):
-            # `LoadBalancerNotFound` derruba a chamada toda, não só o ARN
-            # ruim. Sem o retry abaixo, os outros ARNs do MESMO lote (que
-            # podem existir e estar OK) virariam `revalidacao_falhou` por
-            # causa de só 1 ruim, bloqueando a tentativa de escrita deles
-            # também. Repete 1 ARN por vez só quando o lote falha, para
-            # isolar qual ARN é o problema sem pagar esse custo no caminho
-            # feliz (lote inteiro válido).
+            # Um ARN inexistente derruba o DescribeTags do lote inteiro:
+            # repete 1 a 1 para não bloquear os demais.
             logger.warning(
                 "Falha ao revalidar lote de load balancers %s — tentando 1 "
                 "ARN por vez para não bloquear os que ainda existem",
@@ -602,9 +360,7 @@ def _revalidate_elb(
 
 
 # ---------------------------------------------------------------------------
-# Executor — único ponto de decisão entre "logar o que seria feito" (Etapa
-# 2b, `DryRunExecutor`) e "fazer de verdade" (Etapa 2c, `LiveExecutor`).
-# Todo o roteamento/agrupamento/revalidação acima é comum às duas.
+# Executores: dry-run (loga) e live (escreve)
 # ---------------------------------------------------------------------------
 
 
@@ -628,10 +384,7 @@ class Executor(Protocol):
 
 
 class DryRunExecutor:
-    """Etapa 2b: nunca chama boto3 de escrita — só loga, no mesmo formato
-    estruturado que vira o relatório de saída (preview fiel do que a Etapa
-    2c executaria com os mesmos dados). Sempre devolve sucesso simulado —
-    não há como o dry-run saber se uma chamada real falharia."""
+    """Etapa 2b: só loga o que seria feito e devolve sucesso simulado."""
 
     def tag_generic_batch(
         self, session: boto3.Session, regiao: str, arns: list[str], tag_key: str, tag_value: str
@@ -693,10 +446,7 @@ def _elb_add_tags_call(client, arn: str, tags: list[dict]) -> None:
 
 
 class LiveExecutor:
-    """Etapa 2c: chama de verdade a API nativa de cada estratégia (ver
-    docstring do módulo). Implementa o mesmo `Protocol` que
-    `DryRunExecutor` — nenhuma mudança no roteamento/agrupamento/
-    revalidação do resto do módulo para existir."""
+    """Etapa 2c: chama a API de escrita de cada estratégia."""
 
     def tag_generic_batch(
         self, session: boto3.Session, regiao: str, arns: list[str], tag_key: str, tag_value: str
@@ -705,10 +455,7 @@ class LiveExecutor:
         try:
             resp = _tag_resources_call(client, arns, {tag_key: tag_value})
         except ClientError as exc:
-            # A chamada inteira falhou (ex.: throttling esgotou todas as
-            # tentativas do retry.py) — todo o lote vira falha com o mesmo
-            # erro; isso não impede o PRÓXIMO lote/região de continuar (ver
-            # `_processar_genericos`, que segue lote a lote).
+            # O lote inteiro vira falha; os próximos lotes seguem.
             erro = exc.response.get("Error", {})
             outcome = _classificar_erro_aws(erro.get("Code", ""), erro.get("Message", ""))
             return {arn: outcome for arn in arns}
@@ -757,33 +504,11 @@ class LiveExecutor:
 def _classificar_estado_revalidado(
     estado: _RevalidatedState | _RevalidationFailure, tag_value: str
 ) -> ResourceOutcome | None:
-    """Aplica ao estado revalidado a MESMA regra de precedência de
-    `decision._decidir` (ver docstring de `decision.py`): valor de tag
-    presente sempre decide antes de olhar IaC/tag similar; IaC tem
-    precedência sobre tag similar; os dois só importam quando a tag está
-    ausente. Devolve o resultado já decidido (nenhum dos casos abaixo nunca
-    gera tentativa de escrita), ou `None` se o recurso segue pendente de
-    uma tentativa de escrita real.
+    """Aplica a regra de `decision.py` ao estado relido.
 
-    Uma leitura de revalidação que FALHOU (`_RevalidationFailure`) tem
-    precedência sobre tudo — nunca prossegue para escrita, em nenhum dos
-    dois modos: sem saber o estado atual, a resposta segura é não
-    arriscar sobrescrever um conflito que a leitura falhou em enxergar.
-
-    Dentro desse caso, o código do erro ainda é olhado uma vez: se for um
-    dos `_CODIGOS_RECURSO_NAO_ENCONTRADO` (ex.: o recurso foi apagado entre
-    a Etapa 1 e esta execução), o resultado é
-    `RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO` em vez do genérico
-    `RESULTADO_REVALIDACAO_FALHOU` — mesma distinção que já existe na
-    classificação de erro de ESCRITA (`_classificar_erro_aws`): "recurso
-    sumiu" é o relatório da Etapa 1 estar desatualizado (esperado
-    ocasionalmente), não uma falha operacional que precise do mesmo alerta
-    de um `AccessDenied`/throttling esgotado. Não reusa
-    `_classificar_erro_aws` diretamente porque essa função devolve
-    resultados sem entrada em `_CATEGORIA_POR_RESULTADO` (assumem
-    `origem="execucao"` por padrão) — usar um resultado próprio aqui
-    preserva `origem="revalidacao"`, que é a informação real de quando essa
-    classificação aconteceu."""
+    Devolve o resultado (sem escrita) ou `None` quando o recurso segue para a
+    escrita. Falha de leitura vem antes de tudo: `recurso_nao_encontrado_na_revalidacao`
+    se o recurso sumiu, `revalidacao_falhou` nos demais casos."""
     if isinstance(estado, _RevalidationFailure):
         codigo = (estado.detalhe_erro or {}).get("codigo", "")
         if codigo in _CODIGOS_RECURSO_NAO_ENCONTRADO:
@@ -795,8 +520,7 @@ def _classificar_estado_revalidado(
         return ResourceOutcome(resultado=RESULTADO_JA_TAGUEADO)
     if estado.iac_tipo in _IAC_DETECTADO:
         return ResourceOutcome(resultado=RESULTADO_IAC_DETECTADO_NA_REVALIDACAO)
-    # MVP2: outro valor presente ou chave parecida não bloqueiam mais —
-    # seguem para a escrita, e o estado lido aqui vira `estado_anterior`.
+    # Outro valor ou chave parecida seguem para a escrita (estado vira `estado_anterior`).
     return None
 
 
@@ -883,8 +607,7 @@ def _revalidate_dedicado(
             r.arn: _revalidate_eks_or_bedrock(session, "bedrock", r.regiao, r, tag_key)
             for r in resources
         }
-    # ELB_LOAD_BALANCER — agrupa a LEITURA por região em lotes de 20 (a
-    # escrita continua 1-a-1; só describe_tags aceita lote).
+    # ELB: leitura em lotes de 20 por região; a escrita é 1 a 1.
     resultado: dict[str, _RevalidatedState] = {}
     por_regiao: dict[str, list[TaggableResource]] = {}
     for r in resources:
@@ -923,25 +646,16 @@ def _processar_dedicados(
 
 
 # ---------------------------------------------------------------------------
-# Idade máxima do relatório de decisão — salvaguarda antes de agir sobre uma
-# descoberta desatualizada (ver docstring do módulo)
+# Salvaguardas
 # ---------------------------------------------------------------------------
 
 
 class DecisionReportDesatualizadoError(Exception):
-    """A descoberta (Etapa 1) que embasa este relatório de decisão é mais
-    velha do que o limite pedido, ou o relatório não carrega essa
-    informação — ação recusada até uma Etapa 1/2a novas rodarem. Nunca
-    levantada quando `max_decision_age_hours` não é passado."""
+    """A descoberta por trás do relatório de decisão é mais velha que o limite pedido."""
 
 
 class RevalidacaoObrigatoriaError(Exception):
-    """`revalidate=False` não é permitido junto de `dry_run=False`: executar
-    de verdade sem nenhuma revalidação do estado atual de cada recurso
-    arrisca sobrescrever um conflito que tenha aparecido depois da Etapa 2a
-    — a mesma coisa que a checagem de 3 vias da revalidação existe para
-    evitar. Em dry-run, `revalidate=False` continua permitido (nenhuma
-    escrita real está em jogo)."""
+    """Modo live sem revalidação não é permitido (ver docstring do módulo)."""
 
 
 def _idade_em_horas(timestamp_iso: str) -> float:
@@ -969,10 +683,7 @@ def _checar_idade_do_relatorio(decision_report: dict, max_decision_age_hours: fl
 
 
 # ---------------------------------------------------------------------------
-# Relatório final — mescla os recursos "taguear" (resultado desta execução)
-# com os recursos "pular_iac"/"revisar_tag_similar"/"ja_ok"/"conflito"
-# (decididos direto na Etapa 2a, nunca passam por este módulo) e os "erros"
-# de classificação da Etapa 2a, num único relatório.
+# Relatório final
 # ---------------------------------------------------------------------------
 
 _CATEGORIA_POR_DECISAO_2A = {
@@ -980,10 +691,7 @@ _CATEGORIA_POR_DECISAO_2A = {
     DECISAO_JA_OK: CATEGORIA_JA_OK,
 }
 
-# resultado (deste módulo) -> (categoria_final, origem) — ver docstring do
-# módulo. RESULTADO_SIMULADO_OK (dry-run) e RESULTADO_TAGUEADO_SUCESSO
-# (live) apontam para categorias DIFERENTES de propósito — nunca misturar
-# um resultado simulado com um sucesso real na mesma contagem.
+# resultado -> (categoria_final, origem)
 _CATEGORIA_POR_RESULTADO = {
     RESULTADO_SIMULADO_OK: (CATEGORIA_SIMULADO_SUCESSO, "execucao"),
     RESULTADO_TAGUEADO_SUCESSO: (CATEGORIA_TAGUEADO_SUCESSO, "execucao"),
@@ -995,10 +703,7 @@ _CATEGORIA_POR_RESULTADO = {
 
 
 def _categoria_final_do_resultado(resultado: str) -> tuple[str, str]:
-    """`(categoria_final, origem)` para um resultado produzido por
-    `_processar_genericos`/`_processar_dedicados`. Qualquer resultado não
-    mapeado explicitamente (`RESULTADO_ERRO_PERMISSAO`,
-    `RESULTADO_RECURSO_NAO_ENCONTRADO`, `RESULTADO_ERRO`) é uma falha."""
+    """`(categoria_final, origem)` de um resultado; o que não está mapeado é falha."""
     return _CATEGORIA_POR_RESULTADO.get(resultado, (CATEGORIA_FALHOU, "execucao"))
 
 
@@ -1044,21 +749,11 @@ def build_execution_report(
     dry_run: bool,
     execucao_inicial: bool = False,
 ) -> dict:
-    """Monta o relatório final de execução (Etapa 2b em modo preview, Etapa
-    2c em modo real — só `modo`/os `resultado`s individuais mudam) no mesmo
-    estilo de `report.build_report`/`decision.build_decision_report`.
+    """Relatório final da Etapa 2b/2c com todos os recursos do relatório de decisão.
 
-    Ao contrário do relatório interno de `resultados_taguear` (só recursos
-    `decisao == "taguear"`), este relatório cobre TODOS os recursos do
-    relatório de decisão, inclusive os que a Etapa 2a nem chegou a
-    classificar: os `pular_iac`/`revisar_tag_similar`/`ja_ok`/`conflito`
-    entram carregados direto (nunca passaram por este módulo, nunca
-    geraram chamada nenhuma), os `erros` de classificação da Etapa 2a
-    entram como `erro_classificacao`, lado a lado com o resultado real da
-    tentativa de tagueamento dos `taguear`. `categoria_final` é a mesma
-    taxonomia para todas as origens; `origem` (`"decisao"` vs.
-    `"revalidacao"` vs. `"execucao"`) preserva de onde veio a
-    classificação, para quem quiser auditar."""
+    Inclui o resultado dos que tagueiam, os `pular_iac`/`ja_ok` da Etapa 2a e os
+    erros de classificação. Decisões do MVP1 (`conflito`, `revisar_tag_similar`)
+    viram `erro_classificacao`: a regra mudou e nada é escrito com base nelas."""
     recursos_finais: list[dict] = []
 
     motivo_por_arn = {r.get("arn"): r.get("motivo") for r in decision_report.get("recursos") or []}
@@ -1087,8 +782,6 @@ def build_execution_report(
     for r in decision_report.get("recursos") or []:
         decisao = r.get("decisao")
         if decisao in DECISOES_LEGADAS:
-            # Relatório de decisão do MVP1: a regra mudou (sobrescrever /
-            # adicionar sobre chave parecida). Nunca agir com base nele.
             recursos_finais.append(
                 _entrada_erro_classificacao(
                     r.get("arn"),
@@ -1119,19 +812,12 @@ def build_execution_report(
             }
         )
 
-    # Recursos que a Etapa 2a nem conseguiu classificar (malformados no
-    # relatório da Etapa 1) — antes ficavam só em decision_report["erros"]
-    # e nunca chegavam até aqui, some do relatório final sem deixar rastro.
-    # Entram como categoria própria, não como "falhou" (essa é reservada
-    # para falha de EXECUÇÃO, não de classificação).
+    # Recursos que a Etapa 2a não conseguiu classificar (registro malformado).
     for r in decision_report.get("erros") or []:
         recursos_finais.append(_entrada_erro_classificacao(r.get("arn"), r.get("servico"), r.get("erro")))
 
     categoria_counts = Counter(r["categoria_final"] for r in recursos_finais)
     servico_counts = Counter(r["servico"] for r in recursos_finais)
-    # Granularidade fina (resultado/estrategia_api) só existe para os
-    # recursos que passaram por este módulo — os de origem "decisao" têm
-    # `resultado`/`estrategia_api` nulos e não entram nessas duas contagens.
     resultado_counts = Counter(r["resultado"] for r in recursos_finais if r["resultado"] is not None)
     estrategia_counts = Counter(r["estrategia_api"] for r in recursos_finais if r["estrategia_api"] is not None)
 
@@ -1163,27 +849,10 @@ def run_tagging_execution(
     execucao_inicial: bool = False,
     max_decision_age_hours: float | None = None,
 ) -> dict:
-    """Ponto de entrada único da Etapa 2b (`dry_run=True`, default) e da
-    Etapa 2c (`dry_run=False`) — a mesma função, só trocando o `Executor`
-    usado por baixo (`executor` explícito tem prioridade; senão,
-    `DryRunExecutor`/`LiveExecutor` conforme `dry_run`). Nenhuma lógica de
-    negócio (quais recursos recebem chamada de escrita, roteamento de API,
-    batching, revalidação) muda entre os dois modos.
+    """Ponto de entrada das Etapas 2b (`dry_run=True`) e 2c (`dry_run=False`).
 
-    `max_decision_age_hours`: quando informado, recusa agir (levanta
-    `DecisionReportDesatualizadoError`) se a descoberta subjacente ao
-    relatório de decisão for mais velha que isso — ver
-    `decision.build_decision_report` e a docstring deste módulo.
-
-    `execucao_inicial`: sinal de observabilidade repassado ao relatório de
-    saída (`execucao_inicial` no JSON), nunca usado para bloquear a
-    execução — pensado para o Lambda marcar a primeira execução de uma
-    conta (disparada pelo Custom Resource no `Create` da stack) para
-    facilitar revisão humana posterior, sem exigir aprovação prévia.
-
-    Levanta `RevalidacaoObrigatoriaError` se `dry_run=False` e
-    `revalidate=False` forem passados juntos — ver a docstring dessa
-    exceção."""
+    `max_decision_age_hours`: recusa agir se a descoberta for mais velha que isso.
+    `execucao_inicial`: só marca o relatório (primeira execução da conta)."""
     if not dry_run and not revalidate:
         raise RevalidacaoObrigatoriaError(
             "revalidate=False não é permitido com dry_run=False — executar de "

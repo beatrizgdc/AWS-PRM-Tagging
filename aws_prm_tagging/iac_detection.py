@@ -1,30 +1,16 @@
-"""Detecção heurística e best-effort de IaC a partir das tags de um recurso
-(Etapa 1/2) e do evento do CloudTrail que o criou (Etapa 3).
+"""Detecção de IaC pelas tags do recurso (Etapas 1/2) e pelo evento do
+CloudTrail que o criou (Etapa 3).
 
-MVP2: a regra "IaC nunca é tagueado pela automação" vale para TODO IaC —
-Terraform/OpenTofu, CloudFormation, CDK e Pulumi. Esses recursos são
-listados no relatório para o cliente (`relatorio_cliente.py`) com a
-evidência que levou à detecção (`evidencia`) e a ferramenta provável
-(`ferramenta`), para ele adicionar a tag no próprio código.
+Todo IaC (Terraform/OpenTofu, CloudFormation, CDK, Pulumi) nunca é tagueado
+pela automação: vai para o relatório do cliente (`relatorio_cliente.py`) com
+a evidência (`evidencia`) e a ferramenta provável (`ferramenta`). Sem sinal,
+o resultado é "desconhecido", nunca "não gerenciado".
 
-Regra de ouro: na ausência de qualquer sinal, o resultado é sempre
-"desconhecido" — nunca assumimos "não gerenciado por IaC".
-
-**Isso nunca muda a decisão de tagueamento** — a regra de que recurso
-gerenciado por IaC nunca é tagueado via API/CLI/Console é fixa (ver
-`decision.py`). O que este módulo também identifica, à parte, é QUEM
-provavelmente é dono do CloudFormation por trás da tag
-`aws:cloudformation:stack-name`: várias automações da própria AWS (Elastic
-Beanstalk, Control Tower, Service Catalog) e ferramentas de terceiros
-(`eksctl`) usam CloudFormation por baixo dos panos, sem o cliente nunca ter
-escrito ou visto um template — ao contrário de uma stack que o cliente
-mesmo autora em Terraform/CloudFormation/CDK. Para esses casos, "vá editar
-seu Terraform" (o motivo padrão de `pular_iac`) é um conselho sem nenhuma
-ação real por trás — não existe template do cliente para editar. A
-identificação (`gerenciado_por_ferramenta_aws`) serve só para
-`decision.py` compor um `motivo` que aponte a ação certa (ex.: configurar
-a tag nas opções do ambiente do Elastic Beanstalk) — a decisão continua
-`pular_iac`, nunca tagueada via API.
+À parte, identifica stacks CloudFormation criadas por automações da AWS ou
+de terceiros (Elastic Beanstalk, Control Tower, Service Catalog, eksctl):
+não há template do cliente para editar, então `decision.py` usa
+`gerenciado_por_ferramenta_aws` para indicar a ação certa. A decisão
+continua `pular_iac`.
 """
 from __future__ import annotations
 
@@ -33,21 +19,15 @@ IAC_TERRAFORM_HEURISTICO = "terraform_heuristico"
 IAC_PULUMI_HEURISTICO = "pulumi_heuristico"
 IAC_DESCONHECIDO = "desconhecido"
 
-# MVP2 (regra da AWS repassada pelo DevOps em 13/10/2026): TODO recurso
-# gerenciado por IaC — Terraform/OpenTofu, CloudFormation, CDK (que é
-# CloudFormation por baixo) e Pulumi — nunca é tagueado pela automação; é
-# listado no relatório para o cliente colocar a tag no próprio código.
+# Todo recurso gerenciado por IaC (Terraform/OpenTofu, CloudFormation, CDK,
+# Pulumi) nunca é tagueado; é listado para o cliente pôr a tag no código.
 IAC_DETECTADO = frozenset({IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO, IAC_PULUMI_HEURISTICO})
 TODOS_OS_TIPOS_IAC = (IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO, IAC_PULUMI_HEURISTICO, IAC_DESCONHECIDO)
 
 _CFN_STACK_NAME_TAG = "aws:cloudformation:stack-name"
 
-# Terraform/Pulumi não deixam nenhum sinal nativo confiável nas TAGS (ao
-# contrário do CloudFormation/CDK). Estas são convenções de tag comuns — a
-# presença delas é um indício, não uma prova. Para recursos NOVOS a Etapa 3
-# tem um sinal bem mais forte: o `userAgent` do evento do CloudTrail
-# (`detect_iac_from_cloudtrail`).
-# Padrão 1: chave própria "terraform"/"Terraform" com valor "true".
+# Terraform/Pulumi não deixam sinal nativo nas tags. Estas convenções são
+# indício, não prova; para recurso novo a Etapa 3 usa o `userAgent`.
 _TERRAFORM_SELF_KEYS = {"terraform", "Terraform", "TERRAFORM"}
 # Padrão 2: chave genérica de governança (ex.: "managed-by") com valor da ferramenta.
 _MANAGED_BY_KEYS = {"managed-by", "ManagedBy", "managed_by", "Managed-By", "managedBy", "managed-by-iac"}
@@ -120,14 +100,9 @@ def detect_iac(tags: dict[str, str]) -> dict[str, str | None]:
             if key.lower().startswith(prefixo):
                 return _resultado(tipo, ferramenta, f"tag {key}")
 
-    # Chaves de governança conhecidas primeiro (mensagem de evidência mais
-    # clara), depois o catch-all: qualquer tag cujo VALOR seja literalmente
-    # o nome de uma ferramenta de IaC também conta como indício — orgs usam
-    # nomes de chave arbitrários (IaC, Provisioner, CreatedBy, source etc.)
-    # para essa mesma convenção. Risco de falso positivo é desprezível; o
-    # custo de um falso negativo aqui é maior (taguear via API um recurso
-    # que o IaC do cliente vai "corrigir" de volta no próximo apply), então
-    # a heurística erra deliberadamente para o lado de detectar demais.
+    # Chaves conhecidas primeiro (evidência mais clara); depois, qualquer tag
+    # cujo valor seja o nome de uma ferramenta de IaC. Erra de propósito para o
+    # lado de detectar demais: taguear via API um recurso de IaC é pior.
     chaves_ordenadas = [k for k in tags if k in _MANAGED_BY_KEYS] + [k for k in tags if k not in _MANAGED_BY_KEYS]
     for key in chaves_ordenadas:
         value = tags[key]
@@ -139,9 +114,7 @@ def detect_iac(tags: dict[str, str]) -> dict[str, str | None]:
     return _resultado(IAC_DESCONHECIDO, None, None)
 
 
-# ---------------------------------------------------------------------------
-# Etapa 3: sinal do CloudTrail (recurso NOVO)
-# ---------------------------------------------------------------------------
+# --- Etapa 3: sinal do CloudTrail (recurso novo) ---
 
 # Trechos (minúsculos) do `userAgent` gravado pelo CloudTrail. O provider
 # AWS do Terraform se identifica como
@@ -160,14 +133,12 @@ _USER_AGENT_IAC: tuple[tuple[str, str, str], ...] = (
 
 
 def detect_iac_from_cloudtrail(detail: dict | None) -> dict[str, str | None] | None:
-    """Detecta IaC pelo evento do CloudTrail que criou o recurso (Etapa 3).
+    """IaC pelo evento do CloudTrail que criou o recurso (Etapa 3).
 
-    Devolve o mesmo formato de `detect_iac` ou `None` se o evento não traz
-    sinal. Olha `userAgent`, `sourceIPAddress` e `userIdentity.invokedBy`
-    (o CloudFormation aparece como `cloudformation.amazonaws.com` em pelo
-    menos um deles). É bem mais confiável que as tags para recurso novo: o
-    Terraform não deixa tag nenhuma por padrão, mas sempre se identifica no
-    `userAgent` da chamada de criação."""
+        Mesmo formato de `detect_iac`, ou `None` sem sinal. Olha `userAgent`,
+        `sourceIPAddress` e `userIdentity.invokedBy`. Para recurso novo é mais
+        confiável que as tags: o Terraform não deixa tag por padrão, mas sempre
+        se identifica no `userAgent`."""
     if not isinstance(detail, dict):
         return None
     identidade = detail.get("userIdentity") or {}

@@ -1,11 +1,5 @@
-"""Funções puras (sem boto3) de `resource_discovery.py`.
-
-O resto do módulo é testado via LocalStack (`test/localstack/`), não aqui —
-essas duas funções foram extraídas especificamente para virarem testáveis
-sem rede: `_filter_load_balancers_for_cluster` como parte da correção que
-para de relistar os load balancers da região a cada cluster EKS
-(`_list_region_load_balancers_with_tags` continua só testável via
-LocalStack, por depender de boto3).
+"""Funções puras (sem boto3) de `resource_discovery.py`. O resto do módulo
+é coberto pelos testes com fakes e moto.
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  AWS PRM Resource Tagging - stack CENTRAL (MVP2, rollout por StackSets).
+  AWS PRM Resource Tagging - stack CENTRAL (rollout por StackSets).
   Implantada UMA vez na conta payer (gerenciamento) do cliente, numa região.
   Recebe os resultados de todas as contas da organização: as stacks hub e
   regionais das contas-membro publicam aqui quando o parâmetro

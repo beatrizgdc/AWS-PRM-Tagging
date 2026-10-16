@@ -4,7 +4,7 @@
   "States": {
     "PrecisaDeDebounce": {
       "Type": "Choice",
-      "Comment": "Item 14: task ECS (Fargate) pode durar menos que o debounce e ja nasce com as tags de propagateTags - nao ha corrida com IaC a evitar. Vai direto para o processamento. Todo o resto espera o debounce. IsPresent evita erro de runtime (fora da DLQ) quando o evento nao tem detail-type.",
+      "Comment": "Task ECS (Fargate) pode durar menos que o debounce e ja nasce com as tags de propagateTags - nao ha corrida com IaC a evitar. Vai direto para o processamento. Todo o resto espera o debounce. IsPresent evita erro de runtime (fora da DLQ) quando o evento nao tem detail-type.",
       "Choices": [
         {
           "And": [
@@ -45,7 +45,7 @@
       ],
       "Catch": [
         {
-          "Comment": "Item 9: falha da Lambda depois do Retry (ex.: erro inesperado por recurso) vai para a DLQ da regiao com o evento original e o erro - antes, a execucao so falhava e o evento se perdia.",
+          "Comment": "Falha da Lambda depois do Retry vai para a DLQ da regiao com o evento original e o erro.",
           "ErrorEquals": ["States.ALL"],
           "ResultPath": "$.erro_processamento",
           "Next": "EnviarParaDlq"

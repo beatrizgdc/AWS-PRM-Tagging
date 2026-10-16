@@ -112,7 +112,7 @@ def test_cli_recomendar_grava_json_e_markdown(aws, tmp_path, monkeypatch):
 
 
 def test_drs_nao_inicializado_nao_e_falha(monkeypatch):
-    """Achado na sandbox (2026-09-30): conta que nunca habilitou o DRS
+    """Conta que nunca habilitou o DRS
     devolve UninitializedAccountException — é o estado normal, não falha."""
     from botocore.exceptions import ClientError
 

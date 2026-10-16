@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  AWS PRM Resource Tagging - stack HUB (itens 7 e 8 do plano). Implantada UMA
+  AWS PRM Resource Tagging - stack HUB. Implantada UMA
   vez por conta, numa única região (a "região hub"), ANTES das stacks
   regionais. Contém o que é único por conta: o tópico SNS de relatório e o
   TAGUEAMENTO INICIAL assíncrono (Custom Resource -> Step Functions ->
@@ -23,7 +23,7 @@ Parameters:
     Default: ""
     Description: >
       E-mail assinado no tópico local da conta. Vazio (default) = sem
-      assinatura. Em rollout por StackSet (MVP2), deixe vazio e use
+      assinatura. Em rollout por StackSet, deixe vazio e use
       TopicoCentralArn — senão cada conta manda um e-mail de confirmação.
 
   TopicoCentralArn:
@@ -31,9 +31,9 @@ Parameters:
     Default: ""
     AllowedPattern: "^$|^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
     Description: >
-      MVP2 (StackSets): ARN do tópico CENTRAL (template-central.yaml, na
-      conta payer). Preenchido, todas as Lambdas desta conta publicam lá
-      em vez do tópico local. Vazio (default) = tópico local, como no MVP1.
+      ARN do tópico CENTRAL (template-central.yaml, na conta payer), para
+      rollout por StackSets. Preenchido, todas as Lambdas desta conta
+      publicam lá. Vazio (default) = tópico local.
 
   TopicoCentralKmsArn:
     Type: String
@@ -47,8 +47,9 @@ Parameters:
 
   ExpectedTagValue:
     Type: String
+    Default: pc:825bh0xhwumf14tg27cthnoss
     AllowedPattern: "^pc:[A-Za-z0-9]+$"
-    Description: "Valor da tag aws-apn-id (pc:<product code>) — o mesmo das stacks regionais."
+    Description: "Valor da tag aws-apn-id (pc:<product code>). Default: o product code da Darede."
 
   ModoTagueamentoInicial:
     Type: String
@@ -91,8 +92,7 @@ Parameters:
     Description: >
       Conta que herdou o contrato (ExpectedTagValue) pelo default da OU via
       auto-deployment do StackSet fica "false" até alguém confirmar que o
-      contrato é o certo para ela — vai em todo resumo publicado
-      (docs/arquitetura-multicliente.md).
+      contrato é o certo para ela. Vai em todo resumo publicado.
 
   PublicarVarreduraSemNovidade:
     Type: String
@@ -118,16 +118,15 @@ Parameters:
     Default: 30
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
     Description: >
-      MVP2 (Well-Architected): retenção dos logs das Lambdas. Os log groups
-      fazem parte da stack e são apagados junto com ela (no MVP1 ficavam
-      órfãos e sem retenção).
+      Retenção dos logs das Lambdas. Os log groups fazem parte da stack e
+      são apagados junto com ela.
 
   Arquitetura:
     Type: String
     Default: arm64
     AllowedValues: [arm64, x86_64]
     Description: >
-      MVP2: arm64 (Graviton) custa ~20% menos por GB-s e consome menos energia.
+      arm64 (Graviton) custa ~20% menos por GB-s e consome menos energia.
       O código e a layer são Python puro, funcionam nas duas. Use x86_64 se
       alguma região ainda não oferecer Lambda arm64.
 
@@ -145,7 +144,7 @@ Globals:
       - !Ref PrmSdkLayer
 
 Resources:
-  # MVP2 (item 3): boto3/botocore atuais, fixados por hash
+  # boto3/botocore atuais, fixados por hash
   # (requirements-lambda.txt). O runtime traz um SDK mais antigo; a layer
   # vem antes dele no sys.path. Uma layer por stack, para todas as funções.
   PrmSdkLayer:
@@ -168,8 +167,7 @@ Resources:
     Properties:
       TopicName: !Ref TopicName
       DisplayName: "AWS PRM - eventos de compliance de tagging"
-      # MVP2 (Well-Architected, segurança): criptografia em repouso com a
-      # chave gerenciada pela AWS (sem custo). Quem publica são roles desta
+      # Criptografia em repouso com a chave gerenciada pela AWS (sem custo). Quem publica são roles desta
       # conta (Lambdas e Step Functions), que a política dessa chave já cobre.
       KmsMasterKeyId: alias/aws/sns
 
@@ -182,7 +180,7 @@ Resources:
       Endpoint: !Ref NotificationEmail
 
   # ---------------------------------------------------------------------
-  # Tagueamento inicial (item 8)
+  # Tagueamento inicial
   # ---------------------------------------------------------------------
   TagueamentoInicialRole:
     Type: AWS::IAM::Role
@@ -197,8 +195,8 @@ Resources:
       ManagedPolicyArns:
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
       Policies:
-        # Leitura: MESMA política documentada em docs/producao.md (Etapa 1 +
-        # descoberta nativa + preflight/recomendações). Guarda de deriva em
+        # Leitura: Etapa 1, descoberta nativa, preflight e recomendações.
+        # É a fonte do subcomando `politica-iam`; deriva travada em
         # test/unit/test_infra_hub.py.
         - PolicyName: PrmTagueamentoInicialLeitura
           PolicyDocument:
@@ -283,10 +281,8 @@ Resources:
                 Resource: "*"
         # Escrita: MESMAS ações da Lambda da Etapa 3 (template-regional.yaml),
         # com a mesma restrição aws:TagKeys = [aws-apn-id].
-        # Releitura antes de escrever (revalidação da 2c) — MESMAS ações de
-        # PrmEtapa3RevalidationRead da stack regional. Faltava
-        # eks:ListTagsForResource: 2 node groups/clusters EKS "falhou" na
-        # varredura da sandbox em 2026-10-02.
+        # Releitura antes de escrever (revalidação da 2c): mesmas ações de
+        # PrmEtapa3RevalidationRead da stack regional.
         - PolicyName: PrmTagueamentoInicialRevalidacao
           PolicyDocument:
             Version: "2012-10-17"
@@ -298,7 +294,7 @@ Resources:
                   - bedrock:ListTagsForResource
                   - elasticloadbalancing:DescribeTags
                   - ec2:DescribeInstances
-                  # MVP2: histórico do CloudTrail (userAgent) para detectar
+                  # Histórico do CloudTrail (userAgent) para detectar
                   # Terraform/OpenTofu/Pulumi/CloudFormation. Grátis, só leitura.
                   - cloudtrail:LookupEvents
                 Resource: "*"
@@ -414,8 +410,7 @@ Resources:
                   ForAllValues:StringEquals:
                     aws:TagKeys: [aws-apn-id]
               # API Gateway não tem ação "TagResource": tag é um PUT no
-              # recurso /tags/<arn> (corrigido no MVP2 — o lint do template
-              # expandido apontou a ação inexistente do MVP1).
+              # recurso /tags/<arn>.
               - Effect: Allow
                 Action: apigateway:PUT
                 Resource: !Sub "arn:${AWS::Partition}:apigateway:*::/tags/*"

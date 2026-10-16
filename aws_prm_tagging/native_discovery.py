@@ -1,42 +1,23 @@
-"""Descoberta NATIVA (por serviço) — fecha a lacuna do item 1 do plano:
-recursos que NUNCA receberam tag nenhuma.
+"""Descoberta nativa (por serviço): recursos que nunca receberam tag.
 
-## Por que existe
+`GetResources` (passo genérico) só devolve recursos que têm ou já tiveram
+alguma tag. Este módulo lista os recursos na API de cada serviço
+(`Describe*`/`List*`) e devolve só os ARNs que o passo genérico não viu.
+Somente leitura; o Resource Explorer foi descartado porque exige criar um
+índice na conta.
 
-`resourcegroupstaggingapi:GetResources` (passo genérico da Etapa 1) só
-devolve recursos que têm ou já tiveram alguma tag — documentação oficial da
-AWS. Em cliente sem governança de tags, boa parte dos recursos fica
-invisível. Este módulo lista os recursos diretamente na API de cada serviço
-(`Describe*`/`List*`) e devolve **só os ARNs que o passo genérico não
-viu**, para o `main.py` acrescentar ao relatório.
+Cada serviço é uma entrada declarativa em `_ENUMERADORES` (client, operação,
+onde está a lista, como montar o ARN e, se houver, como ler as tags). O ARN
+passa por `services.classify_arn`, o mesmo classificador do passo genérico:
+serviço fora do CSV é descartado e o rótulo `servico` é o mesmo.
 
-Continua 100% somente-leitura e sem custo relevante (chamadas de listagem
-de control plane). A alternativa do AWS Resource Explorer foi descartada
-porque exige criar um índice na conta — uma escrita.
+Sem tags na listagem, o recurso entra com `tags={}` (se tivesse tag, o
+`GetResources` o teria devolvido). A revalidação da Etapa 2c relê o estado
+antes de qualquer escrita.
 
-## Como funciona
-
-Cada serviço é uma entrada declarativa em `_ENUMERADORES`: qual client e
-operação chamar, onde está a lista na resposta, como montar o ARN de cada
-item e, quando a própria listagem já traz as tags, como lê-las. O ARN
-passa por `services.classify_arn` — o MESMO classificador do passo
-genérico — então um serviço fora do CSV é descartado automaticamente e o
-rótulo `servico` é idêntico ao que o passo genérico daria.
-
-Tags: quando a listagem não traz tags (`tags=None`), o recurso entra com
-`tags={}`. Isso é correto por construção: o recurso só chega aqui se o
-`GetResources` NÃO o devolveu, e o `GetResources` devolve todo recurso que
-tem tag. Se ainda assim houver tag (ex.: formato de ARN divergente entre a
-listagem e a Tagging API), a revalidação da Etapa 2c relê o estado atual
-antes de qualquer escrita — nunca sobrescreve nada.
-
-## Cobertura
-
-Priorizada por gasto típico (compute, storage, bancos, rede paga,
-mensageria). `required_iam_actions()` devolve as permissões de leitura
-necessárias (usado para gerar a política em docs/producao.md).
-Serviços sem enumerador aqui continuam cobertos só pelo passo genérico
-(ou seja, só se tiverem alguma tag) — ver `servicos_cobertos()`.
+A cobertura prioriza gasto típico (compute, storage, bancos, rede paga,
+mensageria). `required_iam_actions()` lista as permissões de leitura e
+`servicos_cobertos()` os serviços com enumerador.
 """
 from __future__ import annotations
 
@@ -154,9 +135,8 @@ _ENUMERADORES: tuple[_Enumerador, ...] = (
         # Global: roda uma vez só; a região real vem do próprio item.
         "s3_buckets", "s3", "list_buckets", _chave("Buckets"),
         lambda i, r, a: f"arn:aws:s3:::{i['Name']}",
-        # GetBucketLocation: fallback quando o ListBuckets não traz BucketRegion
-        # (boto3 embutido no runtime do Lambda é mais antigo — visto na
-        # sandbox em 2026-10-02).
+        # GetBucketLocation quando o ListBuckets não traz BucketRegion (boto3
+        # mais antigo no runtime do Lambda).
         ("s3:ListAllMyBuckets", "s3:GetBucketLocation"), global_=True, regiao_item=lambda i: i.get("BucketRegion"),
     ),
     _Enumerador(
@@ -360,9 +340,8 @@ def servicos_cobertos() -> list[str]:
 
 
 def _ecs_servicos_e_tasks(session: boto3.Session, regiao: str) -> list[tuple[str, str | None]]:
-    """ECS: services e tasks em execução de cada cluster (item 14). Devolve
-    `(arn, tipo_recurso)`. Tasks com ARN no formato curto antigo (sem o
-    nome do cluster) não aceitam tag e ficam de fora."""
+    """ECS: services e tasks em execução de cada cluster, como
+        `(arn, tipo_recurso)`. Tasks com ARN curto (sem o cluster) não aceitam tag."""
     client = session.client("ecs", region_name=regiao, config=_CLIENT_CONFIG)
     saida: list[tuple[str, str | None]] = []
     for pagina in client.get_paginator("list_clusters").paginate():
@@ -386,9 +365,8 @@ def _paginar(client, enum: _Enumerador) -> list:
 
 
 def _kms_chaves_cliente(session: boto3.Session, regiao: str) -> list[str]:
-    """KMS: só chaves gerenciadas pelo cliente (as `AWS managed` não são
-    cobradas por mês nem taggeáveis). `ListKeys` não diz quem gerencia —
-    exige um `DescribeKey` por chave (leitura, custo desprezível)."""
+    """KMS: só chaves gerenciadas pelo cliente (as AWS managed não são
+        cobradas nem tagueáveis). Exige um `DescribeKey` por chave."""
     client = session.client("kms", region_name=regiao, config=_CLIENT_CONFIG)
     arns: list[str] = []
     for pagina in client.get_paginator("list_keys").paginate():
@@ -429,11 +407,10 @@ def discover_native_resources(
     expected_tag_value: str,
     incluir_s3: bool = True,
 ) -> tuple[list[dict], list[dict]]:
-    """Lista os recursos elegíveis da região pelas APIs nativas. Devolve
-    `(recursos, falhas)` no mesmo formato de `resource_discovery` — a
-    filtragem \"só o que o passo genérico não viu\" é feita pelo chamador
-    (`merge_native_resources`), porque buckets S3 e serviços globais podem
-    aparecer no passo genérico de OUTRA região."""
+    """Recursos elegíveis da região pelas APIs nativas: `(recursos, falhas)`.
+        O filtro "só o que o passo genérico não viu" fica com o chamador
+        (`merge_native_resources`), pois buckets S3 e serviços globais podem
+        aparecer no passo genérico de outra região."""
     recursos: list[dict] = []
     falhas: list[dict] = []
     for enum in _ENUMERADORES:
@@ -461,9 +438,7 @@ def discover_native_resources(
             falhas.append({"regiao": regiao, "etapa": f"nativo:{enum.nome}", "erro": f"{enum.operacao}: {exc}"})
             continue
         except Exception as exc:  # noqa: BLE001 — isolamento por enumerador
-            # Um enumerador quebrado (ex.: UnknownServiceError num botocore
-            # antigo, resposta inesperada) NUNCA pode derrubar os demais da
-            # região — achado ao testar contra o moto.
+            # Um enumerador quebrado (ex.: UnknownServiceError) não derruba os demais.
             logger.exception("Falha inesperada no enumerador %s em %s", enum.nome, regiao)
             falhas.append(
                 {"regiao": regiao, "etapa": f"nativo:{enum.nome}", "erro": f"{type(exc).__name__}: {exc}"}
@@ -524,12 +499,8 @@ def discover_native_resources(
 
 
 def _chave_comparacao(arn: str) -> str:
-    """ARN sem o campo de conta. A descoberta roda sempre dentro de UMA
-    conta, então a conta não diferencia nada — e há recurso cujo ARN
-    aparece com e sem conta conforme a API: o snapshot EBS é documentado
-    como `arn:aws:ec2:<regiao>::snapshot/<id>` (sem conta), mas a Tagging
-    API (ao menos no moto) devolve com a conta. Achado no teste de
-    consistência de ARN (test_native_discovery_moto.py)."""
+    """ARN sem o campo de conta. A descoberta roda numa conta só, e há ARN
+        que aparece com e sem conta conforme a API (snapshot EBS)."""
     partes = arn.split(":", 5)
     if len(partes) == 6:
         partes[4] = ""
@@ -543,17 +514,13 @@ def discover_s3_buckets_por_regiao(
     services: list[Service],
     expected_tag_value: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Buckets S3 cuja região REAL está em `regioes` — cada região trata só
-    os próprios buckets (no tagueamento inicial/varredura, uma Lambda por
-    região; antes, a execução de us-east-1 tratava os buckets de todas as
-    regiões e eles apareciam duas vezes nos resumos).
+    """Buckets S3 cuja região real está em `regioes` (cada região trata só
+        os próprios buckets).
 
-    `ListBuckets` é global (só leitura). A região vem de `BucketRegion` ou,
-    se o boto3 não trouxer o campo (runtime do Lambda), de
-    `GetBucketLocation` — chamado por bucket e ISOLADO: um bucket que nega
-    a leitura (política do bucket, permissão ausente) vira uma falha
-    própria e não derruba os demais. Achados na sandbox em 2026-10-02.
-    Falhas são agregadas numa única entrada (amostra de até 5 buckets)."""
+        `ListBuckets` é global. A região vem de `BucketRegion` ou, se o boto3
+        não trouxer o campo, de `GetBucketLocation` por bucket, isolado: um
+        bucket que nega a leitura vira falha própria sem derrubar os outros.
+        As falhas são agregadas numa entrada (amostra de até 5 buckets)."""
     enum = next(e for e in _ENUMERADORES if e.nome == "s3_buckets")
     recursos: list[dict] = []
     negados: list[str] = []
@@ -593,9 +560,8 @@ def discover_s3_buckets_por_regiao(
 
 
 def merge_native_resources(genericos: list[dict], nativos: list[dict]) -> list[dict]:
-    """Devolve só os recursos nativos cujo ARN NÃO apareceu em nenhum
-    resultado anterior (passo genérico + EKS/Bedrock, de qualquer região).
-    Também deduplica entre os próprios nativos."""
+    """Só os recursos nativos cujo ARN não apareceu em nenhum resultado
+        anterior (de qualquer região), sem duplicatas entre si."""
     vistos = {_chave_comparacao(r["arn"]) for r in genericos}
     novos: list[dict] = []
     for r in nativos:

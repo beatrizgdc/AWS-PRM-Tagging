@@ -9,14 +9,11 @@ Prova: que cada `path` hardcoded num extractor (`_DirectPath`/
 **realmente existe** na definição da operação de API correspondente — pega
 erro de digitação, nome de campo trocado, ou operação renomeada numa
 atualização futura do botocore, sem precisar de nenhuma credencial AWS
-nem de rodar nada contra uma conta real. É a forma de teste "segura"
-descrita em docs/melhorias-futuras.md (ver "Extractors da Etapa 3 ainda não
-validados em sandbox") — cobre um MOTIVO real de erro (campo inexistente),
-mas não o outro (a capitalização exata que o CloudTrail grava, que o shape
-do botocore não garante para serviços de protocolo query/ec2/rest-xml — ver
-docstring do módulo `event_parser.py`). Para essa segunda lacuna, o plano é
-um runbook de captura manual em sandbox (fora do escopo automatizável) —
-ver `docs/melhorias-futuras.md`.
+nem de rodar nada contra uma conta real.
+
+Não prova a capitalização exata que o CloudTrail grava (o shape do botocore
+não garante isso para protocolos query/ec2/rest-xml); isso só se confirma
+com eventos reais.
 
 Os extractors com lógica própria (EC2 x4, S3, SQS, Route 53, ELB, WorkSpaces
 — funções nomeadas em vez de `_DirectPath`/`_ConstructedPath`) não são
@@ -33,10 +30,8 @@ botocore_session = pytest.importorskip("botocore.session")
 
 from aws_prm_tagging import event_parser  # noqa: E402
 
-# (eventSource sem ".amazonaws.com") -> id do pacote botocore, só para os
-# casos em que os dois nomes divergem (ver docstring de event_mapping.py —
-# mesma armadilha que já pegou CloudHSM/Keyspaces/Kinesis Analytics/
-# Timestream por engano numa versão anterior deste projeto).
+# (eventSource sem ".amazonaws.com") -> id do pacote botocore, só quando os
+# nomes divergem (ex.: CloudHSM, Keyspaces, Kinesis Analytics, Timestream).
 _EVENT_SOURCE_PARA_BOTOCORE_ID = {
     "cassandra": "keyspaces",
     "cloudhsm": "cloudhsmv2",
@@ -67,14 +62,9 @@ _EVENT_OVERRIDE_PARA_BOTOCORE_ID = {
     ("ses.amazonaws.com", "VerifyDomainIdentity"): "ses",
 }
 
-# Casos confirmados em sandbox (test/manual-live-etapa3/README.md,
-# 2026-09-23) onde o CloudTrail real ACHATA a resposta documentada pelo
-# botocore — o wrapper (`DBInstance`/`DBCluster`/`CacheCluster`) que a
-# operação oficialmente devolve não aparece no evento real; o `path` do
-# extractor já reflete isso (sem o wrapper, ver event_parser.py), então a
-# verificação abaixo desce pelo wrapper antes de validar o resto do path,
-# pra continuar checando contra o shape real da operação em vez de deixar
-# de verificar esses casos.
+# Casos em que o CloudTrail real achata a resposta (sem o wrapper
+# `DBInstance`/`DBCluster`/`CacheCluster`): a verificação desce pelo wrapper
+# antes de validar o resto do path.
 _WRAPPER_ACHATADO_PELO_CLOUDTRAIL = {
     ("rds.amazonaws.com", "CreateDBInstance"): ("DBInstance",),
     ("rds.amazonaws.com", "CreateDBCluster"): ("DBCluster",),

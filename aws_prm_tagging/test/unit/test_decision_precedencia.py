@@ -85,7 +85,7 @@ def test_tag_presente_valor_esperado_ja_ok(recurso_factory):
 
 
 def test_tag_presente_valor_diferente_sobrescreve(recurso_factory):
-    """MVP2: valor de outro parceiro é sobrescrito, e o valor anterior fica
+    """valor de outro parceiro é sobrescrito, e o valor anterior fica
     registrado em `estado_anterior`."""
     recurso = recurso_factory(
         status_tag="conflito", valor_tag_encontrado="pc:valor-errado", iac_tipo="desconhecido"
@@ -97,7 +97,7 @@ def test_tag_presente_valor_diferente_sobrescreve(recurso_factory):
 
 
 def test_tag_presente_valor_diferente_com_iac_pula_iac(recurso_factory):
-    """MVP2: TODO IaC é pulado, mesmo com outro valor presente — o apply
+    """TODO IaC é pulado, mesmo com outro valor presente — o apply
     seguinte do IaC desfaria a sobrescrita. O valor anterior vai para a
     lista do cliente."""
     recurso = recurso_factory(
@@ -115,7 +115,7 @@ def test_tag_presente_valor_diferente_com_iac_pula_iac(recurso_factory):
 
 
 def test_chave_case_diferente_tagueia_e_registra_estado_anterior(recurso_factory):
-    """MVP2: com `AWS-APN-ID` (grafia parecida), a nossa `aws-apn-id` é
+    """com `AWS-APN-ID` (grafia parecida), a nossa `aws-apn-id` é
     adicionada por cima; a chave parecida e seu valor ficam registrados
     em `estado_anterior` para o relatório do cliente."""
     recurso = recurso_factory(

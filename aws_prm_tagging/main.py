@@ -1,20 +1,15 @@
-"""CLI do AWS Partner Revenue Measurement (PRM) — Resource Tagging.
+"""CLI do AWS Partner Revenue Measurement (PRM): Resource Tagging.
 
-Três subcomandos, um por estágio implementado até agora:
+- `map`: Etapa 1, mapeamento somente leitura da conta.
+- `decide`: Etapa 2a, classifica o mapeamento em `taguear`,
+  `taguear_com_tag_similar`, `sobrescrever`, `pular_iac` ou `ja_ok` (sem
+  chamada de API).
+- `apply`: Etapa 2b (padrão, dry-run: só revalida o estado atual) ou 2c
+  (`--live`, escrita).
+- `relatorio-cliente`, `recomendar`, `preflight`, `auditar-org`,
+  `verificar-csv`, `politica-iam`: ver `--help` de cada um.
 
-- `map`    — Etapa 1: mapeamento 100% somente-leitura da conta.
-- `decide` — Etapa 2a: classifica o relatório da Etapa 1 em
-  `taguear`/`taguear_com_tag_similar`/`sobrescrever`/`pular_iac`/`ja_ok`
-  (regra do MVP2). Também somente-leitura (função pura, sem chamada de API).
-- `apply`  — Etapas 2b (default, dry-run) e 2c (`--live`, escrita real) do
-  tagueamento dos recursos `taguear` do relatório da Etapa 2a. Em dry-run,
-  só faz chamadas de LEITURA na conta (revalidação do estado atual de cada
-  recurso, salvo com `--no-revalidate`) — nunca escreve. Ver
-  `docs/arquitetura.md#tag_executionpy`.
-
-Cada subcomando lê a saída em disco do estágio anterior e escreve a sua
-própria saída em disco — o encadeamento entre estágios é responsabilidade
-de quem roda o CLI (ou de um orquestrador futuro), não deste módulo.
+Cada subcomando lê a saída em disco do anterior e grava a sua.
 """
 from __future__ import annotations
 
@@ -27,8 +22,9 @@ import sys
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from . import assistente, csv_check, decision, relatorio_cliente, org_audit, ou_tree, pipeline, preflight, recomendacoes, regions, report, services, tag_execution
+from . import assistente, csv_check, politica_iam, decision, relatorio_cliente, org_audit, ou_tree, pipeline, preflight, recomendacoes, regions, report, services, tag_execution
 from .retry import with_backoff
+from .tag_status import VALOR_PADRAO
 
 logger = logging.getLogger("aws_prm_tagging")
 
@@ -108,8 +104,8 @@ def _run_map(args: argparse.Namespace) -> int:
     service_list = services.load_services()
     logger.info("%d serviços elegíveis carregados do CSV oficial", len(service_list))
 
-    # Loop por região extraído para pipeline.py (Lote 3) — a Lambda do
-    # tagueamento inicial (item 8) usa exatamente a mesma função.
+    # Loop por região em pipeline.py, compartilhado com a Lambda do
+    # tagueamento inicial.
     all_resources, falhas_descoberta = pipeline.descobrir_regioes(
         session,
         account_id,
@@ -294,6 +290,11 @@ def _run_relatorio_cliente(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_politica_iam(args: argparse.Namespace) -> int:
+    print(politica_iam.como_json(com_escrita=args.com_escrita))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # preflight — checagem antes do deploy da Etapa 3 (somente leitura)
 # ---------------------------------------------------------------------------
@@ -314,9 +315,7 @@ def _run_preflight(args: argparse.Namespace) -> int:
     return 0 if resultado["pronto_para_deploy"] else 2
 
 
-# ---------------------------------------------------------------------------
-# recomendar — tag na origem (itens 12 e 14), somente leitura
-# ---------------------------------------------------------------------------
+# --- recomendar: tag na origem (somente leitura) ---
 
 
 def _run_recomendar(args: argparse.Namespace) -> int:
@@ -371,7 +370,7 @@ def _run_verificar_csv(args: argparse.Namespace) -> int:
     if dif["tem_diferenca"]:
         logger.warning(
             "Lista oficial mudou: %d novo(s), %d removido(s), %d código(s) e %d nota(s) alterados. "
-            "Atualizar data/ e reference/ (ver reference/FONTE-CSV.md).",
+            "Atualizar o CSV em data/ (ver data/README.md).",
             len(dif["novos_na_pagina"]), len(dif["removidos_da_pagina"]),
             len(dif["codigo_alterado"]), len(dif["nota_alterada"]),
         )
@@ -397,8 +396,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     map_parser.add_argument(
         "--expected-tag-value",
-        required=True,
-        help="Valor esperado da tag aws-apn-id, ex.: pc:5ugbbrmu7ud3u5hsipfzug61p",
+        default=VALOR_PADRAO,
+        help=f"Valor esperado da tag aws-apn-id (default: {VALOR_PADRAO})",
     )
     map_parser.add_argument("--profile", default=None, help="Perfil de credenciais AWS local")
     map_parser.add_argument("--output", default="prm_mapping_report.json", help="Arquivo JSON de saída")
@@ -436,8 +435,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     decide_parser.add_argument("--input", required=True, help="Relatório JSON da Etapa 1 (saída de 'map')")
     decide_parser.add_argument(
         "--expected-tag-value",
-        required=True,
-        help="Valor esperado da tag aws-apn-id para esta OU/contrato",
+        default=VALOR_PADRAO,
+        help=f"Valor esperado da tag aws-apn-id (default: {VALOR_PADRAO})",
     )
     decide_parser.add_argument("--output", default="prm_decision_report.json", help="Arquivo JSON de saída")
     decide_parser.set_defaults(func=_run_decide)
@@ -453,7 +452,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--no-revalidate",
         action="store_true",
         help="Desliga a revalidação do estado atual de cada recurso antes de agir sobre ele "
-        "(por padrão, revalida — ver docs/arquitetura.md#tag_executionpy)",
+        "(por padrão, revalida)",
     )
     apply_parser.add_argument(
         "--live",
@@ -479,6 +478,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     assistente.parser(subparsers)
 
+    pol_parser = subparsers.add_parser(
+        "politica-iam",
+        help="Imprime a política IAM mínima para rodar o CLI (leitura; com --com-escrita, também o apply --live).",
+    )
+    pol_parser.add_argument("--com-escrita", action="store_true")
+    pol_parser.set_defaults(func=_run_politica_iam)
+
     cli_parser = subparsers.add_parser(
         "relatorio-cliente",
         help="Gera de novo o relatório para o cliente (recursos de IaC + estado anterior) a partir da saída de 'apply'. "
@@ -493,7 +499,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Somente leitura: gera recomendações de tag na origem (EKS, ECS, DRS, IoT) para o cliente aplicar no IaC.",
     )
     rec_parser.add_argument("--profile", default=None)
-    rec_parser.add_argument("--expected-tag-value", required=True, help="Valor esperado da tag aws-apn-id")
+    rec_parser.add_argument("--expected-tag-value", default=VALOR_PADRAO, help="Valor esperado da tag aws-apn-id")
     rec_parser.add_argument("--regioes", default=None, help="Default: todas as regiões ativas.")
     rec_parser.add_argument("--output", default="prm_recomendacoes.json")
     rec_parser.add_argument("--markdown", default=None, help="Também grava um .md legível para enviar ao cliente.")
@@ -505,7 +511,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "afetam aws-apn-id. Saída 2 = requer revisão humana.",
     )
     org_parser.add_argument("--profile", default=None)
-    org_parser.add_argument("--expected-tag-value", required=True, help="Valor esperado da tag aws-apn-id")
+    org_parser.add_argument("--expected-tag-value", default=VALOR_PADRAO, help="Valor esperado da tag aws-apn-id")
     org_parser.add_argument("--output", default="prm_auditoria_org.json")
     org_parser.set_defaults(func=_run_auditar_org)
 

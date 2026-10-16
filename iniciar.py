@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Modo interativo da automação AWS PRM (MVP2).
+"""Modo interativo da automação AWS PRM.
 
     python3 iniciar.py            (Linux/macOS/WSL)
     py iniciar.py                 (Windows)

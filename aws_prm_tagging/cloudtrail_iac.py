@@ -1,4 +1,4 @@
-"""Detecção de IaC pelo histórico do CloudTrail (MVP2).
+"""Detecção de IaC pelo histórico do CloudTrail.
 
 O Terraform não deixa nenhuma tag no recurso por padrão, então a heurística
 por tags (`iac_detection.detect_iac`) perde boa parte dos recursos do

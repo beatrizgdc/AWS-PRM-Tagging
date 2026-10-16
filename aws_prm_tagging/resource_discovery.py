@@ -1,21 +1,12 @@
-"""Descoberta de recursos por região — 100% somente-leitura.
+"""Descoberta de recursos por região (somente leitura).
 
-Estratégia:
-  1. Passo genérico via Resource Groups Tagging API (`get_resources`), sem
-     filtro de tipo, classificando cada ARN retornado pelo namespace
-     (ver `services.classify_arn`). Cobre a maioria dos serviços do CSV de
-     uma só vez, já trazendo ARN + tags atuais.
-  2. Casos especiais que a API genérica não cobre corretamente (conforme o
-     guia oficial): Amazon Bedrock (application inference profiles) e Amazon
-     EKS (cluster, node groups, nodes/instâncias EC2, volumes EBS, load
-     balancers — excluindo Fargate). Esses namespaces são deliberadamente
-     omitidos do mapeamento genérico para não gerar duplicatas — e, como as
-     instâncias EC2/volumes EBS dos nodes SÃO capturadas pelo passo genérico
-     de qualquer forma (não estão em `_DEDICATED_SERVICE_CODES`), o
-     resultado final é deduplicado por ARN em `report.dedupe_by_arn`,
-     mantendo a entrada mais específica (a do EKS).
-
-Nenhuma função aqui cria, altera ou remove recursos/tags.
+1. Passo genérico: Resource Groups Tagging API (`get_resources`), sem filtro
+   de tipo, classificando cada ARN pelo namespace (`services.classify_arn`).
+   Traz ARN e tags atuais da maioria dos serviços do CSV.
+2. Casos que a API genérica não cobre bem: Amazon Bedrock (application
+   inference profiles) e Amazon EKS (cluster, node groups, nodes EC2,
+   volumes EBS e load balancers, sem Fargate). Nodes e volumes também vêm
+   do passo genérico; `report.dedupe_by_arn` mantém a entrada do EKS.
 """
 from __future__ import annotations
 
@@ -31,21 +22,13 @@ from .retry import with_backoff
 
 logger = logging.getLogger(__name__)
 
-# Serviços cobertos por lógica dedicada — nunca reclassificados no passo genérico.
-#
-# Defesa em profundidade: hoje "eks" e "bedrock" (plano, não AgentCore) nem
-# existem em `services._NAMESPACE_TO_CODE`, então `classify_arn` já devolve
-# `None` pra esses namespaces antes de qualquer coisa chegar aqui — este set
-# não é o que efetivamente exclui EKS/Bedrock da descoberta genérica agora.
-# Ele existe para continuar protegendo contra duplicata caso alguém adicione
-# "eks"/"bedrock" a `_NAMESPACE_TO_CODE` no futuro (ex.: pra cobrir um tipo de
-# recurso desses serviços que não seja tratado por resource_discovery.py).
+# Serviços com lógica dedicada, nunca reclassificados no passo genérico.
+# Hoje `classify_arn` já não conhece "eks"/"bedrock"; o set protege contra
+# duplicata se alguém os adicionar a `_NAMESPACE_TO_CODE`.
 _DEDICATED_SERVICE_CODES = {"AmazonBedrock", "AmazonEKS"}
 
-# Valores possíveis para o campo "tipo_recurso" — só preenchido para os
-# sub-recursos de EKS e Bedrock, onde o "servico" sozinho (nome da linha do
-# CSV) não diferencia qual ARN é qual. None no passo genérico, onde o
-# "servico" já identifica o recurso sem ambiguidade.
+# Valores de "tipo_recurso": só para sub-recursos de EKS e Bedrock, onde o
+# "servico" sozinho não diferencia o ARN.
 TIPO_RECURSO_CLUSTER = "cluster"
 TIPO_RECURSO_NODE_GROUP = "node_group"
 TIPO_RECURSO_NODE = "node"
@@ -77,12 +60,8 @@ def _build_resource(
         "tag_similar_chaves": tag_similar_chaves,
         "tag_similar_valores": {k: tags.get(k) for k in tag_similar_chaves},
         "iac": iac,
-        # Item 13 do plano: node/volume/load balancer de EKS são COBRADOS
-        # como Amazon EC2 / Elastic Load Balancing, não como Amazon EKS. O
-        # campo `servico` continua "Amazon EKS" (é ele que roteia a API de
-        # escrita e o escopo em decision.py); este campo é só para o
-        # relatório/dashboard somar o gasto no serviço certo — o mesmo
-        # rótulo que a Etapa 3 já produz para um node novo.
+        # Node, volume e LB de EKS são cobrados como EC2/ELB. `servico` continua
+        # "Amazon EKS" (roteia a escrita); este campo é para o relatório.
         "servico_faturamento": _SERVICO_FATURAMENTO_EKS.get(tipo_recurso, servico)
         if servico == _SERVICO_EKS_NOME
         else servico,
@@ -98,9 +77,7 @@ _SERVICO_FATURAMENTO_EKS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Passo genérico: Resource Groups Tagging API
-# ---------------------------------------------------------------------------
+# --- Passo genérico: Resource Groups Tagging API ---
 
 
 @with_backoff()
@@ -117,13 +94,8 @@ def discover_generic_resources(
     services: list[Service],
     expected_tag_value: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Devolve `(recursos, falhas)`. `falhas` é uma lista de dicts
-    `{"regiao", "etapa", "erro"}` no mesmo formato que `main.py` já grava em
-    `falhas_descoberta` — antes, uma falha aqui (ex.: `AccessDenied`,
-    throttling esgotado, erro no meio da paginação) só ia para o log; o
-    `try/except Exception` de `main.py` nunca via essas falhas porque eram
-    capturadas aqui dentro. Como a Etapa 4/dashboard só consome o JSON, não
-    o log da execução, isso escondia falhas reais em escala."""
+    """Devolve `(recursos, falhas)`. `falhas` são dicts
+        `{"regiao", "etapa", "erro"}`, gravados em `falhas_descoberta` no relatório."""
     client = session.client("resourcegroupstaggingapi", region_name=region)
     results: list[dict] = []
     falhas: list[dict] = []
@@ -169,9 +141,7 @@ def discover_generic_resources(
     return results, falhas
 
 
-# ---------------------------------------------------------------------------
-# Amazon Bedrock — application inference profiles
-# ---------------------------------------------------------------------------
+# --- Amazon Bedrock: application inference profiles ---
 
 
 @with_backoff()
@@ -193,19 +163,11 @@ def discover_bedrock_resources(
     services: list[Service],
     expected_tag_value: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Enumera Amazon Bedrock application inference profiles. Devolve
-    `(recursos, falhas)` — ver docstring de `discover_generic_resources`.
+    """Application inference profiles do Bedrock. Devolve `(recursos, falhas)`.
 
-    Profiles do tipo sistema (cross-region) não suportam tag e são ignorados
-    por construção: `typeEquals=APPLICATION` já os exclui do list_inference_profiles.
-
-    Falha ao ler as tags de UM profile é tratada como `falha`, não só um
-    log: sem essa leitura o recurso entra no relatório com `tags={}` (ou
-    seja, "sem tag"), quando na verdade o estado real é desconhecido — a
-    Etapa 2a decidiria `taguear` em cima de uma suposição, não de um fato
-    confirmado (a revalidação da Etapa 2c ainda impede a escrita errada,
-    mas o relatório de compliance da Etapa 1 ficaria enganoso sem esta
-    falha registrada)."""
+        Profiles de sistema não aceitam tag e são excluídos por
+        `typeEquals=APPLICATION`. Falha ao ler as tags de um profile vira falha
+        (o estado real é desconhecido, não "sem tag")."""
     bedrock_service = next(
         (s for s in services if s.product_service_code == "AmazonBedrock"), None
     )
@@ -256,17 +218,8 @@ def discover_bedrock_resources(
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "")
         if error_code in ("AccessDeniedException", "UnrecognizedClientException"):
-            # NÃO é tratado como benigno silenciosamente: `AccessDenied`
-            # tipicamente indica falta de permissão IAM, não "região sem
-            # Bedrock" — as duas coisas não dão pra distinguir com certeza
-            # só pelo código do erro (precisaria de confirmação em sandbox,
-            # ver melhorias-futuras.md). Uma versão anterior assumia que era
-            # sempre benigno e não registrava falha — testado e comprovado
-            # errado: uma role sem `bedrock:ListInferenceProfiles` produz
-            # exatamente esse erro em TODAS as regiões, e o relatório
-            # mostraria "0 profiles" com confiança total, escondendo um
-            # problema de permissão real na conta inteira. Por isso sempre
-            # vira falha agora, só com um nível de log mais baixo.
+            # AccessDenied vira falha: costuma ser falta de permissão, não "região sem
+            # Bedrock", e esconder isso mostraria "0 profiles" com falsa confiança.
             logger.warning(
                 "Falha ao listar Bedrock application inference profiles em %s (%s) — "
                 "pode ser região sem Bedrock ou falta de permissão IAM, não dá para "
@@ -294,9 +247,7 @@ def discover_bedrock_resources(
     return results, falhas
 
 
-# ---------------------------------------------------------------------------
-# Amazon EKS — cluster, node groups, load balancers, volumes EBS
-# ---------------------------------------------------------------------------
+# --- Amazon EKS: cluster, node groups, load balancers, volumes EBS ---
 
 
 @with_backoff()
@@ -336,12 +287,7 @@ def _chunk(items: list, size: int) -> list[list]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-# Tamanho de lote conservador para os filtros "instance-id"/"attachment.instance-id"
-# abaixo — a AWS não documenta um limite fixo e único para o número de
-# valores num filtro de describe_instances/describe_volumes, então 100 é
-# uma escolha conservadora (bem abaixo de qualquer limite conhecido) em vez
-# de assumir que a lista de instance_ids de um cluster nunca vai ser grande
-# o suficiente para importar.
+# Lote conservador para filtros "instance-id" (a AWS não documenta limite).
 _TAMANHO_LOTE_FILTRO_EC2 = 100
 
 
@@ -354,10 +300,7 @@ def _describe_instances_page(client, filters: list[dict], next_token: str | None
 
 
 def _describe_instances_all(client, filters: list[dict]) -> list[dict]:
-    """Pagina `describe_instances` inteiro — devolve todas as `Reservations`.
-
-    Sem isso, uma resposta paginada (conta/cluster com muitas instâncias)
-    perderia silenciosamente as instâncias das páginas seguintes."""
+    """Pagina `describe_instances` e devolve todas as `Reservations`."""
     reservations: list[dict] = []
     token = None
     while True:
@@ -440,11 +383,9 @@ def _get_asg_instance_ids(autoscaling_client, asg_name: str) -> list[str]:
 
 
 def _get_node_instance_ids_by_cluster_tags(ec2_client, cluster_name: str) -> list[str]:
-    """Fallback best-effort para nodes self-managed: usa as tags que o EKS e o
-    Kubernetes cloud-provider aplicam automaticamente nas instâncias EC2 dos
-    nodes ("eks:cluster-name" em managed nodes; "kubernetes.io/cluster/<nome>"
-    em self-managed). Instâncias Fargate não aparecem aqui pois não são
-    instâncias EC2 (Fargate on EKS é explicitamente não elegível)."""
+    """Fallback para nodes self-managed, pelas tags que EKS e Kubernetes
+        aplicam nas instâncias ("eks:cluster-name" e
+        "kubernetes.io/cluster/<nome>"). Fargate não aparece (não é EC2)."""
     instance_ids: set[str] = set()
     filter_sets = [
         [
@@ -508,15 +449,9 @@ def _volumes_arns_and_tags(
 
 
 def _list_region_load_balancers_with_tags(elbv2_client) -> tuple[list[tuple[str, dict]], str | None]:
-    """Lista TODOS os load balancers da região com suas tags, uma vez só —
-    reaproveitado por `_filter_load_balancers_for_cluster` para cada
-    cluster, em vez de relistar a região inteira a cada cluster (uma conta
-    com N clusters EKS fazia N varreduras completas da região antes desta
-    correção).
-
-    Devolve `(resultado, falha_msg)` — `falha_msg` só é preenchido quando a
-    listagem falhou de forma a comprometer o resultado inteiro (não a falha
-    de um batch de tags isolado, tratada à parte abaixo)."""
+    """Lista os load balancers da região com tags, uma vez para todos os
+        clusters. Devolve `(resultado, falha_msg)`; `falha_msg` só quando a
+        listagem inteira ficou comprometida."""
     all_arns: list[str] = []
     marker = None
     try:
@@ -546,12 +481,9 @@ def _list_region_load_balancers_with_tags(elbv2_client) -> tuple[list[tuple[str,
 def _filter_load_balancers_for_cluster(
     region_load_balancers: list[tuple[str, dict]], cluster_name: str
 ) -> list[tuple[str, dict]]:
-    """Heurística best-effort, sem nenhuma chamada de API (filtro puro sobre
-    o resultado já coletado por `_list_region_load_balancers_with_tags`):
-    identifica load balancers do AWS Load Balancer Controller pelas tags de
-    convenção `elbv2.k8s.aws/cluster` (ALB via Ingress) e
-    `kubernetes.io/cluster/<nome>` (NLB via Service, e também usado pelo
-    controlador legado in-tree)."""
+    """Filtro local: LBs do AWS Load Balancer Controller pelas tags
+        `elbv2.k8s.aws/cluster` (ALB) e `kubernetes.io/cluster/<nome>` (NLB e
+        controlador legado)."""
     return [
         (arn, tags)
         for arn, tags in region_load_balancers
@@ -566,14 +498,9 @@ def discover_eks_resources(
     account_id: str,
     expected_tag_value: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Devolve `(recursos, falhas)` — ver docstring de
-    `discover_generic_resources`. Cobre os pontos de falha "largos" (região
-    inteira, cluster inteiro, node group inteiro); as falhas mais granulares
-    dentro de um cluster (ASG isolado, um chunk de instâncias/volumes EC2)
-    continuam só logadas — o mesmo EC2/EBS ainda aparece no relatório via
-    `discover_generic_resources` mesmo se o enriquecimento específico de EKS
-    falhar aqui, então o recurso em si não fica invisível, só perde o
-    `tipo_recurso` mais específico."""
+    """Devolve `(recursos, falhas)`. Registra falhas de região, cluster e
+        node group; falhas mais granulares (um ASG, um lote de instâncias) só
+        vão para o log, pois os mesmos EC2/EBS ainda vêm do passo genérico."""
     eks_client = session.client("eks", region_name=region)
     ec2_client = session.client("ec2", region_name=region)
     autoscaling_client = session.client("autoscaling", region_name=region)
@@ -597,10 +524,7 @@ def discover_eks_resources(
         )
         return results, falhas
 
-    # Uma varredura só de load balancers da região para todos os clusters
-    # (ver docstring de `_list_region_load_balancers_with_tags`) — só roda
-    # se houver pelo menos um cluster, para não pagar o custo em contas sem
-    # EKS.
+    # Uma listagem de LBs para todos os clusters, só se houver cluster.
     region_load_balancers: list[tuple[str, dict]] = []
     if cluster_names:
         region_load_balancers, falha_lb = _list_region_load_balancers_with_tags(elbv2_client)

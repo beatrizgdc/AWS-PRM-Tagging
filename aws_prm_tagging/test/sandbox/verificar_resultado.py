@@ -1,0 +1,135 @@
+"""Confere o resultado de validar_etapa2c.sh — somente leitura.
+
+Para cada recurso do manifest:
+  1. a Etapa 1 o encontrou? (recursos criados sem tag só aparecem pela
+     descoberta nativa)
+  2. a categoria final da Etapa 2c é a esperada?
+  3. a tag REAL na AWS está como deveria? (lida de volta com GetResources:
+     tagueado/ja_ok -> aws-apn-id = valor esperado; sobrescrito ->
+     valor esperado + valor anterior registrado; adicionado_com_similar ->
+     valor esperado + chave parecida preservada; pulado_iac -> intocado e
+     listado no relatório do cliente)
+Sai com código 1 se qualquer verificação falhar.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+
+import boto3
+
+TAG = "aws-apn-id"
+
+
+def _tags_atuais(session, regiao: str, arns: list[str]) -> dict[str, dict]:
+    tags: dict[str, dict] = {a: {} for a in arns}
+    por_regiao: dict[str, list[str]] = {}
+    for a in arns:
+        # S3 não tem região no ARN; o bucket foi criado na região do teste
+        por_regiao.setdefault(a.split(":")[3] or regiao, []).append(a)
+    for r, lista in por_regiao.items():
+        client = session.client("resourcegroupstaggingapi", region_name=r)
+        for i in range(0, len(lista), 20):
+            for m in client.get_resources(ResourceARNList=lista[i : i + 20])["ResourceTagMappingList"]:
+                tags[m["ResourceARN"]] = {t["Key"]: t["Value"] for t in m.get("Tags", [])}
+    return tags
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--profile")
+    p.add_argument("--regiao", required=True)
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--mapa", required=True)
+    p.add_argument("--resultado", required=True)
+    p.add_argument("--valor", required=True)
+    p.add_argument("--cliente", default=None, help="resultado_live_cliente.json")
+    a = p.parse_args()
+
+    esperados: dict[str, str] = {}
+    for linha in open(a.manifest, encoding="utf-8"):
+        if linha.strip() and not linha.startswith("#"):
+            arn, cat, _ = linha.rstrip("\n").split("\t", 2)
+            esperados[arn] = cat
+
+    mapa = {r["arn"]: r for r in json.load(open(a.mapa, encoding="utf-8"))["recursos"]}
+    resultado = {r["arn"]: r for r in json.load(open(a.resultado, encoding="utf-8"))["recursos"]}
+    session = boto3.Session(profile_name=a.profile)
+    tags = _tags_atuais(session, a.regiao, list(esperados))
+    cliente = json.load(open(a.cliente, encoding="utf-8")) if a.cliente else None
+    iac_no_cliente = {i["arn"] for i in (cliente or {}).get("recursos_iac", [])}
+
+    # "sobrescrito"/"adicionado_com_similar" são tagueado_sucesso com uma ação
+    # específica registrada.
+    _CATEGORIA = {"sobrescrito": "tagueado_sucesso", "adicionado_com_similar": "tagueado_sucesso"}
+    _ACAO = {"sobrescrito": "sobrescrita", "adicionado_com_similar": "adicionada_com_tag_similar"}
+    _GRAVA_TAG = ("tagueado_sucesso", "ja_ok", "sobrescrito", "adicionado_com_similar")
+
+    # Consistência eventual: o índice da Tagging API pode levar segundos para
+    # refletir uma escrita. Antes de acusar divergência, relê por até ~60 s e,
+    # para DynamoDB, confere também pela API nativa.
+    def _faltando():
+        return [
+            arn for arn, cat in esperados.items()
+            if cat in _GRAVA_TAG and tags[arn].get(TAG) != a.valor
+        ]
+
+    for tentativa in range(6):
+        pendentes = _faltando()
+        if not pendentes:
+            break
+        print(f"(aguardando propagação da tag em {len(pendentes)} recurso(s), tentativa {tentativa + 1}/6...)")
+        time.sleep(10)
+        tags.update({k: v for k, v in _tags_atuais(session, a.regiao, pendentes).items() if v})
+    for arn in _faltando():
+        if ":dynamodb:" in arn:
+            ddb = session.client("dynamodb", region_name=arn.split(":")[3])
+            nativas = {t["Key"]: t["Value"] for t in ddb.list_tags_of_resource(ResourceArn=arn).get("Tags", [])}
+            if nativas.get(TAG) == a.valor:
+                print(f"(DynamoDB: tag presente pela API nativa, ainda não no índice da Tagging API: {arn})")
+                tags[arn] = nativas
+
+    falhas = 0
+    print(f"{'recurso':70} {'etapa1':12} {'esperado':22} {'obtido':18} tag real")
+    for arn, esperado in esperados.items():
+        problemas = []
+        no_mapa = mapa.get(arn)
+        origem = (no_mapa or {}).get("origem_descoberta") or ("generico" if no_mapa else "AUSENTE")
+        if not no_mapa:
+            problemas.append("não descoberto pela Etapa 1")
+        entrada = resultado.get(arn) or {}
+        obtido = entrada.get("categoria_final", "AUSENTE")
+        if obtido != _CATEGORIA.get(esperado, esperado):
+            problemas.append(f"categoria {obtido} != {_CATEGORIA.get(esperado, esperado)}")
+        real = tags[arn].get(TAG)
+        if esperado in _GRAVA_TAG and real != a.valor:
+            problemas.append(f"tag real = {real!r}")
+        if esperado in _ACAO and entrada.get("acao") != _ACAO[esperado]:
+            problemas.append(f"acao {entrada.get('acao')!r} != {_ACAO[esperado]!r}")
+        if esperado == "sobrescrito" and (entrada.get("estado_anterior") or {}).get(TAG) != "pc:outroparceiro":
+            problemas.append(f"valor anterior não registrado: {entrada.get('estado_anterior')!r}")
+        if esperado == "adicionado_com_similar" and "AWS-APN-ID" not in tags[arn]:
+            problemas.append("chave parecida AWS-APN-ID sumiu (deveria ficar como estava)")
+        if esperado == "pulado_iac":
+            if real not in (None, "pc:outroparceiro"):
+                problemas.append(f"recurso de IaC foi alterado: {TAG}={real!r}")
+            if cliente is not None and arn not in iac_no_cliente:
+                problemas.append("não aparece na lista de IaC do relatório do cliente")
+        falhas += bool(problemas)
+        marca = "OK " if not problemas else "ERRO"
+        print(f"{marca} {arn[-66:]:66} {origem:12} {esperado:22} {obtido:18} {real}")
+        for pr in problemas:
+            print(f"       -> {pr}")
+        detalhe = (resultado.get(arn) or {}).get("detalhe_erro")
+        if detalhe and problemas:
+            print(f"       -> detalhe_erro: {detalhe}")
+
+    print()
+    print("RESULTADO:", "tudo conforme o esperado" if not falhas else f"{falhas} recurso(s) com divergência")
+    return 1 if falhas else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

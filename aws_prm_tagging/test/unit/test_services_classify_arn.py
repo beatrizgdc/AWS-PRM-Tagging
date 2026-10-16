@@ -75,7 +75,7 @@ def test_nat_gateway_e_classificado_como_ec2():
 
 def test_namespaces_preparados_ficam_inertes_enquanto_o_csv_nao_tiver_a_linha():
     """dax/mobiletargeting/sms-voice/workspaces-instances estão mapeados em
-    _NAMESPACE_TO_CODE de antemão (item 15), mas só passam a classificar
+    _NAMESPACE_TO_CODE de antemão, mas só passam a classificar
     quando o CSV oficial tiver a linha correspondente."""
     from aws_prm_tagging.services import classify_arn, load_services
 

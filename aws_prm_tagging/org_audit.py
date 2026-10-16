@@ -3,8 +3,7 @@
 Somente leitura. Precisa rodar com credenciais da CONTA DE GERENCIAMENTO
 (ou de um administrador delegado do Organizations) — por isso é um
 subcomando de CLI (`auditar-org`), não parte da stack implantada em cada
-conta, e fica condicionado à aprovação do cliente
-(docs/arquitetura-multicliente.md).
+conta, e depende de aprovação do cliente.
 
 O que procura:
 

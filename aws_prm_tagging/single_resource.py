@@ -89,9 +89,7 @@ def _read_tags(
         return _read_tags_elb(session, regiao, arn)
     if servico == _SERVICO_BEDROCK and tipo_recurso == _BEDROCK_TIPO_RECURSO_APPLICATION_INFERENCE_PROFILE:
         return _read_tags_bedrock(session, regiao, arn)
-    # Genérico — cobre a maioria dos serviços, incluindo nodes/volumes EBS
-    # de EKS (que usam o caminho genérico de propósito, mesma razão já
-    # documentada em tag_execution.py).
+    # Genérico: cobre a maioria dos serviços, inclusive nodes/volumes de EKS.
     return _read_tags_generic(session, regiao, arn)
 
 

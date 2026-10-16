@@ -1,7 +1,7 @@
-"""Relatório final para o cliente (MVP2).
+"""Relatório final para o cliente.
 
 Gerado a partir do relatório de execução (`tag_execution.build_execution_report`,
-saída de `apply`). Duas listas, pedidas pelo DevOps em 13/10/2026:
+saída de `apply`). Duas listas:
 
 1. **Recursos gerenciados por IaC** (Terraform/OpenTofu, CloudFormation, CDK,
    Pulumi): a automação não tagueia esses recursos. O cliente precisa

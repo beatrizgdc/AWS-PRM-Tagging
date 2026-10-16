@@ -1,4 +1,4 @@
-"""Modo interativo (MVP2, item 4) — `python3 iniciar.py`.
+"""Modo interativo — `python3 iniciar.py`.
 
 Um comando só, que conduz quem opera pelas etapas com resumo e confirmação
 a cada passo:
@@ -36,6 +36,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError, ProfileNotFound
 
 from . import decision, pipeline, preflight, regions, relatorio_cliente, report, services, tag_execution
+from .tag_status import VALOR_PADRAO
 
 _RAIZ = Path(__file__).resolve().parent.parent
 
@@ -129,7 +130,11 @@ def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session):
         ident = sessao.client("sts").get_caller_identity()
     except (ProfileNotFound, ClientError, BotoCoreError) as exc:
         ui.mostrar(f"  !! não consegui usar o perfil '{perfil}': {exc}")
-        ui.mostrar("     (sessão expirada? rode 'aws sso login' / 'aws login' e tente de novo)")
+        if "botocore[crt]" in str(exc):
+            ui.mostrar("     O 'aws login' grava credenciais que o Python só lê com o pacote CRT. Rode:")
+            ui.mostrar('       pip install "boto3[crt]"')
+        else:
+            ui.mostrar("     (sessão expirada? rode 'aws sso login' / 'aws login' e tente de novo)")
         return None
     conta = ident["Account"]
     _tabela(ui, [("conta", conta), ("identidade", ident["Arn"])])
@@ -137,7 +142,7 @@ def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session):
         ui.mostrar("  ok, nada foi feito.")
         return None
 
-    valor = args.valor or ui.perguntar("valor", "Valor da tag aws-apn-id (pc:<product code>)")
+    valor = args.valor or ui.perguntar("valor", "Valor da tag aws-apn-id", VALOR_PADRAO)
     while not _valor_ok(valor):
         if not ui.interativo:
             ui.mostrar(f"  !! valor inválido: {valor!r} (formato pc:<letras/números>)")
@@ -388,7 +393,7 @@ def _log_em_arquivo(caminho: Path, detalhes: bool) -> None:
 
 def executar(args, ui: Interface | None = None, fabrica_sessao=boto3.Session, executor=subprocess.run) -> int:
     ui = ui or Interface(interativo=not args.nao_interativo, respostas=_respostas(args))
-    ui.mostrar("Assistente AWS PRM — tagueamento aws-apn-id (MVP2)")
+    ui.mostrar("Assistente AWS PRM — tagueamento aws-apn-id")
     ui.mostrar("Nada é escrito na conta antes do passo 6, que pede o ID da conta para confirmar.")
     r = passo_conta(ui, args, fabrica_sessao)
     if r is None:
@@ -434,7 +439,7 @@ def parser(sub: argparse._SubParsersAction | None = None) -> argparse.ArgumentPa
         else argparse.ArgumentParser(prog="iniciar", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--profile", default=None)
-    p.add_argument("--valor", default=None, help="pc:<product code>")
+    p.add_argument("--valor", default=None, help=f"pc:<product code> (default: {VALOR_PADRAO})")
     p.add_argument("--regioes", default=None, help="lista a,b,c (default: todas as ativas)")
     p.add_argument("--saida", default=None, help="pasta de saída (default: saida-prm-<conta>-<data>)")
     p.add_argument("--orcamento-cloudtrail", type=float, default=None,

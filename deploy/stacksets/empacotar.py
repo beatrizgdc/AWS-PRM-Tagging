@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Empacota a automação para rollout via CloudFormation StackSets (MVP2, item 2).
+"""Empacota a automação para rollout via CloudFormation StackSets.
 
 O que faz (tudo LOCAL, nenhuma chamada à AWS):
 
@@ -11,7 +11,7 @@ O que faz (tudo LOCAL, nenhuma chamada à AWS):
    transform/macro nem de `CAPABILITY_AUTO_EXPAND`.
 4. Troca o bucket do código por `${ArtefatosBucketPrefixo}-${AWS::Region}`:
    a Lambda só lê código de um bucket NA MESMA REGIÃO, então existe um
-   bucket por região (criado por `publicar_artefatos.sh` na conta payer).
+   bucket por região (criado por `stackset.py publicar` na conta payer).
 5. Grava em `dist/stacksets/<versao>/`: os dois templates (JSON), os zips e
    um `manifest.json` (chaves, sha256, versão do boto3 da layer).
 

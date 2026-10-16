@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rollout da automação PRM por CloudFormation StackSets (MVP2, item 2).
+"""Rollout da automação PRM por CloudFormation StackSets.
 
 Roda na conta PAYER (gerenciamento) do cliente — ou numa conta
 administradora delegada de StackSets (`--call-as DELEGATED_ADMIN`).
@@ -554,7 +554,8 @@ def _parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("implantar", help="StackSets hub + regional numa OU")
     comum(sp)
     sp.add_argument("--ou", required=True, help="ID(s) de OU separados por vírgula (ou r-xxxx para a raiz)")
-    sp.add_argument("--valor", required=True, help="pc:<product code> do contrato desta OU")
+    sp.add_argument("--valor", default="pc:825bh0xhwumf14tg27cthnoss",
+                    help="pc:<product code> (default: o da Darede, pc:825bh0xhwumf14tg27cthnoss)")
     sp.add_argument("--hub-regiao", required=True)
     sp.add_argument("--regioes", default=None, help="default: as publicadas")
     sp.add_argument("--prefixo", default=None)

@@ -179,13 +179,8 @@ def test_revalidacao_prossegue_para_recurso_ainda_sem_tag(fake_session_factory):
 
 
 def test_revalidacao_generica_usa_resource_arn_list_nao_varredura_sem_filtro(fake_session_factory):
-    """Regressão do bug real reportado após o smoke test em sandbox: uma
-    versão anterior paginava `GetResources` inteiro da região, sem
-    `ResourceARNList` — para revalidar só 1 ARN novo (o caso comum da
-    Etapa 3), isso podia escanear todos os recursos tagueados da região à
-    toa, com risco real de estourar o timeout da Lambda numa conta grande.
-    Aqui confirmamos que a chamada real usa `ResourceARNList` filtrado
-    pelos ARNs pedidos, nunca uma varredura sem filtro."""
+    """A revalidação usa `GetResources` com `ResourceARNList` (só os ARNs
+        pedidos), nunca uma varredura sem filtro da região."""
     arn = "arn:aws:s3:::bucket-pendente"
     client = _FakeTaggingClient({})
     session = fake_session_factory({"resourcegroupstaggingapi": client})
@@ -244,8 +239,7 @@ def test_falha_na_revalidacao_bloqueia_a_tentativa_de_tagueamento(fake_session_f
     de leitura), o recurso NUNCA prossegue para a tentativa de escrita —
     nem em dry-run, nem em live. Sem saber o estado atual do recurso, a
     resposta segura é não arriscar sobrescrever um conflito que a leitura
-    falhou em enxergar (ver docstring do módulo — corrigido depois de uma
-    versão anterior que deixava a tentativa prosseguir)."""
+    falhou em enxergar."""
     arn = "arn:aws:s3:::bucket-sem-permissao-leitura"
     session = fake_session_factory({"resourcegroupstaggingapi": _FakeTaggingClient(erro=True)})
     spy = _SpyExecutor()
@@ -261,7 +255,7 @@ def test_falha_na_revalidacao_bloqueia_a_tentativa_de_tagueamento(fake_session_f
 
 
 def test_revalidacao_generica_outro_valor_sobrescreve_e_registra_anterior(fake_session_factory):
-    """MVP2: valor de outro parceiro encontrado na revalidação NÃO bloqueia
+    """valor de outro parceiro encontrado na revalidação NÃO bloqueia
     mais — segue para a escrita, e o valor lido na hora vira
     `estado_anterior` (vale o estado mais recente, não o da Etapa 2a)."""
     arn = "arn:aws:s3:::bucket-outro-parceiro"
@@ -302,7 +296,7 @@ def test_revalidacao_generica_detecta_iac_e_nunca_tenta_escrever(fake_session_fa
 
 
 def test_revalidacao_generica_iac_com_outro_valor_e_pulado(fake_session_factory):
-    """MVP2: IaC bloqueia a escrita mesmo com outro valor presente — o
+    """IaC bloqueia a escrita mesmo com outro valor presente — o
     apply seguinte do IaC desfaria a sobrescrita."""
     arn = "arn:aws:s3:::bucket-outro-valor-e-iac"
     session = fake_session_factory(
@@ -327,7 +321,7 @@ def test_revalidacao_generica_iac_com_outro_valor_e_pulado(fake_session_factory)
 
 
 def test_revalidacao_generica_tag_similar_adiciona_e_registra(fake_session_factory):
-    """MVP2: `AWS-APN-ID` (grafia parecida) não bloqueia — a nossa chave é
+    """`AWS-APN-ID` (grafia parecida) não bloqueia — a nossa chave é
     adicionada e a parecida fica registrada no estado anterior."""
     arn = "arn:aws:s3:::bucket-tag-similar"
     session = fake_session_factory(

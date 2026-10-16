@@ -1,30 +1,16 @@
-"""Handler Lambda da Etapa 3 (automação contínua via EventBridge).
+"""Lambda da Etapa 3 (reação a recursos novos).
 
-Invocado pelo Step Functions depois do delay de debounce contra corrida com
-IaC (ver `infra/statemachine/etapa3_delay_e_execucao.asl.json` e
-[docs/arquitetura.md](docs/arquitetura.md)) — não diretamente pela regra do
-EventBridge.
+Invocada pelo Step Functions depois do debounce contra corrida com IaC
+(`infra/statemachine/etapa3_delay_e_execucao.asl.json`), não direto pela
+regra do EventBridge. Só faz I/O; a lógica vem dos módulos das Etapas 1-2c:
 
-Só orquestração de I/O (variáveis de ambiente, sessão boto3, publicação do
-resultado) — toda a lógica de negócio é reaproveitada sem duplicação dos
-módulos de núcleo já usados pelas Etapas 1-2c:
+1. `event_parser.parse_creation_event`: 0, 1 ou N recursos do evento.
+2. `single_resource.build_resource_from_arn`: estado atual de cada recurso.
+3. `decision.classify_resource`: Etapa 2a.
+4. `tag_execution.run_tagging_execution(..., dry_run=False)`: Etapa 2c
+   (revalida e escreve se `taguear`; as outras decisões só vão ao relatório).
 
-1. `event_parser.parse_creation_event` — extrai 0, 1 ou N recursos do
-   evento (algumas APIs de criação são de lote, ex.: `RunInstances`).
-2. `single_resource.build_resource_from_arn` — lê o estado ATUAL de cada
-   recurso (a tag pode ter mudado entre o evento e este processamento).
-3. `decision.classify_resource` — Etapa 2a, chamada direta, sem nenhuma
-   regra de precedência reimplementada aqui.
-4. `tag_execution.run_tagging_execution(..., dry_run=False)` — Etapa 2c,
-   chamada direta. Independente da decisão ser `taguear` ou não, esta
-   função já monta o relatório final corretamente nos dois casos (`taguear`
-   passa pela revalidação/escrita real; qualquer outra decisão é só
-   carregada para o relatório final) — não há necessidade de nenhum `if`
-   especial aqui para decisões que não são `taguear`.
-
-Variáveis de ambiente esperadas: `EXPECTED_TAG_VALUE` (o valor esperado da
-tag `aws-apn-id` para esta conta/sub-OU — StackSet parameter, nunca
-hardcoded) e `SNS_TOPIC_ARN` (tópico de relatório — ver `publish.py`).
+Ambiente: `EXPECTED_TAG_VALUE` e `SNS_TOPIC_ARN` (ver `publish.py`).
 """
 from __future__ import annotations
 
@@ -37,7 +23,7 @@ from botocore.exceptions import ClientError
 from . import cloudtrail_iac, decision, escopo_teste, event_parser, iac_detection, publish, resource_expansion, single_resource, tag_execution
 
 logger = logging.getLogger("aws_prm_tagging.etapa3")
-logger.info("boto3 %s (MVP2: deve ser a versão da PrmSdkLayer, ver requirements-lambda.txt)", boto3.__version__)
+logger.info("boto3 %s (deve ser a versão da PrmSdkLayer, ver requirements-lambda.txt)", boto3.__version__)
 
 _ETAPA = "3"
 
@@ -64,11 +50,8 @@ def _process_one_resource(
             extracted.tipo_recurso,
         )
     except ClientError as exc:
-        # A leitura inicial já passou pelo backoff de `retry.py` — se ainda
-        # assim falhou (ex.: AccessDenied, ou o recurso nunca chegou a
-        # ficar visível), publica como falha e para por aqui: sem saber o
-        # estado atual do recurso, não há decisão segura a tomar (mesmo
-        # princípio da revalidação em tag_execution.py).
+        # Sem conseguir ler o estado atual (já com backoff), não há decisão segura:
+        # publica como falha.
         erro = exc.response.get("Error", {})
         logger.exception(
             "Falha ao ler o estado atual de %s — publicando como falha, sem tentar taguear", extracted.arn
@@ -95,19 +78,14 @@ def _process_one_resource(
         return
 
     if iac_evento and resource.get("iac", {}).get("tipo") not in iac_detection.IAC_DETECTADO:
-        # MVP2: o recurso nasceu de uma chamada de IaC (Terraform/OpenTofu,
-        # Pulumi, CloudFormation/CDK) segundo o próprio CloudTrail — sinal
-        # bem mais forte que as tags (o Terraform não deixa tag nenhuma por
-        # padrão). Nunca tagueado; vai para a lista do cliente.
+        # Criado por IaC segundo o CloudTrail (sinal mais forte que tags; o
+        # Terraform não deixa tag por padrão). Nunca tagueado; vai para o cliente.
         resource = {**resource, "iac": iac_evento}
 
     decisao_resultado = decision.classify_resource(resource, expected_tag_value)
     if decisao_resultado is None:
-        # Fora de escopo (tipo_recurso inesperado para EKS/Bedrock) — checagem
-        # defensiva, não deveria ocorrer com o tipo_recurso que os próprios
-        # extractors já atribuem. Mesmo comportamento de
-        # `decision.build_decision_report` para recursos fora de escopo: só
-        # contabilizado/logado, não publicado como um resultado individual.
+        # Fora de escopo (tipo_recurso inesperado): só contabilizado e logado,
+        # como em `decision.build_decision_report`.
         logger.warning("Recurso fora de escopo desta automação, ignorado: %s", extracted.arn)
         return
 
@@ -119,12 +97,7 @@ def _process_one_resource(
         "erros": [decisao_resultado] if tem_erro_classificacao else [],
     }
 
-    # Etapa 2c real — já revalida o estado do recurso imediatamente antes de
-    # escrever, já é idempotente, já roteia pela API certa e já classifica
-    # erro. Funciona igual para decisao == "taguear" (passa pela
-    # revalidação/escrita) e para qualquer outra decisão ou erro de
-    # classificação (só é carregada para o relatório final) — sem
-    # necessidade de nenhum caminho especial aqui.
+    # Etapa 2c: revalida, escreve se `taguear` e monta o relatório.
     execution_report = tag_execution.run_tagging_execution(
         decision_report,
         session=session,
@@ -134,9 +107,8 @@ def _process_one_resource(
     )
     resultado_final = execution_report["recursos"][0]
     if resultado_final["categoria_final"] == "ja_ok" and os.environ.get("PUBLICAR_JA_OK", "true").lower() == "false":
-        # Parâmetro PublicarResultadoJaOk=false (item 14): em cluster ECS com
-        # muita rotação de tasks, cada task que já nasce com a tag (via
-        # propagateTags) geraria um e-mail sem informação nova.
+        # PublicarResultadoJaOk=false evita um e-mail por task ECS que já nasce
+        # com a tag (propagateTags).
         logger.info("Já em conformidade, publicação suprimida (PUBLICAR_JA_OK=false): %s", resultado_final["arn"])
         return
     publish.publish_outcome(
@@ -170,10 +142,9 @@ def _eh_instancia(arn: str) -> bool:
 
 
 def _iac_das_instancias(session: boto3.Session, recursos: list[event_parser.ExtractedResource]) -> dict[str, dict]:
-    """Instância chega pelo evento NATIVO "running" (sem userAgent): o
-    RunInstances original está no histórico do CloudTrail (o debounce de
-    30 min dá tempo de ele aparecer). Falha aqui nunca bloqueia — cai na
-    heurística de tags, como antes."""
+    """Instância vinda do evento nativo "running" (sem userAgent): o
+        RunInstances original é buscado no histórico do CloudTrail (o debounce
+        dá tempo de ele aparecer). Falha aqui cai na heurística de tags."""
     achados: dict[str, dict] = {}
     for r in recursos:
         if not _eh_instancia(r.arn):
@@ -190,21 +161,16 @@ def _iac_das_instancias(session: boto3.Session, recursos: list[event_parser.Extr
 
 
 def _sns_client_for_topic(session: boto3.Session, topic_arn: str):
-    """Client SNS na REGIÃO DO TÓPICO (arn:aws:sns:<regiao>:...), não na
-    região da Lambda. Hoje as duas coincidem; no split hub/regional (item 7
-    do plano) o tópico fica numa região só e as stacks regionais publicam
-    nele — sem isto, `sns:Publish` iria para o endpoint errado."""
+    """Client SNS na região do tópico, que fica no hub e pode diferir da
+        região da Lambda regional."""
     partes = topic_arn.split(":")
     regiao = partes[3] if len(partes) > 3 and partes[3] else None
     return session.client("sns", region_name=regiao) if regiao else session.client("sns")
 
 
 def handler(event: dict, context=None, *, session: boto3.Session | None = None, sns_client=None) -> None:
-    """`session`/`sns_client` são injetáveis só para teste (ver
-    `test_handler_continuous_tagging.py` e `fake_session_factory` em
-    `conftest.py`) — em produção, a Lambda sempre invoca com só
-    `(event, context)`, e os dois são construídos a partir da execution
-    role da própria função."""
+    """`session`/`sns_client` são injetáveis para teste; em produção a Lambda
+        recebe só `(event, context)`."""
     expected_tag_value = os.environ["EXPECTED_TAG_VALUE"]
     topic_arn = os.environ["SNS_TOPIC_ARN"]
 
@@ -225,11 +191,8 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
         logger.info("Fora do FiltroEscopoTeste, ignorado(s): %s", fora)
         extracted_resources = [r for r in extracted_resources if r.arn not in fora]
     if not extracted_resources:
-        # Falha de extração (payload insuficiente) ou evento fora do
-        # mapeamento — a decisão de alertar ativamente via SNS fica para
-        # depois (ver docs/melhorias-futuras.md); por ora só loga. A Etapa
-        # 4 (varredura periódica, fora do escopo deste módulo) é o backstop
-        # para qualquer recurso perdido aqui.
+        # Falha de extração ou evento fora do mapeamento: só log. A varredura
+        # da Etapa 4 é o backstop.
         logger.warning(
             "Não foi possível extrair nenhum recurso do evento %s (%s/%s)", event_id, event_source, event_name
         )
@@ -287,24 +250,14 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
                 iac_recurso,
             )
         except Exception as exc:
-            # Uma falha inesperada num recurso não deve impedir o
-            # processamento dos demais recursos do mesmo evento (ex.: um
-            # RunInstances que criou 3 instâncias) — mesmo princípio já
-            # usado em main.py/resource_discovery.py. Recontabilizado no
-            # final para marcar a execução do Step Functions como falha
-            # (visibilidade operacional), sem abortar o loop no meio.
+            # Falha inesperada num recurso não impede os demais do mesmo evento; a
+            # execução é marcada como falha no final.
             logger.exception(
                 "Falha inesperada ao processar %s — continuando com os demais recursos do evento", extracted.arn
             )
             falhas_inesperadas += 1
-            # Bug real encontrado em code review: até aqui, uma falha
-            # inesperada (bug de programação, ex.: os AttributeError que
-            # existiam em event_parser.py antes de corrigidos) só aparecia
-            # no CloudWatch Logs — nunca no tópico SNS. Isso contraria o
-            # princípio que publish.py declara ("publicar não é opcional").
-            # Publicação em try/except própria: se ELA TAMBÉM falhar (ex.:
-            # tópico sem permissão), não pode derrubar o processamento dos
-            # demais recursos do loop — mesmo princípio do bloco acima.
+            # A falha também é publicada no SNS, em try/except próprio para não
+            # derrubar o loop.
             try:
                 publish.publish_outcome(
                     sns_client,

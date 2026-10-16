@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  AWS PRM Resource Tagging - Etapa 3, stack REGIONAL (item 7 do plano).
+  AWS PRM Resource Tagging - Etapa 3, stack REGIONAL.
 
   Implantada em TODAS as regiões ativas da conta (+ us-east-1 sempre, única
   região onde o EventBridge recebe eventos de serviços globais) via
@@ -14,11 +14,9 @@ Description: >
 Parameters:
   ExpectedTagValue:
     Type: String
+    Default: pc:825bh0xhwumf14tg27cthnoss
     AllowedPattern: "^pc:[A-Za-z0-9]+$"
-    Description: >
-      Valor esperado da tag aws-apn-id para esta conta/sub-OU (formato
-      pc:<product-code>) — StackSet parameter, nunca hardcoded (mesmo
-      princípio já usado em main.py --expected-tag-value).
+    Description: "Valor da tag aws-apn-id (pc:<product code>). Default: o product code da Darede."
 
   DebounceSeconds:
     Type: Number
@@ -34,11 +32,9 @@ Parameters:
     Type: Number
     Default: 5
     Description: >
-      DECISÃO REGISTRADA (valor conservador, não validado contra volume real
-      de criação de recursos em conta de cliente — ajustável depois): limita
-      quantas invocações simultâneas desta função a conta permite, para não
-      contribuir para throttling de API em contas com criação de recursos em
-      rajada (ex.: Auto Scaling). Ver docs/melhorias-futuras.md.
+      Limite de invocações simultâneas desta função (valor conservador),
+      para não contribuir para throttling de API em contas que criam
+      recursos em rajada (ex.: Auto Scaling).
 
   MaximumEventAgeInSeconds:
     Type: Number
@@ -95,9 +91,9 @@ Parameters:
     Default: ""
     AllowedPattern: "^$|^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
     Description: >
-      MVP2 (StackSets): ARN do tópico CENTRAL na conta payer
-      (template-central.yaml). Preenchido, esta região publica lá em vez do
-      tópico da stack HUB. Vazio (default) = tópico do HUB, como no MVP1.
+      ARN do tópico CENTRAL na conta payer (template-central.yaml), para
+      rollout por StackSets. Preenchido, esta região publica lá. Vazio
+      (default) = tópico da stack HUB.
 
   TopicoCentralKmsArn:
     Type: String
@@ -114,16 +110,15 @@ Parameters:
     Default: 30
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
     Description: >
-      MVP2 (Well-Architected): retenção dos logs das Lambdas. Os log groups
-      fazem parte da stack e são apagados junto com ela (no MVP1 ficavam
-      órfãos e sem retenção).
+      Retenção dos logs das Lambdas. Os log groups fazem parte da stack e
+      são apagados junto com ela.
 
   Arquitetura:
     Type: String
     Default: arm64
     AllowedValues: [arm64, x86_64]
     Description: >
-      MVP2: arm64 (Graviton) custa ~20% menos por GB-s e consome menos energia.
+      arm64 (Graviton) custa ~20% menos por GB-s e consome menos energia.
       O código e a layer são Python puro, funcionam nas duas. Use x86_64 se
       alguma região ainda não oferecer Lambda arm64.
 
@@ -142,7 +137,7 @@ Globals:
     MemorySize: 256
 
 Resources:
-  # MVP2 (item 3): boto3/botocore atuais, fixados por hash
+  # boto3/botocore atuais, fixados por hash
   # (requirements-lambda.txt). O runtime traz um SDK mais antigo; a layer
   # vem antes dele no sys.path. Uma layer por stack, para todas as funções.
   PrmSdkLayer:
@@ -161,15 +156,10 @@ Resources:
       RetentionPolicy: Delete
 
   # ---------------------------------------------------------------------
-  # Execução da função Lambda — permissões de leitura (Etapa 2b) + escrita
-  # (Etapa 2c) já documentadas em docs/producao.md, mais as permissões
-  # nativas por serviço necessárias além de tag:TagResources (ver docstring
-  # de docs/producao.md, seção Etapa 2c) — só para os serviços do "lote
-  # inicial" com extractor dedicado em event_parser.py. Os demais serviços
-  # mapeados (fallback genérico de extração) vão falhar com AccessDenied até
-  # a permissão nativa correspondente ser adicionada aqui — comportamento
-  # seguro (reportado como erro, nunca uma ação incorreta), não uma lacuna
-  # silenciosa.
+  # Role da Lambda: leitura (revalidação) e escrita (só aws-apn-id), com a
+  # ação nativa de tag de cada serviço mapeado, exigida além de
+  # tag:TagResources. Serviço sem a ação nativa aqui falha com AccessDenied
+  # (reportado como erro, nunca uma ação incorreta).
   # ---------------------------------------------------------------------
   Etapa3ExecutionRole:
     Type: AWS::IAM::Role
@@ -198,7 +188,7 @@ Resources:
                   # o volume root nasce junto com a instância e nunca gera um
                   # CreateVolume próprio. Somente leitura, sem custo.
                   - ec2:DescribeInstances
-                  # MVP2: RunInstances original de instância (evento nativo sem
+                  # RunInstances original de instância (evento nativo sem
                   # userAgent) — detecta Terraform/OpenTofu/Pulumi. Grátis, só leitura.
                   - cloudtrail:LookupEvents
                 Resource: "*"
@@ -213,14 +203,8 @@ Resources:
                   - bedrock:TagResource
                   - elasticloadbalancing:AddTags
                 Resource: "*"
-                # Restringe a ÚNICA chave de tag que a Etapa 3 tem motivo
-                # para escrever (aws-apn-id) — mesmo que um bug no código
-                # tentasse escrever outra chave, o IAM bloqueia antes de
-                # chegar na API. `aws:TagKeys` é uma condition key global
-                # suportada pelas APIs de tagging da AWS; NÃO testado em
-                # sandbox contra as ~69 ações nativas abaixo (só confirmado
-                # que a lógica do código sempre escreve 1 única chave) — ver
-                # docs/melhorias-futuras.md.
+                # Só a chave aws-apn-id: mesmo um bug no código não
+                # conseguiria escrever outra tag.
                 Condition:
                   ForAllValues:StringEquals:
                     aws:TagKeys: [aws-apn-id]
@@ -230,16 +214,10 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  # Uma ação nativa por serviço mapeado (ver event_parser.py
-                  # e event_mapping.py) — tag:TagResources exige essa
-                  # permissão ALÉM de si mesma para o caminho genérico
-                  # (confirmado na doc oficial, ver docs/producao.md). Nomes
-                  # verificados contra o botocore instalado (não vem de
-                  # memória) — ver "Permissões IAM — cobertura real" em
-                  # infra/README.md. CodeBuild não entra aqui de propósito —
-                  # confirmado em sandbox que tag:TagResources sozinho (já
-                  # concedido por PrmEtapa3TagWrite) cobre esse serviço, sem
-                  # ação nativa nenhuma (ver test/manual-live-etapa3/README.md).
+                  # Uma ação nativa por serviço mapeado (tag:TagResources
+                  # exige a do serviço além de si mesma). Nomes conferidos
+                  # contra o botocore. CodeBuild não precisa: tag:TagResources
+                  # basta.
                   - acm:TagResource
                   - acm-pca:TagCertificateAuthority
                   - appsync:TagResource
@@ -338,16 +316,12 @@ Resources:
                   - vpc-lattice:TagResource
                   - workspaces:CreateTags
                 Resource: "*"
-                # Mesma restrição de PrmEtapa3TagWrite acima — só permite
-                # escrever a chave aws-apn-id, mesmo com ~69 ações nativas
-                # diferentes cobertas por esta política. Ver nota lá sobre
-                # não ter sido testado em sandbox contra cada ação.
+                # Só a chave aws-apn-id.
                 Condition:
                   ForAllValues:StringEquals:
                     aws:TagKeys: [aws-apn-id]
               # API Gateway não tem ação "TagResource": tag é um PUT no
-              # recurso /tags/<arn> (corrigido no MVP2 — o lint do template
-              # expandido apontou a ação inexistente do MVP1).
+              # recurso /tags/<arn>.
               - Effect: Allow
                 Action: apigateway:PUT
                 Resource: !Sub "arn:${AWS::Partition}:apigateway:*::/tags/*"
@@ -391,25 +365,14 @@ Resources:
   Etapa3Function:
     Type: AWS::Serverless::Function
     Metadata:
-      # `.samignore` NÃO é um mecanismo suportado pelo SAM CLI (confirmado
-      # lendo o código-fonte instalado — nenhuma referência a "samignore"
-      # em lugar nenhum do pacote `samcli`; uma versão anterior deste
-      # template dependia disso e empacotava test/docs/infra/reference (e
-      # qualquer JSON solto de smoke test manual) dentro da Lambda sem
-      # ninguém perceber). `BuildMethod: makefile` é o mecanismo real —
-      # ver `Makefile` na raiz de `CodeUri` (alvo `build-Etapa3Function`),
-      # que copia só os módulos .py do pacote + o CSV oficial em `data/`.
+      # O Makefile na raiz de CodeUri copia só os .py e o CSV de data/.
       BuildMethod: makefile
     Properties:
-      # CodeUri aponta para o diretório PAI de aws_prm_tagging/ (mesma
-      # exigência de "Onde rodar os comandos" do README raiz) — para que
-      # `aws_prm_tagging.handler_continuous_tagging.handler` seja
-      # importável como pacote dentro da Lambda. O QUE de fato entra no
-      # artefato é decidido pelo Makefile acima, não por tudo que existe
-      # neste diretório.
+      # Diretório pai de aws_prm_tagging/, para o handler ser importável
+      # como pacote.
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_continuous_tagging.handler
-      # MVP2: 120 s (Globals = 60) — a consulta ao histórico do CloudTrail
+      # 120 s (Globals = 60): a consulta ao histórico do CloudTrail
       # (instância EC2) pode esperar por throttling de LookupEvents (2/s)
       # quando muitas instâncias sobem juntas. Estourou: vai para a DLQ e a
       # varredura recorrente é o backstop.
@@ -431,7 +394,7 @@ Resources:
   # ---------------------------------------------------------------------
   # Step Functions Standard — implementa o debounce (Wait) sem manter
   # nenhum compute ocioso: Standard Workflows cobram por transição de
-  # estado, não por tempo de espera (ver docs/arquitetura.md). SQS não
+  # estado, não por tempo de espera. SQS não
   # serviria aqui de qualquer forma: DelaySeconds do SQS tem teto de 15
   # minutos, menos que os 30 minutos combinados.
   # ---------------------------------------------------------------------
@@ -474,25 +437,15 @@ Resources:
                 Resource: !Ref Etapa3StateMachine
 
   # ---------------------------------------------------------------------
-  # Regras de EventBridge — CINCO regras, não uma só. O event pattern de
-  # TODOS os serviços mapeados juntos ultrapassa a quota PADRÃO de 2.048
-  # caracteres por pattern (ajustável via Service Quotas, mas preferimos
-  # caber no default em vez de depender de um aumento de quota replicado em
-  # ~80-90 contas de cliente via StackSet — excelência operacional/de
-  # custo). Cada bloco abaixo é uma cópia exata de
-  # infra/event_pattern.<N>.generated.json — gerados por
-  # `event_mapping.build_event_patterns()`, NUNCA escritos à mão. Cada
-  # alternativa também exige `errorCode` ausente (`{"exists": false}`) —
-  # uma chamada de API que FALHOU (ex.: AccessDenied, nome já em uso) ainda
-  # grava um evento no CloudTrail com o mesmo eventName, mas o recurso nunca
-  # chegou a existir; sem esse filtro, a Etapa 3 gastaria uma invocação
-  # Lambda tentando ler/taguear um ARN inexistente. Se o número de arquivos
-  # gerados mudar (novo serviço mapeado empurra para mais uma regra),
-  # adicione/remova o recurso AWS::Events::Rule correspondente aqui
-  # manualmente — ver infra/README.md.
+  # Regras de EventBridge: o pattern de todos os serviços juntos passa da
+  # quota padrão de 2.048 caracteres, então há uma regra por arquivo
+  # infra/event_pattern.<N>.generated.json (gerados por
+  # `event_mapping.build_event_patterns()`, nunca à mão). `errorCode`
+  # ausente descarta chamadas que falharam. Se o número de arquivos mudar,
+  # adicione/remova a regra correspondente aqui (ver infra/README.md).
   # ---------------------------------------------------------------------
   # ---------------------------------------------------------------------
-  # DLQ da região (item 9). Recebe DUAS coisas:
+  # DLQ da região. Recebe duas coisas:
   #   1. eventos que o EventBridge não conseguiu entregar ao Step Functions
   #      depois do RetryPolicy (DeadLetterConfig em cada alvo abaixo);
   #   2. execuções do Step Functions cuja Lambda falhou mesmo depois do
@@ -878,14 +831,14 @@ Resources:
           DeadLetterConfig:
             Arn: !GetAtt Etapa3EventsDlq.Arn
 
-  # Item 14 — pattern = event_mapping.NATIVE_EVENT_PATTERNS["ecs_task_running"].
-  # Tagueia a TASK via ecs:TagResource (nunca ecs:UpdateService — decisão
-  # de 2026-09-30); ligar propagateTags vira recomendação (recomendacoes.py).
+  # Pattern = event_mapping.NATIVE_EVENT_PATTERNS["ecs_task_running"].
+  # Tagueia a task via ecs:TagResource (nunca ecs:UpdateService); ligar
+  # propagateTags é recomendação (recomendacoes.py).
   Etapa3NativeEcsTaskRunningRule:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${AWS::StackName}-prm-etapa3-ecs-task-running"
-      Description: "PRM Etapa 3 - task ECS Fargate entrou em RUNNING (evento nativo, item 14)"
+      Description: "PRM Etapa 3 - task ECS Fargate entrou em RUNNING (evento nativo)"
       State: ENABLED
       EventPattern:
         source: ["aws.ecs"]
@@ -924,7 +877,7 @@ Resources:
     Properties:
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_drift.handler
-      # MVP2 (confiabilidade): erro na própria função (invocação assíncrona
+      # Erro na própria função (invocação assíncrona
       # pelo EventBridge) também vai para a DLQ — o DeadLetterConfig do alvo
       # da regra só cobre falha de ENTREGA. A varredura recorrente lê a fila.
       DeadLetterQueue:

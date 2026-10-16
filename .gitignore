@@ -1,28 +1,36 @@
-# O CLI (aws_prm_tagging.main) precisa rodar a partir deste diretório (ver
-# aws_prm_tagging/README.md#onde-rodar-os-comandos) — os relatórios de saída
-# (--output) são gerados aqui, não dentro de aws_prm_tagging/. Mesmos
-# padrões do .gitignore de dentro do pacote: contêm ARNs, contas e
-# estrutura de OU reais, nunca devem ser versionados.
-relatorio*.json
-prm_mapping_report.json
-prm_decision_report.json
-prm_apply_report.json
-# Convenção para saída de testes manuais/smoke contra sandbox (--output
-# qualquer_nome_teste.json) — nomes customizados não cabem num padrão fixo,
-# então a convenção é usar sempre o sufixo "_teste.json"
-*_teste.json
-# Rede de segurança para o mesmo caso: nomes de saída de teste que não
-# seguem o sufixo acima (ex.: resultado_um_recurso_dry.json), mas começam
-# com um destes prefixos — também contêm ARNs/conta real.
-mapa*.json
-decisao*.json
-resultado*.json
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
 
-# Gerados pelos testes na sandbox / build (2026-10-02) — contêm ARNs da conta ou são pesados
+# Build e empacotamento (sam build, empacotar.py)
 .aws-sam/
-aws-sam-cli-*.zip
-saida-prm-val-*/
+dist/
+samconfig.toml
+*.zip
+
+# Saídas da automação: contêm ARNs, IDs de conta e tags reais — nunca versionar
 saida-prm-*/
 prm_*.json
 prm_*.md
-dist/
+relatorio*.json
+mapa*.json
+decisao*.json
+resultado*.json
+*_cliente.md
+*_cliente.csv
+*_cliente.json
+*_teste.json
+a_taguear.tsv
+manifest.tsv
+execucao.log
+
+# Editor / sistema
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

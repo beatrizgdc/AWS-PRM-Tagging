@@ -1,4 +1,4 @@
-"""Item 8 — tagueamento inicial assíncrono (stack hub). Offline."""
+"""Tagueamento inicial assíncrono (stack hub). Offline."""
 from __future__ import annotations
 
 import json

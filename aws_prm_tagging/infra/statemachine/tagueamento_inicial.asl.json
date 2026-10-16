@@ -1,5 +1,5 @@
 {
-  "Comment": "PRM - tagueamento inicial (item 8, disparado pelo Custom Resource) e varredura recorrente (Etapa 4, disparada pelo EventBridge Scheduler) - mesma logica, campo origem diferencia. Uma execucao da Lambda por regiao; falha de uma regiao e publicada no SNS e nao interrompe as demais.",
+  "Comment": "PRM - tagueamento inicial (disparado pelo Custom Resource) e varredura recorrente (Etapa 4, disparada pelo EventBridge Scheduler) - mesma logica, campo origem diferencia. Uma execucao da Lambda por regiao; falha de uma regiao e publicada no SNS e nao interrompe as demais.",
   "StartAt": "ListarRegioes",
   "States": {
     "ListarRegioes": {
