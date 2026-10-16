@@ -113,7 +113,13 @@ py iniciar.py                      # Windows
 python3 -m aws_prm_tagging iniciar # equivalente
 ```
 
-O assistente passa por estas etapas, com resumo e confirmação (s/n) em cada uma:
+A primeira pergunta é o escopo: **uma conta** (o fluxo abaixo) ou **várias
+contas de uma organização**. Nessa segunda opção, rodando com o perfil da
+payer, o assistente lista as OUs e oferece implantar, aplicar nos existentes
+(live), ver status ou remover, chamando os comandos de `deploy/stacksets/`
+(seção 4) por você. `--organizacao` vai direto para essa opção.
+
+Uma conta, com resumo e confirmação (s/n) em cada etapa:
 
 1. **Conta:** perfil e confirmação de que é a conta certa.
 2. **Valor da tag:** `pc:...`.
@@ -189,7 +195,7 @@ são implantações separadas.
 Sobre cada comando:
 
 - Todos mostram o plano (o que cria, o custo e como remover) e pedem `sim` antes de escrever. `--somente-mostrar` só mostra.
-- O `implantar` começa em **dry-run** (tagueamento inicial e varredura). Para escrever nos recursos existentes, rode de novo com `--modo-inicial live`, depois do consentimento do cliente.
+- O `implantar` começa em **dry-run** (tagueamento inicial e varredura). Para escrever nos recursos existentes, rode de novo com `--modo-inicial live`, depois do consentimento do cliente. A troca de modo já dispara o tagueamento inicial de novo em cada conta (`--reexecutar` muda isso, se precisar rodar outra vez no mesmo modo).
 - O acesso confiável dos StackSets com o Organizations precisa estar ativo. O script confere e, com `--ativar-acesso-confiavel`, ativa.
 - Região bloqueada por SCP numa conta falha só ali: a tolerância a falha é 100%, e o resumo lista as falhas.
 - **Limitação da AWS:** StackSet service-managed não implanta na própria payer. Se ela tiver workloads, use `deploy/implantar_conta.sh` nela.

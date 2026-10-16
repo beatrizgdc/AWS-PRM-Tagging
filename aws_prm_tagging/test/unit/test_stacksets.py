@@ -382,3 +382,28 @@ def test_remover_artefatos_apaga_todas_as_versoes(tmp_path, _aws_env):
                      apagar_artefatos=False, somente_artefatos=True)
         assert stackset.cmd_remover(args, session=sessao) == 0
         assert boto3.client("s3").list_buckets()["Buckets"] == []
+
+
+def test_implantar_live_muda_reexecutar_para_rodar_o_tagueamento_inicial(tmp_path):
+    """Só trocar o modo não roda o tagueamento inicial: o Custom Resource
+    exige que ReexecutarTagueamentoInicial mude. O padrão é o próprio modo."""
+    dist = _dist(tmp_path)
+    for modo in ("dry-run", "live"):
+        cfn = _FakeCfn()
+        assert stackset.cmd_implantar(_args_implantar(dist, modo_inicial=modo), session=_Sessao(cfn)) == 0
+        inst = {kw["StackSetName"]: kw for n, kw in cfn.chamadas if n == "create_stack_instances"}
+        over = {p["ParameterKey"]: p["ParameterValue"] for p in inst["prm-hub"]["ParameterOverrides"]}
+        assert over["ReexecutarTagueamentoInicial"] == modo
+        assert over["ModoTagueamentoInicial"] == modo
+
+
+def test_parametros_do_hub_existem_no_template():
+    import yaml
+
+    class _L(yaml.SafeLoader):
+        pass
+
+    _L.add_multi_constructor("!", lambda loader, s, n: None)
+    raiz = stackset.Path(stackset.__file__).resolve().parents[2]
+    tpl = yaml.load((raiz / "aws_prm_tagging/infra/template-hub.yaml").read_text(encoding="utf-8"), Loader=_L)
+    assert "ReexecutarTagueamentoInicial" in tpl["Parameters"]

@@ -20,7 +20,8 @@ Pré-requisitos: Python 3.10+, AWS CLI v2, SAM CLI e make.
 ```bash
 pip install -r aws_prm_tagging/requirements-dev.txt
 
-# Uma conta, passo a passo (mapear -> simular -> taguear -> implantar):
+# Modo interativo: uma conta (mapear -> simular -> taguear -> implantar)
+# ou várias contas de uma organização (StackSets, na payer):
 python3 iniciar.py
 
 # Uma conta, direto (dry-run por padrão):

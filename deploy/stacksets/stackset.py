@@ -366,6 +366,9 @@ def cmd_implantar(args, session=None) -> int:
             raise SystemExit(f"template {nome} passou de 51.200 bytes (limite do TemplateBody)")
 
     central = {"TopicoCentralArn": args.topico_central_arn or "", "TopicoCentralKmsArn": args.kms_central_arn or ""}
+    # O tagueamento inicial só roda de novo num update se este valor mudar.
+    # Padrão = o modo: passar de dry-run para live dispara a execução live.
+    reexecutar = getattr(args, "reexecutar", None) or args.modo_inicial
     # Parâmetros do StackSet (defaults). O valor do contrato vai como
     # override POR OU — OUs diferentes podem ter contratos diferentes.
     base_hub = {
@@ -375,11 +378,13 @@ def cmd_implantar(args, session=None) -> int:
         "ModoTagueamentoInicial": args.modo_inicial,
         "ModoVarreduraRecorrente": args.modo_varredura,
         "ContratoConfirmado": "true" if args.contrato_confirmado else "false",
+        "ReexecutarTagueamentoInicial": reexecutar,
         **central,
     }
     base_reg = {"ArtefatosBucketPrefixo": prefixo, "ExpectedTagValue": args.valor, "HubRegion": args.hub_regiao, **central}
     over_hub = {"ExpectedTagValue": args.valor, "ContratoConfirmado": base_hub["ContratoConfirmado"],
-                "ModoTagueamentoInicial": args.modo_inicial, "ModoVarreduraRecorrente": args.modo_varredura}
+                "ModoTagueamentoInicial": args.modo_inicial, "ModoVarreduraRecorrente": args.modo_varredura,
+                "ReexecutarTagueamentoInicial": reexecutar}
     over_reg = {"ExpectedTagValue": args.valor}
 
     print("== Plano: implantar por StackSets")
@@ -565,6 +570,9 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--modo-inicial", default="dry-run", choices=["dry-run", "live", "desligado"])
     sp.add_argument("--modo-varredura", default="dry-run", choices=["dry-run", "live", "desligado"])
     sp.add_argument("--contrato-confirmado", action="store_true")
+    sp.add_argument("--reexecutar", default=None,
+                    help="muda para rodar o tagueamento inicial de novo (default: o próprio --modo-inicial, "
+                         "então trocar de dry-run para live já dispara a execução)")
     sp.add_argument("--ativar-acesso-confiavel", action="store_true")
     sp.add_argument("--max-concorrencia-pct", type=int, default=25)
     sp.add_argument("--tolerancia-falha-pct", type=int, default=100,

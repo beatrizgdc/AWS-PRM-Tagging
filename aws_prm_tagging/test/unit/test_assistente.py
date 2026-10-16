@@ -33,8 +33,8 @@ def _tags(s3, b):
         return {}
 
 
-def _rodar(tmp_path, respostas, extra_args=(), executor=None):
-    fila = iter(respostas)
+def _rodar(tmp_path, respostas, extra_args=(), executor=None, escopo="1"):
+    fila = iter([escopo, *respostas])
     saida: list[str] = []
     ui = assistente.Interface(entrada=lambda p: next(fila), saida=saida.append)
     args = assistente.parser().parse_args(["--saida", str(tmp_path / "out"), *extra_args])
@@ -87,7 +87,7 @@ def test_conta_errada_para_no_inicio(conta, tmp_path):
 
 
 def test_valor_invalido_pede_de_novo(conta, tmp_path):
-    fila = iter(["", "s", "abc", VALOR, "us-east-1", "n", "n"])
+    fila = iter(["1", "", "s", "abc", VALOR, "us-east-1", "n", "n"])
     perguntas: list[str] = []
 
     def entrada(p):
@@ -146,3 +146,82 @@ def test_nao_interativo_com_aplicar_escreve(conta, tmp_path):
     a = assistente.parser().parse_args([*args, "--saida", str(tmp_path / "o")])
     assert assistente.executar(a, ui=ui, fabrica_sessao=lambda profile_name=None: boto3.Session()) == 0
     assert _tags(conta, "b-novo") == {"aws-apn-id": VALOR}
+
+
+# --- várias contas (StackSets) ---------------------------------------------
+
+
+class _Ok:
+    returncode = 0
+
+
+@pytest.fixture
+def payer(conta):
+    org = boto3.client("organizations")
+    org.create_organization(FeatureSet="ALL")
+    raiz = org.list_roots()["Roots"][0]["Id"]
+    ou = org.create_organizational_unit(ParentId=raiz, Name="Clientes")["OrganizationalUnit"]["Id"]
+    return ou
+
+
+def _rodar_org(tmp_path, monkeypatch, respostas, retorno=_Ok):
+    monkeypatch.setattr(assistente.shutil, "which", lambda c: "/usr/bin/" + c)
+    chamadas = []
+
+    def executor(cmd, cwd=None):
+        chamadas.append(cmd)
+        return retorno()
+
+    rc, texto = _rodar(tmp_path, respostas, extra_args=["--versao", "teste-nao-existe"],
+                       executor=executor, escopo="2")
+    return rc, texto, chamadas
+
+
+def test_organizacao_implantar_roda_empacotar_publicar_e_implantar_em_dry_run(payer, tmp_path, monkeypatch):
+    #          perfil conta valor  acao ou    regioes      hub          varredura email ativar
+    respostas = ["", "s", VALOR, "1", payer, "us-east-1", "us-east-1", "dry-run", "", "s"]
+    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas)
+    assert rc == 0
+    assert [c[1].rsplit("/", 1)[-1] for c in chamadas] == ["empacotar.py", "stackset.py", "stackset.py"]
+    assert chamadas[1][2] == "publicar" and chamadas[2][2] == "implantar"
+    impl = chamadas[2]
+    assert impl[impl.index("--ou") + 1] == payer
+    assert impl[impl.index("--modo-inicial") + 1] == "dry-run"
+    assert impl[impl.index("--valor") + 1] == VALOR
+    assert "--sim" not in impl  # o próprio stackset.py pede 'sim'
+    assert "--ativar-acesso-confiavel" in impl
+    assert "Clientes" in texto  # OUs listadas como dica
+    assert "opção 2" in texto
+
+
+def test_organizacao_aplicar_usa_live_e_contrato_confirmado(payer, tmp_path, monkeypatch):
+    respostas = ["", "s", VALOR, "2", payer, "us-east-1", "us-east-1", "dry-run", "", "n"]
+    rc, _, chamadas = _rodar_org(tmp_path, monkeypatch, respostas)
+    impl = chamadas[-1]
+    assert rc == 0
+    assert impl[impl.index("--modo-inicial") + 1] == "live"
+    assert "--contrato-confirmado" in impl and "--ativar-acesso-confiavel" not in impl
+
+
+def test_organizacao_status_e_remover(payer, tmp_path, monkeypatch):
+    rc, _, chamadas = _rodar_org(tmp_path, monkeypatch, ["", "s", VALOR, "3"])
+    assert rc == 0 and len(chamadas) == 1 and chamadas[0][2] == "status"
+    rc, _, chamadas = _rodar_org(tmp_path, monkeypatch, ["", "s", VALOR, "4", payer, "us-east-1", "us-east-1"])
+    assert rc == 0 and chamadas[0][2] == "remover"
+    assert chamadas[0][chamadas[0].index("--ou") + 1] == payer
+
+
+def test_organizacao_para_se_publicar_falhar(payer, tmp_path, monkeypatch):
+    class _Falha:
+        returncode = 1
+
+    respostas = ["", "s", VALOR, "1", payer, "us-east-1", "us-east-1"]
+    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas, retorno=_Falha)
+    assert rc == 1 and len(chamadas) == 1  # empacotar falhou: não publica nem implanta
+    assert "Nada foi publicado" in texto
+
+
+def test_organizacao_sem_organizacao_para(conta, tmp_path, monkeypatch):
+    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, ["", "s", VALOR])
+    assert rc == 1 and chamadas == []
+    assert "não está numa organização" in texto

@@ -1,7 +1,8 @@
 """Modo interativo — `python3 iniciar.py`.
 
-Um comando só, que conduz quem opera pelas etapas com resumo e confirmação
-a cada passo:
+Começa perguntando se é uma conta só ou várias contas de uma organização.
+
+Uma conta: conduz pelas etapas com resumo e confirmação a cada passo:
 
   1. conta (perfil AWS) e valor da tag;
   2. regiões e checagem prévia (somente leitura);
@@ -14,6 +15,10 @@ a cada passo:
 Nada é escrito na conta antes do passo 6, e o passo 6 exige digitar o ID da
 conta. Tudo o que é gerado fica numa pasta `saida-prm-<conta>-<data>/`.
 
+Várias contas (na payer): pergunta OU, regiões e ação, e roda os comandos de
+`deploy/stacksets/` (empacotar, publicar, implantar, status, remover). Cada
+comando que escreve mostra o plano e pede `sim` antes.
+
 Só biblioteca padrão + boto3. Para CI/automação existe `--nao-interativo`
 (as respostas vêm dos parâmetros; escrita só com `--aplicar` explícito).
 """
@@ -25,7 +30,7 @@ import logging
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — só executa deploy/implantar_conta.sh com lista de argumentos (sem shell)
+import subprocess  # nosec B404 — só executa os scripts de deploy/ com lista de argumentos (sem shell)
 import sys
 from collections import Counter
 from datetime import datetime
@@ -114,7 +119,7 @@ def _gravar(pasta: Path, nome: str, dados: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session):
+def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session, rotulo: str = "conta do cliente"):
     ui.titulo("1. Conta e valor da tag")
     perfis = []
     try:
@@ -123,7 +128,7 @@ def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session):
         logging.getLogger(__name__).debug("não foi possível listar perfis AWS", exc_info=True)
     if perfis and ui.interativo:
         ui.mostrar("  perfis AWS configurados: " + ", ".join(perfis[:15]) + (" ..." if len(perfis) > 15 else ""))
-    perfil = args.profile or ui.perguntar("profile", "Perfil AWS da conta do cliente",
+    perfil = args.profile or ui.perguntar("profile", f"Perfil AWS da {rotulo}",
                                           os.environ.get("AWS_PROFILE", "default"))
     try:
         sessao = fabrica_sessao(profile_name=perfil or None)
@@ -138,7 +143,7 @@ def passo_conta(ui: Interface, args, fabrica_sessao=boto3.Session):
         return None
     conta = ident["Account"]
     _tabela(ui, [("conta", conta), ("identidade", ident["Arn"])])
-    if not ui.sim_ou_nao("conta_ok", "É esta a conta do cliente?", padrao=not ui.interativo):
+    if not ui.sim_ou_nao("conta_ok", f"É esta a {rotulo}?", padrao=not ui.interativo):
         ui.mostrar("  ok, nada foi feito.")
         return None
 
@@ -368,6 +373,157 @@ def passo_implantar(ui: Interface, args, perfil, conta, valor, regioes, pasta: P
 
 
 # ---------------------------------------------------------------------------
+# várias contas (StackSets, na payer)
+# ---------------------------------------------------------------------------
+
+_ACOES_ORG = {
+    "1": "implantar",
+    "2": "aplicar",
+    "3": "status",
+    "4": "remover",
+}
+
+
+def _rodar_cmd(ui: Interface, cmd: list[str], executor) -> bool:
+    ui.mostrar("  $ " + " ".join(cmd))
+    r = executor(cmd, cwd=_RAIZ)
+    return getattr(r, "returncode", 1) == 0
+
+
+def _organizacao(ui: Interface, sessao, conta: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """Confere que a conta é a de gerenciamento (ou administradora delegada)
+    e lista a raiz e as OUs de primeiro nível como dica. Devolve
+    (call_as, [(id, nome)]) ou None."""
+    org = sessao.client("organizations")
+    try:
+        info = org.describe_organization()["Organization"]
+    except (ClientError, BotoCoreError) as exc:
+        ui.mostrar(f"  !! esta conta não está numa organização ou não pode lê-la: {exc}")
+        return None
+    call_as = "SELF"
+    if info.get("MasterAccountId") != conta:
+        ui.mostrar(f"  esta conta NÃO é a de gerenciamento (payer = {info.get('MasterAccountId')}).")
+        if not ui.sim_ou_nao("admin_delegado", "Ela é administradora delegada de StackSets?", padrao=False):
+            ui.mostrar("  rode de novo com o perfil da conta payer. Nada foi feito.")
+            return None
+        call_as = "DELEGATED_ADMIN"
+    alvos: list[tuple[str, str]] = []
+    try:
+        for raiz in org.list_roots()["Roots"]:
+            alvos.append((raiz["Id"], "raiz (todas as contas)"))
+            pag = org.get_paginator("list_organizational_units_for_parent")
+            for pagina in pag.paginate(ParentId=raiz["Id"]):
+                alvos += [(ou["Id"], ou.get("Name", "")) for ou in pagina["OrganizationalUnits"]]
+    except (ClientError, BotoCoreError) as exc:
+        ui.mostrar(f"  (não consegui listar as OUs: {exc})")
+    return call_as, alvos
+
+
+def passo_organizacao(ui: Interface, args, fabrica_sessao=boto3.Session, executor=subprocess.run) -> int:
+    ui.mostrar("Várias contas: a automação é instalada em todas as contas de uma OU por CloudFormation")
+    ui.mostrar("StackSets, a partir da conta payer. Cada conta tagueia os próprios recursos.")
+    r = passo_conta(ui, args, fabrica_sessao, rotulo="conta payer (gerenciamento da organização)")
+    if r is None:
+        return 1
+    sessao, perfil, conta, valor = r
+    org = _organizacao(ui, sessao, conta)
+    if org is None:
+        return 1
+    call_as, alvos = org
+
+    ui.titulo("2. O que fazer")
+    ui.mostrar("  1) implantar ou atualizar (recursos novos tagueados; existentes só em simulação)")
+    ui.mostrar("  2) aplicar a tag nos recursos EXISTENTES (depois de revisar os resumos e com consentimento)")
+    ui.mostrar("  3) ver o status das contas")
+    ui.mostrar("  4) remover a automação de uma OU")
+    acao = _ACOES_ORG.get(args.acao_org or ui.perguntar("acao_org", "Opção", "1"))
+    if acao is None:
+        ui.mostrar("  opção inválida. Nada foi feito.")
+        return 1
+
+    script = str(_RAIZ / "deploy/stacksets/stackset.py")
+    comum = ["--profile", perfil, "--call-as", call_as]
+    extra = [] if ui.interativo else (["--sim"] if args.aplicar else ["--somente-mostrar"])
+    if acao == "status":
+        return 0 if _rodar_cmd(ui, [sys.executable, script, "status", *comum], executor) else 1
+
+    ui.titulo("3. Onde")
+    if alvos and ui.interativo:
+        for oid, nome in alvos[:30]:
+            ui.mostrar(f"  {oid:<20} {nome}")
+    ous = args.ou or ui.perguntar("ou", "OU(s) alvo (IDs separados por vírgula)")
+    if not ous:
+        ui.mostrar("  nenhuma OU informada. Nada foi feito.")
+        return 1
+    try:
+        ativas = regions.get_active_regions(sessao)
+    except (ClientError, BotoCoreError):
+        ativas = []
+    padrao_reg = ",".join(sorted(set(ativas) | {"us-east-1"}))
+    regioes = args.regioes or ui.perguntar("regioes", "Regiões (us-east-1 sempre entra)", padrao_reg)
+    lista_reg = sorted({r.strip() for r in regioes.split(",") if r.strip()} | {"us-east-1"})
+    hub = args.hub or ui.perguntar("hub", "Região da stack hub", "us-east-1")
+    if hub not in lista_reg:
+        ui.mostrar(f"  a região hub ({hub}) precisa estar entre as regiões. Nada foi feito.")
+        return 1
+
+    if acao == "remover":
+        cmd = [sys.executable, script, "remover", *comum, "--ou", ous, "--regioes", ",".join(lista_reg),
+               "--hub-regiao", hub, *extra]
+        return 0 if _rodar_cmd(ui, cmd, executor) else 1
+
+    versao = args.versao or ui.perguntar("versao", "Versão do pacote", f"{datetime.now():%Y.%m.%d}")
+    dist = f"dist/stacksets/{versao}"
+    ui.titulo("4. Empacotar e publicar o código")
+    if (_RAIZ / dist / "manifest.json").exists() and \
+            ui.sim_ou_nao("reusar_pacote", f"O pacote {dist} já existe. Reaproveitar?", padrao=True):
+        ui.mostrar("  pacote reaproveitado")
+    else:
+        faltando = [c for c in ("sam", "make") if shutil.which(c) is None]
+        if faltando:
+            ui.mostrar(f"  !! falta {', '.join(faltando)} no PATH (pré-requisito do empacotamento).")
+            return 1
+        if not _rodar_cmd(ui, [sys.executable, str(_RAIZ / "deploy/stacksets/empacotar.py"), "--versao", versao],
+                          executor):
+            ui.mostrar("  !! o empacotamento falhou. Nada foi publicado.")
+            return 1
+    ui.mostrar("  Publicar cria (se faltar) um bucket privado por região na payer e envia o código.")
+    if not _rodar_cmd(ui, [sys.executable, script, "publicar", *comum, "--dist", dist,
+                           "--regioes", ",".join(lista_reg), *extra], executor):
+        ui.mostrar("  !! a publicação falhou ou foi cancelada.")
+        return 1
+
+    ui.titulo("5. Implantar nas contas da OU")
+    cmd = [sys.executable, script, "implantar", *comum, "--dist", dist, "--ou", ous, "--valor", valor,
+           "--hub-regiao", hub, "--regioes", ",".join(lista_reg)]
+    if acao == "aplicar":
+        ui.mostrar("  Modo LIVE: cada conta roda de novo o tagueamento inicial, agora escrevendo a tag.")
+        cmd += ["--modo-inicial", "live", "--contrato-confirmado"]
+    else:
+        cmd += ["--modo-inicial", "dry-run"]
+    varredura = args.modo_varredura or ui.perguntar("modo_varredura", "Varredura diária: dry-run | live | desligado",
+                                                    "dry-run")
+    if varredura not in ("dry-run", "live", "desligado"):
+        ui.mostrar(f"  modo inválido: {varredura}")
+        return 1
+    cmd += ["--modo-varredura", varredura]
+    email = args.email or ui.perguntar("email", "E-mail por conta (vazio = sem; em OU grande, 1 confirmação por conta)", "")
+    if email:
+        cmd += ["--email", email]
+    if ui.sim_ou_nao("ativar_acesso", "Ativar o acesso confiável StackSets/Organizations se estiver desligado?",
+                     padrao=True):
+        cmd += ["--ativar-acesso-confiavel"]
+    ok = _rodar_cmd(ui, cmd + extra, executor)
+
+    ui.titulo("Fim")
+    if acao == "implantar":
+        ui.mostrar("  Cada conta manda um resumo do tagueamento inicial (simulação) pelo tópico/e-mail.")
+        ui.mostrar("  Revisados os resumos e com consentimento do cliente, rode de novo e escolha a opção 2.")
+    ui.mostrar("  Acompanhe com a opção 3 (status).")
+    return 0 if ok else 2
+
+
+# ---------------------------------------------------------------------------
 # orquestração
 # ---------------------------------------------------------------------------
 
@@ -394,6 +550,19 @@ def _log_em_arquivo(caminho: Path, detalhes: bool) -> None:
 def executar(args, ui: Interface | None = None, fabrica_sessao=boto3.Session, executor=subprocess.run) -> int:
     ui = ui or Interface(interativo=not args.nao_interativo, respostas=_respostas(args))
     ui.mostrar("Assistente AWS PRM — tagueamento aws-apn-id")
+    if args.organizacao:
+        escopo = "2"
+    elif ui.interativo:
+        ui.mostrar("  1) uma conta (este perfil)")
+        ui.mostrar("  2) várias contas de uma organização (StackSets, rodando na conta payer)")
+        escopo = ui.perguntar("escopo", "Opção", "1")
+    else:
+        escopo = "1"
+    if escopo == "2":
+        return passo_organizacao(ui, args, fabrica_sessao, executor)
+    if escopo != "1":
+        ui.mostrar("  opção inválida")
+        return 1
     ui.mostrar("Nada é escrito na conta antes do passo 6, que pede o ID da conta para confirmar.")
     r = passo_conta(ui, args, fabrica_sessao)
     if r is None:
@@ -431,6 +600,8 @@ def _respostas(args) -> dict:
         "aplicar": bool(args.aplicar),
         "implantar": bool(args.implantar),
         "regioes": args.regioes or "",
+        "ativar_acesso": True,
+        "reusar_pacote": True,
     }
 
 
@@ -452,6 +623,12 @@ def parser(sub: argparse._SubParsersAction | None = None) -> argparse.ArgumentPa
     p.add_argument("--email", default=None)
     p.add_argument("--modo-varredura", default=None, choices=["dry-run", "live", "desligado"])
     p.add_argument("--detalhes", action="store_true", help="mostra os logs internos (INFO)")
+    g = p.add_argument_group("várias contas (StackSets, na payer)")
+    g.add_argument("--organizacao", action="store_true", help="vai direto para o fluxo de várias contas")
+    g.add_argument("--acao-org", default=None, choices=sorted(_ACOES_ORG),
+                   help="1 implantar, 2 aplicar (live), 3 status, 4 remover")
+    g.add_argument("--ou", default=None, help="OU(s) alvo, separadas por vírgula")
+    g.add_argument("--versao", default=None, help="versão do pacote (default: data de hoje)")
     p.set_defaults(func=executar_cli)
     return p
 
@@ -459,6 +636,9 @@ def parser(sub: argparse._SubParsersAction | None = None) -> argparse.ArgumentPa
 def executar_cli(args) -> int:
     if args.nao_interativo and not (args.profile and args.valor):
         print("--nao-interativo exige --profile e --valor")
+        return 1
+    if args.nao_interativo and args.organizacao and not args.ou and args.acao_org != "3":
+        print("--nao-interativo --organizacao exige --ou")
         return 1
     try:
         return executar(args)
