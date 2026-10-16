@@ -105,6 +105,8 @@ def comparar(pagina: list[tuple[str, str, str]], local: list[tuple[str, str, str
 
 
 def baixar(url: str = URL_PADRAO, timeout: int = 30) -> str:
+    if not url.startswith("https://"):
+        raise ValueError("a URL da página do CSV precisa ser https://")
     req = urllib.request.Request(url, headers={"User-Agent": "aws-prm-tagging-csv-check"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — URL fixa da documentação AWS
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 — esquema validado acima
         return r.read().decode("utf-8", errors="replace")

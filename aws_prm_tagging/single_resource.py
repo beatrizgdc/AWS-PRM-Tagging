@@ -124,5 +124,6 @@ def build_resource_from_arn(
         "valor_tag_encontrado": valor_encontrado,
         "tag_similar_encontrada": bool(tag_similar_chaves),
         "tag_similar_chaves": tag_similar_chaves,
+        "tag_similar_valores": {k: tags.get(k) for k in tag_similar_chaves},
         "iac": iac,
     }

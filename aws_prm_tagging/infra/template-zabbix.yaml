@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS PRM Resource Tagging - integração com o Zabbix (MVP2, item 1). Uma
+  Lambda assinada no tópico SNS da automação (o central da organização ou o
+  de uma conta) que envia cada mensagem ao Zabbix como itens trapper.
+  Importar antes, no Zabbix, infra/zabbix/template-prm-tagging.yaml e
+  vinculá-lo ao host informado em ZabbixHost.
+
+Parameters:
+  TopicoArn:
+    Type: String
+    AllowedPattern: "^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
+    Description: "Tópico a escutar (TopicoCentralArn da stack central, ou PrmComplianceTopicArn do hub). Mesma região desta stack."
+
+  ZabbixModo:
+    Type: String
+    Default: api
+    AllowedValues: [api, trapper]
+    Description: >
+      api: HTTPS + history.push (Zabbix 7.0+, recomendado). trapper:
+      protocolo do zabbix_sender na porta 10051 (qualquer versão).
+
+  ZabbixUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^https://[^\\s]+$"
+    Description: "(api) URL do frontend do Zabbix, ex.: https://zabbix.empresa.com (sem /api_jsonrpc.php)."
+
+  ZabbixTokenParam:
+    Type: String
+    Default: /prm/zabbix/token
+    AllowedPattern: "^/[A-Za-z0-9_.\\-/]+$"
+    Description: >
+      (api) Nome do parâmetro SSM SecureString com o token de API do Zabbix
+      (criar antes: aws ssm put-parameter --type SecureString ...). Sem custo
+      (Parameter Store padrão).
+
+  ZabbixServidor:
+    Type: String
+    Default: ""
+    Description: "(trapper) Host/IP do Zabbix server ou proxy."
+
+  ZabbixPorta:
+    Type: Number
+    Default: 10051
+
+  ZabbixHost:
+    Type: String
+    MinLength: 1
+    Description: "Nome técnico do host no Zabbix que tem o template AWS PRM Tagging vinculado."
+
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >
+      Opcional: sub-redes privadas para a Lambda alcançar um Zabbix interno
+      (VPN/Direct Connect). Vazio = Lambda fora de VPC (Zabbix acessível pela
+      internet). Com VPC, a sub-rede precisa de rota de saída (NAT ou endpoint
+      do SSM) para ler o token.
+
+  SecurityGroupIds:
+    Type: CommaDelimitedList
+    Default: ""
+
+Conditions:
+  UsaVpc: !Not [!Equals [!Join ["", !Ref SubnetIds], ""]]
+  ModoApi: !Equals [!Ref ZabbixModo, api]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Layers:
+      - !Ref PrmSdkLayer
+
+Resources:
+  PrmSdkLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+    Properties:
+      Description: boto3/botocore fixados para as Lambdas do PRM tagging
+      ContentUri: ../../
+      CompatibleRuntimes: [python3.12]
+      CompatibleArchitectures: [x86_64, arm64]
+      RetentionPolicy: Delete
+
+  ZabbixDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  ZabbixLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-zabbix"
+      RetentionInDays: 30
+
+  ZabbixFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    DependsOn: ZabbixLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-zabbix"
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_zabbix.handler
+      Timeout: 30
+      MemorySize: 128
+      ReservedConcurrentExecutions: 2
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt ZabbixDlq.Arn
+      EventInvokeConfig:
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+      VpcConfig: !If
+        - UsaVpc
+        - SubnetIds: !Ref SubnetIds
+          SecurityGroupIds: !Ref SecurityGroupIds
+        - !Ref "AWS::NoValue"
+      Environment:
+        Variables:
+          ZABBIX_MODO: !Ref ZabbixModo
+          ZABBIX_URL: !Ref ZabbixUrl
+          ZABBIX_TOKEN_PARAM: !Ref ZabbixTokenParam
+          ZABBIX_SERVIDOR: !Ref ZabbixServidor
+          ZABBIX_PORTA: !Ref ZabbixPorta
+          ZABBIX_HOST: !Ref ZabbixHost
+      Policies:
+        - Statement:
+            - !If
+              - ModoApi
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ZabbixTokenParam}"
+              - !Ref "AWS::NoValue"
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt ZabbixDlq.Arn
+        # Com VpcConfig, o SAM já anexa AWSLambdaVPCAccessExecutionRole.
+      Events:
+        Topico:
+          Type: SNS
+          Properties:
+            Topic: !Ref TopicoArn
+
+  ZabbixDlqAlarme:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "PRM Zabbix: mensagens que não chegaram ao Zabbix (ver fila DLQ e reprocessar)."
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ZabbixDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ZabbixDlqUrl:
+    Description: "Mensagens que falharam (Zabbix fora do ar etc.) — reprocessar depois."
+    Value: !Ref ZabbixDlq

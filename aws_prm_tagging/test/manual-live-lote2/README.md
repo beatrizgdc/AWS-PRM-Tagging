@@ -4,7 +4,7 @@
 > consolidado; a Parte A (script `validar_etapa2c.sh`) continua valendo e é
 > usada pelo guia. Nomes de arquivo podem ter mudado (ex.: `infra/template.yaml`
 > hoje é `infra/template-regional.yaml` + `infra/template-hub.yaml`). O
-> roteiro atual de validação é [`test/GUIA-SANDBOX.md`](../GUIA-SANDBOX.md).
+> roteiro atual de validação é [`test/GUIA-SANDBOX-MVP2.md`](../GUIA-SANDBOX-MVP2.md). No MVP2 o script espera a regra nova: `sobrescrito`, `adicionado_com_similar` e dois buckets `pulado_iac` (Terraform e Pulumi).
 
 Roteiro para rodar **na conta sandbox compartilhada**. Quem executa é o
 responsável pelo projeto; cada bloco que cria ou altera algo diz **o que

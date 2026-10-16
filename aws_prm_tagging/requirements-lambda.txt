@@ -1,0 +1,25 @@
+# SDK empacotado nas Lambdas (MVP2, item 3) — vai numa Lambda Layer
+# (PrmSdkLayer, uma por stack) montada pelo Makefile (alvo build-PrmSdkLayer).
+# O runtime python3.12 da Lambda traz um boto3 mais antigo e que a AWS
+# atualiza quando quer; a layer vem ANTES do runtime no sys.path, então
+# este é o boto3 usado de fato (conferir: campo versao_boto3 no resumo SNS).
+#
+# Versões fixas + hash (pip --require-hashes): supply chain. Para atualizar:
+#   pip download --only-binary=:all: --platform manylinux2014_x86_64 \
+#     --python-version 3.12 --implementation cp -d /tmp/w boto3==<versão>
+#   e gere os sha256 de cada .whl (ver docs/MVP-2.md, seção SDK).
+
+boto3==1.43.113 \
+    --hash=sha256:2e6fa2eef6decd7cbe5cf55b4ccc3218a3784630e54cb5e7e7f7074437dda281
+botocore==1.43.113 \
+    --hash=sha256:8908e4a5fe94a06801a7bf4c451717a38145cc4ffa41aaffa50665940b64b4fa
+jmespath==1.1.0 \
+    --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+s3transfer==0.19.2 \
+    --hash=sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3

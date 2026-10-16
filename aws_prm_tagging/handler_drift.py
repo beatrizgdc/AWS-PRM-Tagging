@@ -19,6 +19,14 @@ Só alerta; não reaplica a tag. Reaplicar fica com a varredura recorrente
 em modo `live` (stack hub), que é o backstop — reagir aqui na hora
 brigaria com uma remoção intencional (ex.: alguém corrigindo o contrato)
 sem revisão humana.
+
+MVP2: com a sobrescrita de valor de outro parceiro liberada pela AWS, a
+reação imediata também criaria um "pingue-pongue" com a automação de outro
+parceiro (cada um sobrescrevendo o outro a cada evento). Por isso o drift
+continua só alertando, e o alerta diz QUEM mudou: se o `userAgent` da
+alteração é de IaC (Terraform/OpenTofu/Pulumi/CloudFormation), a tag
+precisa ir para o código do cliente; se a tag passou a ter outro valor,
+o alerta marca `possivel_disputa_com_outro_parceiro` para revisão.
 """
 from __future__ import annotations
 
@@ -28,7 +36,7 @@ import os
 
 import boto3
 
-from . import escopo_teste, publish, single_resource
+from . import escopo_teste, iac_detection, publish, single_resource
 from .services import classify_arn, load_services
 from .tag_status import STATUS_OK, TAG_KEY
 
@@ -140,6 +148,7 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
     sns = sns_client or session.client("sns", region_name=topic_arn.split(":")[3])
     regiao_evento = detail.get("awsRegion") or event.get("region")
 
+    iac_alteracao = iac_detection.detect_iac_from_cloudtrail(detail)
     alertas = 0
     for arn in extrair_arns(detail):
         if not escopo_teste.dentro_do_escopo(event, arn):
@@ -153,6 +162,16 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
             logger.info("Evento %s em %s, mas a tag continua correta — sem alerta", detail.get("eventName"), arn)
             continue
         categoria = _CATEGORIA_POR_STATUS.get(estado["status_tag"], f"drift_{estado['status_tag']}")
+        if iac_alteracao or estado["iac"].get("tipo") in iac_detection.IAC_DETECTADO:
+            acao = (
+                "alteração feita/gerenciada por IaC — a automação não reaplica em recurso de IaC; "
+                "o cliente deve colocar aws-apn-id no código (relatório do cliente)"
+            )
+        else:
+            acao = (
+                "nenhuma automática — a varredura recorrente em modo live reaplica a tag (sobrescrevendo "
+                "outro valor, se houver); em dry-run, reaplicar manualmente ou confirmar se foi intencional"
+            )
         publish.publish_outcome(
             sns,
             topic_arn,
@@ -174,9 +193,14 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
                     "event_source": detail.get("eventSource"),
                     "quando": detail.get("eventTime"),
                     "principal": (detail.get("userIdentity") or {}).get("arn"),
+                    "user_agent": (detail.get("userAgent") or "")[:200] or None,
                 },
-                "acao": "nenhuma automática — a varredura recorrente em modo live reaplica a tag; "
-                "em dry-run, reaplicar manualmente ou confirmar se a remoção foi intencional",
+                "alterado_por_iac": iac_alteracao,
+                # Outro valor gravado logo depois do nosso: pode ser a
+                # automação de outro parceiro. Revisar antes de deixar a
+                # varredura live sobrescrever de novo (evita pingue-pongue).
+                "possivel_disputa_com_outro_parceiro": estado["status_tag"] == "conflito" and not iac_alteracao,
+                "acao": acao,
             },
         )
         alertas += 1

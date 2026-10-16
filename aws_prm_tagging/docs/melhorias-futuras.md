@@ -1,5 +1,13 @@
 # Melhorias futuras (pendências técnicas)
 
+> **Atualização MVP2 (13/10/2026).** Novas pendências e decisões:
+>
+> - **Terraform antigo sem sinal:** recurso criado há mais de 90 dias, sem alteração recente nem tag de convenção, não é detectado (o histórico do CloudTrail só guarda 90 dias). Mitigação: recomendar `default_tags`; o drift mostra "alterado por IaC" se o `apply` remover a tag. Evolução possível: ler o state do Terraform (S3) com autorização do cliente.
+> - **Disputa com outro parceiro:** o drift só alerta (`possivel_disputa_com_outro_parceiro`). Se virar rotina, avaliar regra de "não sobrescrever de novo em N dias".
+> - **StackSets:** falta a lista OU → contrato de cada cliente (negócio) e o teste de ponta a ponta numa payer de teste.
+> - **Zabbix:** falta o teste contra o servidor real (versão, URL, rede).
+> - **Relatório do cliente na Lambda:** hoje só amostra no SNS (25 por região); se precisar da lista completa pela automação contínua, gravar num bucket da conta.
+
 Registro das pendências técnicas identificadas no code review das Etapas
 1-2c que **não** foram corrigidas junto — por exigirem uma decisão de
 arquitetura/produto que não cabe a mim decidir sozinho, ou por terem custo

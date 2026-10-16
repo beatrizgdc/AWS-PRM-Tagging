@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Remove a automação AWS PRM de uma conta: stacks prm-regional (todas as
 # regiões onde existirem) e prm-hub. NUNCA remove tags já aplicadas nos
-# recursos. Log groups das Lambdas só com --apagar-logs (lista antes).
+# recursos. MVP2: os log groups das Lambdas fazem parte das stacks e somem
+# com elas. --apagar-logs ainda limpa os órfãos de implantações do MVP1
+# (/aws/lambda/prm-hub-* e /aws/lambda/prm-regional-*), listando antes.
 set -uo pipefail
 
 uso() {

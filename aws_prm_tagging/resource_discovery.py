@@ -75,6 +75,7 @@ def _build_resource(
         "valor_tag_encontrado": valor_encontrado,
         "tag_similar_encontrada": bool(tag_similar_chaves),
         "tag_similar_chaves": tag_similar_chaves,
+        "tag_similar_valores": {k: tags.get(k) for k in tag_similar_chaves},
         "iac": iac,
         # Item 13 do plano: node/volume/load balancer de EKS são COBRADOS
         # como Amazon EC2 / Elastic Load Balancing, não como Amazon EKS. O

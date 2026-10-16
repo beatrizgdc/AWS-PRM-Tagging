@@ -67,14 +67,13 @@ def test_pular_iac_com_ferramenta_aws_conhecida_tem_motivo_especifico(recurso_fa
 
 def test_pular_iac_sem_ferramenta_aws_conhecida_mantem_motivo_generico(recurso_factory):
     """Stack presumivelmente do próprio cliente (sem prefixo de ferramenta
-    AWS conhecido) continua com o motivo genérico de sempre — "taguear via
-    IaC" faz sentido quando existe mesmo um IaC do cliente para agir."""
+    AWS conhecido): o motivo orienta o cliente a pôr a tag no código do IaC."""
     recurso = recurso_factory(
         status_tag="sem_tag", iac_tipo="cloudformation", stack_name="minha-stack-de-producao"
     )
     resultado = decision.classify_resource(recurso, EXPECTED)
     assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
-    assert "taguear via IaC" in resultado["motivo"]
+    assert "no código do IaC" in resultado["motivo"]
     assert resultado["iac"]["gerenciado_por_ferramenta_aws"] is None
 
 
@@ -85,19 +84,22 @@ def test_tag_presente_valor_esperado_ja_ok(recurso_factory):
     assert resultado["valor_tag_atual"] == EXPECTED
 
 
-def test_tag_presente_valor_diferente_conflito(recurso_factory):
+def test_tag_presente_valor_diferente_sobrescreve(recurso_factory):
+    """MVP2: valor de outro parceiro é sobrescrito, e o valor anterior fica
+    registrado em `estado_anterior`."""
     recurso = recurso_factory(
         status_tag="conflito", valor_tag_encontrado="pc:valor-errado", iac_tipo="desconhecido"
     )
     resultado = decision.classify_resource(recurso, EXPECTED)
-    assert resultado["decisao"] == decision.DECISAO_CONFLITO
+    assert resultado["decisao"] == decision.DECISAO_SOBRESCREVER
     assert resultado["valor_tag_atual"] == "pc:valor-errado"
+    assert resultado["estado_anterior"] == {"aws-apn-id": "pc:valor-errado", "chaves_similares": {}}
 
 
-def test_tag_presente_valor_diferente_com_iac_ainda_conflito(recurso_factory):
-    """IaC nunca muda um conflito para outra decisão — um valor de tag
-    divergente nunca é sobrescrito automaticamente, gerenciado por IaC ou
-    não. O IaC segue aparecendo no relatório só como metadado informativo."""
+def test_tag_presente_valor_diferente_com_iac_pula_iac(recurso_factory):
+    """MVP2: TODO IaC é pulado, mesmo com outro valor presente — o apply
+    seguinte do IaC desfaria a sobrescrita. O valor anterior vai para a
+    lista do cliente."""
     recurso = recurso_factory(
         status_tag="conflito",
         valor_tag_encontrado="pc:valor-errado",
@@ -105,30 +107,48 @@ def test_tag_presente_valor_diferente_com_iac_ainda_conflito(recurso_factory):
         stack_name="stack-x",
     )
     resultado = decision.classify_resource(recurso, EXPECTED)
-    assert resultado["decisao"] == decision.DECISAO_CONFLITO
+    assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
+    assert "outro valor" in resultado["motivo"]
     assert resultado["iac"]["detectado"] is True
     assert resultado["iac"]["stack_name"] == "stack-x"
+    assert resultado["estado_anterior"]["aws-apn-id"] == "pc:valor-errado"
 
 
-def test_chave_case_diferente_vira_revisar_tag_similar(recurso_factory):
-    """Uma tag com grafia parecida mas case diferente (ex.: `AWS-APN-ID`) não
-    conta como a tag `aws-apn-id` (comparação de key é case-sensitive) — cai
-    na regra de "tag ausente", mas NUNCA vira `taguear` diretamente: taguear
-    via API por cima criaria uma chave quase-duplicada em vez de corrigir o
-    provável erro de digitação. Vira `revisar_tag_similar`, carregando o
-    flag `tag_similar_encontrada`/`tag_similar_chaves` (herdados do
-    relatório da Etapa 1, via `tag_status.find_similar_tag_keys`) para
-    revisão humana."""
+def test_chave_case_diferente_tagueia_e_registra_estado_anterior(recurso_factory):
+    """MVP2: com `AWS-APN-ID` (grafia parecida), a nossa `aws-apn-id` é
+    adicionada por cima; a chave parecida e seu valor ficam registrados
+    em `estado_anterior` para o relatório do cliente."""
     recurso = recurso_factory(
         status_tag="sem_tag",
         iac_tipo="desconhecido",
         tag_similar_encontrada=True,
         tag_similar_chaves=["AWS-APN-ID"],
     )
+    recurso["tag_similar_valores"] = {"AWS-APN-ID": "pc:digitado"}
     resultado = decision.classify_resource(recurso, EXPECTED)
-    assert resultado["decisao"] == decision.DECISAO_REVISAR_TAG_SIMILAR
+    assert resultado["decisao"] == decision.DECISAO_TAGUEAR_COM_TAG_SIMILAR
     assert resultado["tag_similar_encontrada"] is True
     assert resultado["tag_similar_chaves"] == ["AWS-APN-ID"]
+    assert resultado["estado_anterior"] == {"aws-apn-id": None, "chaves_similares": {"AWS-APN-ID": "pc:digitado"}}
+
+
+def test_sem_nada_anterior_estado_anterior_nulo(recurso_factory):
+    recurso = recurso_factory(status_tag="sem_tag", iac_tipo="desconhecido")
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_TAGUEAR
+    assert resultado["estado_anterior"] is None
+
+
+def test_ja_ok_com_iac_continua_ja_ok(recurso_factory):
+    recurso = recurso_factory(status_tag="ok", valor_tag_encontrado=EXPECTED, iac_tipo="terraform_heuristico")
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_JA_OK
+
+
+def test_pulumi_e_pulado(recurso_factory):
+    recurso = recurso_factory(status_tag="sem_tag", iac_tipo="pulumi_heuristico")
+    resultado = decision.classify_resource(recurso, EXPECTED)
+    assert resultado["decisao"] == decision.DECISAO_PULAR_IAC
 
 
 def test_tag_similar_com_iac_detectado_ainda_pula_iac(recurso_factory):

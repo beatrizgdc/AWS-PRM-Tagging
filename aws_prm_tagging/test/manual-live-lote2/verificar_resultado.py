@@ -5,8 +5,10 @@ Para cada recurso do manifest:
      descoberta nativa — é o teste do item 1)
   2. a categoria final da Etapa 2c é a esperada?
   3. a tag REAL na AWS está como deveria? (lida de volta com GetResources:
-     tagueado/ja_ok -> aws-apn-id = valor esperado; conflito -> valor do
-     outro parceiro preservado; revisar/pulado -> sem aws-apn-id)
+     tagueado/ja_ok -> aws-apn-id = valor esperado; MVP2: sobrescrito ->
+     valor esperado + valor anterior registrado; adicionado_com_similar ->
+     valor esperado + chave parecida preservada; pulado_iac -> intocado e
+     listado no relatório do cliente)
 Sai com código 1 se qualquer verificação falhar.
 """
 from __future__ import annotations
@@ -43,6 +45,7 @@ def main() -> int:
     p.add_argument("--mapa", required=True)
     p.add_argument("--resultado", required=True)
     p.add_argument("--valor", required=True)
+    p.add_argument("--cliente", default=None, help="resultado_live_cliente.json (MVP2)")
     a = p.parse_args()
 
     esperados: dict[str, str] = {}
@@ -55,6 +58,14 @@ def main() -> int:
     resultado = {r["arn"]: r for r in json.load(open(a.resultado, encoding="utf-8"))["recursos"]}
     session = boto3.Session(profile_name=a.profile)
     tags = _tags_atuais(session, a.regiao, list(esperados))
+    cliente = json.load(open(a.cliente, encoding="utf-8")) if a.cliente else None
+    iac_no_cliente = {i["arn"] for i in (cliente or {}).get("recursos_iac", [])}
+
+    # MVP2: "sobrescrito"/"adicionado_com_similar" são tagueado_sucesso com
+    # uma ação específica registrada.
+    _CATEGORIA = {"sobrescrito": "tagueado_sucesso", "adicionado_com_similar": "tagueado_sucesso"}
+    _ACAO = {"sobrescrito": "sobrescrita", "adicionado_com_similar": "adicionada_com_tag_similar"}
+    _GRAVA_TAG = ("tagueado_sucesso", "ja_ok", "sobrescrito", "adicionado_com_similar")
 
     # Consistência eventual: o índice da Tagging API (GetResources) pode
     # levar alguns segundos para refletir uma escrita — visto na sandbox em
@@ -64,7 +75,7 @@ def main() -> int:
     def _faltando():
         return [
             arn for arn, cat in esperados.items()
-            if cat in ("tagueado_sucesso", "ja_ok") and tags[arn].get(TAG) != a.valor
+            if cat in _GRAVA_TAG and tags[arn].get(TAG) != a.valor
         ]
 
     for tentativa in range(6):
@@ -83,26 +94,34 @@ def main() -> int:
                 tags[arn] = nativas
 
     falhas = 0
-    print(f"{'recurso':70} {'etapa1':12} {'esperado':20} {'obtido':20} tag real")
+    print(f"{'recurso':70} {'etapa1':12} {'esperado':22} {'obtido':18} tag real")
     for arn, esperado in esperados.items():
         problemas = []
         no_mapa = mapa.get(arn)
         origem = (no_mapa or {}).get("origem_descoberta") or ("generico" if no_mapa else "AUSENTE")
         if not no_mapa:
             problemas.append("não descoberto pela Etapa 1")
-        obtido = (resultado.get(arn) or {}).get("categoria_final", "AUSENTE")
-        if obtido != esperado:
-            problemas.append(f"categoria {obtido} != {esperado}")
+        entrada = resultado.get(arn) or {}
+        obtido = entrada.get("categoria_final", "AUSENTE")
+        if obtido != _CATEGORIA.get(esperado, esperado):
+            problemas.append(f"categoria {obtido} != {_CATEGORIA.get(esperado, esperado)}")
         real = tags[arn].get(TAG)
-        if esperado in ("tagueado_sucesso", "ja_ok") and real != a.valor:
+        if esperado in _GRAVA_TAG and real != a.valor:
             problemas.append(f"tag real = {real!r}")
-        if esperado == "conflito" and real != "pc:outroparceiro":
-            problemas.append(f"CONFLITO SOBRESCRITO: tag real = {real!r}")
-        if esperado in ("revisar_tag_similar", "pulado_iac") and real is not None:
-            problemas.append(f"não deveria ter {TAG}, tem {real!r}")
+        if esperado in _ACAO and entrada.get("acao") != _ACAO[esperado]:
+            problemas.append(f"acao {entrada.get('acao')!r} != {_ACAO[esperado]!r}")
+        if esperado == "sobrescrito" and (entrada.get("estado_anterior") or {}).get(TAG) != "pc:outroparceiro":
+            problemas.append(f"valor anterior não registrado: {entrada.get('estado_anterior')!r}")
+        if esperado == "adicionado_com_similar" and "AWS-APN-ID" not in tags[arn]:
+            problemas.append("chave parecida AWS-APN-ID sumiu (deveria ficar como estava)")
+        if esperado == "pulado_iac":
+            if real not in (None, "pc:outroparceiro"):
+                problemas.append(f"recurso de IaC foi alterado: {TAG}={real!r}")
+            if cliente is not None and arn not in iac_no_cliente:
+                problemas.append("não aparece na lista de IaC do relatório do cliente")
         falhas += bool(problemas)
         marca = "OK " if not problemas else "ERRO"
-        print(f"{marca} {arn[-66:]:66} {origem:12} {esperado:20} {obtido:20} {real}")
+        print(f"{marca} {arn[-66:]:66} {origem:12} {esperado:22} {obtido:18} {real}")
         for pr in problemas:
             print(f"       -> {pr}")
         detalhe = (resultado.get(arn) or {}).get("detalhe_erro")

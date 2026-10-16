@@ -1,6 +1,6 @@
 # Mapeamento, decisão e tagueamento para o AWS Partner Revenue Measurement (PRM)
 
-> **MVP 1 (02/10/2026):** o documento principal é [docs/MVP-1.md](docs/MVP-1.md). Implantação numa conta: `deploy/implantar_conta.sh` (na pasta acima desta).
+> **MVP 2 (13/10/2026):** comece por [docs/MVP-2.md](docs/MVP-2.md) (o que mudou: regra nova de IaC/sobrescrita, modo interativo, StackSets, SDK na layer, Zabbix, Well-Architected). A base continua em [docs/MVP-1.md](docs/MVP-1.md). O restante deste arquivo é o histórico técnico do MVP1; onde ele fala em `conflito`/`revisar_tag_similar`, vale a regra nova do MVP2.
 
 Automação de tagging AWS para atender a exigência de Resource Tagging do
 programa AWS Partner Revenue Measurement (PRM). Este repositório cobre as

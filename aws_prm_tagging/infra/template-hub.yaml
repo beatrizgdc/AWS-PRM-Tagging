@@ -20,11 +20,30 @@ Parameters:
 
   NotificationEmail:
     Type: String
-    Default: teste@exemplo.com
+    Default: ""
     Description: >
-      E-mail assinado no tópico. O default é um PLACEHOLDER — a assinatura
-      fica em "PendingConfirmation" até alguém usar um endereço real e
-      clicar no link de confirmação que a AWS envia.
+      E-mail assinado no tópico local da conta. Vazio (default) = sem
+      assinatura. Em rollout por StackSet (MVP2), deixe vazio e use
+      TopicoCentralArn — senão cada conta manda um e-mail de confirmação.
+
+  TopicoCentralArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
+    Description: >
+      MVP2 (StackSets): ARN do tópico CENTRAL (template-central.yaml, na
+      conta payer). Preenchido, todas as Lambdas desta conta publicam lá
+      em vez do tópico local. Vazio (default) = tópico local, como no MVP1.
+
+  TopicoCentralKmsArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36}$"
+    Description: >
+      Chave KMS do tópico central (saída ChaveTopicoArn de
+      template-central.yaml). Necessária quando TopicoCentralArn é usado: o
+      tópico central é criptografado e quem publica precisa gerar a chave
+      de dados.
 
   ExpectedTagValue:
     Type: String
@@ -94,18 +113,69 @@ Parameters:
       tagueamento inicial e a varredura recorrente a essas regiões. Vazio
       (default) = todas as regiões ativas da conta.
 
+  RetencaoLogsDias:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
+    Description: >
+      MVP2 (Well-Architected): retenção dos logs das Lambdas. Os log groups
+      fazem parte da stack e são apagados junto com ela (no MVP1 ficavam
+      órfãos e sem retenção).
+
+  Arquitetura:
+    Type: String
+    Default: arm64
+    AllowedValues: [arm64, x86_64]
+    Description: >
+      MVP2: arm64 (Graviton) custa ~20% menos por GB-s e consome menos energia.
+      O código e a layer são Python puro, funcionam nas duas. Use x86_64 se
+      alguma região ainda não oferecer Lambda arm64.
+
 Conditions:
   VarreduraAgendada: !Not [!Equals [!Ref ModoVarreduraRecorrente, desligado]]
+  TemEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+  UsaTopicoCentral: !Not [!Equals [!Ref TopicoCentralArn, ""]]
+  TemChaveCentral: !Not [!Equals [!Ref TopicoCentralKmsArn, ""]]
+
+Globals:
+  Function:
+    Architectures:
+      - !Ref Arquitetura
+    Layers:
+      - !Ref PrmSdkLayer
 
 Resources:
+  # MVP2 (item 3): boto3/botocore atuais, fixados por hash
+  # (requirements-lambda.txt). O runtime traz um SDK mais antigo; a layer
+  # vem antes dele no sys.path. Uma layer por stack, para todas as funções.
+  PrmSdkLayer:
+    Type: AWS::Serverless::LayerVersion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+    Properties:
+      Description: boto3/botocore fixados para as Lambdas do PRM tagging
+      ContentUri: ../../
+      CompatibleRuntimes:
+        - python3.12
+      CompatibleArchitectures:
+        - x86_64
+        - arm64
+      RetentionPolicy: Delete
+
   PrmComplianceTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Ref TopicName
       DisplayName: "AWS PRM - eventos de compliance de tagging"
+      # MVP2 (Well-Architected, segurança): criptografia em repouso com a
+      # chave gerenciada pela AWS (sem custo). Quem publica são roles desta
+      # conta (Lambdas e Step Functions), que a política dessa chave já cobre.
+      KmsMasterKeyId: alias/aws/sns
 
   PrmComplianceEmailSubscription:
     Type: AWS::SNS::Subscription
+    Condition: TemEmail
     Properties:
       TopicArn: !Ref PrmComplianceTopic
       Protocol: email
@@ -228,6 +298,9 @@ Resources:
                   - bedrock:ListTagsForResource
                   - elasticloadbalancing:DescribeTags
                   - ec2:DescribeInstances
+                  # MVP2: histórico do CloudTrail (userAgent) para detectar
+                  # Terraform/OpenTofu/Pulumi/CloudFormation. Grátis, só leitura.
+                  - cloudtrail:LookupEvents
                 Resource: "*"
         - PolicyName: PrmTagueamentoInicialEscritaGenerica
           PolicyDocument:
@@ -251,14 +324,13 @@ Resources:
                 Action:
                   - acm:TagResource
                   - acm-pca:TagCertificateAuthority
-                  - apigateway:TagResource
                   - appsync:TagResource
                   - athena:TagResource
                   - backup:TagResource
                   - cassandra:TagResource
                   - clouddirectory:TagResource
                   - cloudfront:TagResource
-                  - cloudhsm:AddTagsToResource
+                  - cloudhsm:TagResource
                   - codepipeline:TagResource
                   - cognito-identity:TagResource
                   - cognito-idp:TagResource
@@ -341,6 +413,15 @@ Resources:
                 Condition:
                   ForAllValues:StringEquals:
                     aws:TagKeys: [aws-apn-id]
+              # API Gateway não tem ação "TagResource": tag é um PUT no
+              # recurso /tags/<arn> (corrigido no MVP2 — o lint do template
+              # expandido apontou a ação inexistente do MVP1).
+              - Effect: Allow
+                Action: apigateway:PUT
+                Resource: !Sub "arn:${AWS::Partition}:apigateway:*::/tags/*"
+                Condition:
+                  ForAllValues:StringEquals:
+                    aws:TagKeys: [aws-apn-id]
         - PolicyName: PrmVarreduraSaudeRegional
           PolicyDocument:
             Version: "2012-10-17"
@@ -357,7 +438,25 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: sns:Publish
-                Resource: !Ref PrmComplianceTopic
+                Resource:
+                  - !Ref PrmComplianceTopic
+                  - !If [UsaTopicoCentral, !Ref TopicoCentralArn, !Ref "AWS::NoValue"]
+              - !If
+                - TemChaveCentral
+                - Effect: Allow
+                  Action:
+                    - kms:GenerateDataKey*
+                    - kms:Decrypt
+                  Resource: !Ref TopicoCentralKmsArn
+                - !Ref "AWS::NoValue"
+
+  ListarRegioesFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/listar-regioes"
+      RetentionInDays: !Ref RetencaoLogsDias
 
   ListarRegioesFunction:
     Type: AWS::Serverless::Function
@@ -366,12 +465,22 @@ Resources:
     Properties:
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_initial_tagging.listar_regioes
+      LoggingConfig:
+        LogGroup: !Ref ListarRegioesFunctionLogGroup
       Runtime: python3.12
       Timeout: 60
       Role: !GetAtt TagueamentoInicialRole.Arn
       Environment:
         Variables:
           REGIOES_PERMITIDAS: !Ref RegioesVarredura
+
+  ProcessarRegiaoFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/processar-regiao"
+      RetentionInDays: !Ref RetencaoLogsDias
 
   ProcessarRegiaoFunction:
     Type: AWS::Serverless::Function
@@ -380,6 +489,8 @@ Resources:
     Properties:
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_initial_tagging.processar_regiao
+      LoggingConfig:
+        LogGroup: !Ref ProcessarRegiaoFunctionLogGroup
       Runtime: python3.12
       # Máximo da Lambda. Uma região por invocação; se uma conta tiver uma
       # região grande demais para 15 min, a state machine publica a falha
@@ -390,7 +501,7 @@ Resources:
       Environment:
         Variables:
           EXPECTED_TAG_VALUE: !Ref ExpectedTagValue
-          SNS_TOPIC_ARN: !Ref PrmComplianceTopic
+          SNS_TOPIC_ARN: !If [UsaTopicoCentral, !Ref TopicoCentralArn, !Ref PrmComplianceTopic]
           CONTRATO_CONFIRMADO: !Ref ContratoConfirmado
           PUBLICAR_SEM_NOVIDADE: !Ref PublicarVarreduraSemNovidade
 
@@ -401,14 +512,34 @@ Resources:
       DefinitionSubstitutions:
         ListarRegioesArn: !GetAtt ListarRegioesFunction.Arn
         ProcessarRegiaoArn: !GetAtt ProcessarRegiaoFunction.Arn
-        TopicArn: !Ref PrmComplianceTopic
+        TopicArn: !If [UsaTopicoCentral, !Ref TopicoCentralArn, !Ref PrmComplianceTopic]
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref ListarRegioesFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref ProcessarRegiaoFunction
-        - SNSPublishMessagePolicy:
-            TopicName: !GetAtt PrmComplianceTopic.TopicName
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource:
+                - !Ref PrmComplianceTopic
+                - !If [UsaTopicoCentral, !Ref TopicoCentralArn, !Ref "AWS::NoValue"]
+            - !If
+              - TemChaveCentral
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey*
+                  - kms:Decrypt
+                Resource: !Ref TopicoCentralKmsArn
+              - !Ref "AWS::NoValue"
+
+  TagueamentoInicialCRFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}/custom-resource"
+      RetentionInDays: !Ref RetencaoLogsDias
 
   TagueamentoInicialCRFunction:
     Type: AWS::Serverless::Function
@@ -417,6 +548,8 @@ Resources:
     Properties:
       CodeUri: ../../
       Handler: aws_prm_tagging.handler_initial_tagging.custom_resource
+      LoggingConfig:
+        LogGroup: !Ref TagueamentoInicialCRFunctionLogGroup
       Runtime: python3.12
       Timeout: 60
       Environment:

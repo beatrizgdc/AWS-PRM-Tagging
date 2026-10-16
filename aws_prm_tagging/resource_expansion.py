@@ -161,6 +161,7 @@ def _volumes_da_resposta(
                             servico=origem.servico,
                             regiao=regiao,
                             tipo_recurso=None,
+                            origem_arn=origem.arn,
                         )
                     )
     return volumes

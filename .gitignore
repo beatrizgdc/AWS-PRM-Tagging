@@ -22,5 +22,7 @@ resultado*.json
 .aws-sam/
 aws-sam-cli-*.zip
 saida-prm-val-*/
+saida-prm-*/
 prm_*.json
 prm_*.md
+dist/

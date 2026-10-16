@@ -27,7 +27,8 @@
       "ItemSelector": {
         "regiao.$": "$$.Map.Item.Value",
         "modo.$": "$.modo",
-        "origem.$": "$.origem"
+        "origem.$": "$.origem",
+        "execucao.$": "$$.Execution.Id"
       },
       "ItemProcessor": {
         "ProcessorConfig": {"Mode": "INLINE"},

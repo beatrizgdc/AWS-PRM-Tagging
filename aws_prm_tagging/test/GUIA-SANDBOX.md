@@ -1,3 +1,5 @@
+> **Histórico (rodada do MVP1, 02/10/2026).** O roteiro atual é [GUIA-SANDBOX-MVP2.md](GUIA-SANDBOX-MVP2.md).
+
 # Guia de teste na sandbox — escritas só em us-east-2 (Ohio)
 
 Versão de 2026-10-02. Executado pelo responsável do projeto; o assistente

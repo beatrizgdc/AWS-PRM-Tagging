@@ -27,10 +27,10 @@ def test_lote_vazio_relatorio_valido_sem_erro(relatorio_etapa1_factory):
     assert relatorio["resumo"]["total_excluidos_fora_de_escopo"] == 0
     assert relatorio["resumo"]["por_decisao"] == {
         decision.DECISAO_TAGUEAR: 0,
+        decision.DECISAO_TAGUEAR_COM_TAG_SIMILAR: 0,
+        decision.DECISAO_SOBRESCREVER: 0,
         decision.DECISAO_PULAR_IAC: 0,
-        decision.DECISAO_REVISAR_TAG_SIMILAR: 0,
         decision.DECISAO_JA_OK: 0,
-        decision.DECISAO_CONFLITO: 0,
     }
 
 
@@ -81,15 +81,16 @@ def test_resumo_agregado_por_decisao_servico_e_iac(recurso_factory, relatorio_et
     resumo = relatorio["resumo"]
     assert resumo["por_decisao"] == {
         decision.DECISAO_TAGUEAR: 1,
+        decision.DECISAO_TAGUEAR_COM_TAG_SIMILAR: 0,
+        decision.DECISAO_SOBRESCREVER: 1,
         decision.DECISAO_PULAR_IAC: 1,
-        decision.DECISAO_REVISAR_TAG_SIMILAR: 0,
         decision.DECISAO_JA_OK: 1,
-        decision.DECISAO_CONFLITO: 1,
     }
     assert resumo["por_servico"] == {"Amazon EC2": 2, "Amazon S3": 2}
     assert resumo["por_status_iac"] == {
         "cloudformation": 1,
         "terraform_heuristico": 0,
+        "pulumi_heuristico": 0,
         "desconhecido": 3,
     }
 
@@ -131,7 +132,7 @@ def test_dois_valores_esperados_diferentes_resultados_independentes(recurso_fact
     relatorio_b = decision.build_decision_report(etapa1, OUTRO_EXPECTED)
 
     assert relatorio_a["recursos"][0]["decisao"] == decision.DECISAO_JA_OK
-    assert relatorio_b["recursos"][0]["decisao"] == decision.DECISAO_CONFLITO
+    assert relatorio_b["recursos"][0]["decisao"] == decision.DECISAO_SOBRESCREVER
     assert relatorio_b["recursos"][0]["valor_tag_atual"] == EXPECTED
     assert relatorio_a["valor_tag_esperado"] == EXPECTED
     assert relatorio_b["valor_tag_esperado"] == OUTRO_EXPECTED

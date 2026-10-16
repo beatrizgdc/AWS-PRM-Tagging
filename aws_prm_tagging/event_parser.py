@@ -78,6 +78,9 @@ class ExtractedResource:
     servico: str
     regiao: str
     tipo_recurso: str | None = None
+    # MVP2: recurso derivado (ex.: volume EBS de uma instância) aponta para
+    # o recurso de origem — herda dele a decisão de IaC na Etapa 3.
+    origem_arn: str | None = None
 
 
 ArnBuilder = Callable[[dict, str, str], list[str]]

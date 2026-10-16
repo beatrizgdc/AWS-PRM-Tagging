@@ -4,8 +4,8 @@ Três subcomandos, um por estágio implementado até agora:
 
 - `map`    — Etapa 1: mapeamento 100% somente-leitura da conta.
 - `decide` — Etapa 2a: classifica o relatório da Etapa 1 em
-  `taguear`/`pular_iac`/`ja_ok`/`conflito`. Também somente-leitura (função
-  pura, sem chamada de API nenhuma).
+  `taguear`/`taguear_com_tag_similar`/`sobrescrever`/`pular_iac`/`ja_ok`
+  (regra do MVP2). Também somente-leitura (função pura, sem chamada de API).
 - `apply`  — Etapas 2b (default, dry-run) e 2c (`--live`, escrita real) do
   tagueamento dos recursos `taguear` do relatório da Etapa 2a. Em dry-run,
   só faz chamadas de LEITURA na conta (revalidação do estado atual de cada
@@ -27,7 +27,7 @@ import sys
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from . import csv_check, decision, org_audit, ou_tree, pipeline, preflight, recomendacoes, regions, report, services, tag_execution
+from . import assistente, csv_check, decision, relatorio_cliente, org_audit, ou_tree, pipeline, preflight, recomendacoes, regions, report, services, tag_execution
 from .retry import with_backoff
 
 logger = logging.getLogger("aws_prm_tagging")
@@ -117,6 +117,8 @@ def _run_map(args: argparse.Namespace) -> int:
         service_list,
         args.expected_tag_value,
         descoberta_nativa=args.descoberta_nativa,
+        historico_cloudtrail=not args.sem_historico_cloudtrail,
+        orcamento_cloudtrail_s=args.orcamento_historico_cloudtrail,
     )
 
     try:
@@ -195,8 +197,9 @@ def _run_apply(args: argparse.Namespace) -> int:
     if args.live and args.no_revalidate:
         logger.error(
             "--live não pode ser combinado com --no-revalidate: executar de verdade "
-            "sem revalidar o estado atual de cada recurso arrisca sobrescrever um "
-            "conflito que tenha aparecido depois da Etapa 2a. Rode sem --no-revalidate."
+            "sem revalidar o estado atual de cada recurso arrisca taguear por fora um "
+            "recurso que passou a ser de IaC depois da Etapa 2a (e perder o registro do "
+            "estado anterior). Rode sem --no-revalidate."
         )
         return 1
 
@@ -251,6 +254,7 @@ def _run_apply(args: argparse.Namespace) -> int:
         return 1
 
     _write_json(args.output, execution_report)
+    arquivos_cliente = _gravar_relatorio_cliente(execution_report, _prefixo_cliente(args.output))
 
     resumo = execution_report["resumo"]
     logger.info(
@@ -260,6 +264,33 @@ def _run_apply(args: argparse.Namespace) -> int:
         resumo["por_categoria_final"],
         args.output,
     )
+    logger.info("Relatório para o cliente (IaC + estado anterior): %s", ", ".join(arquivos_cliente))
+    return 0
+
+
+def _prefixo_cliente(caminho_saida: str) -> str:
+    base = caminho_saida[:-5] if caminho_saida.lower().endswith(".json") else caminho_saida
+    return base + "_cliente"
+
+
+def _gravar_relatorio_cliente(execution_report: dict, prefixo: str) -> list[str]:
+    rel = relatorio_cliente.build_relatorio_cliente(execution_report)
+    _write_json(prefixo + ".json", rel)
+    with open(prefixo + ".csv", "w", encoding="utf-8", newline="") as f:
+        f.write(relatorio_cliente.to_csv(rel))
+    with open(prefixo + ".md", "w", encoding="utf-8") as f:
+        f.write(relatorio_cliente.to_markdown(rel))
+    return [prefixo + ext for ext in (".md", ".csv", ".json")]
+
+
+def _run_relatorio_cliente(args: argparse.Namespace) -> int:
+    try:
+        execution_report = _load_json(args.input)
+    except (OSError, json.JSONDecodeError):
+        logger.exception("Não foi possível ler o relatório de execução em %s", args.input)
+        return 1
+    arquivos = _gravar_relatorio_cliente(execution_report, args.prefixo or _prefixo_cliente(args.input))
+    logger.info("Relatório para o cliente gravado: %s", ", ".join(arquivos))
     return 0
 
 
@@ -372,6 +403,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     map_parser.add_argument("--profile", default=None, help="Perfil de credenciais AWS local")
     map_parser.add_argument("--output", default="prm_mapping_report.json", help="Arquivo JSON de saída")
     map_parser.add_argument(
+        "--sem-historico-cloudtrail",
+        action="store_true",
+        help="Não consulta o Event history do CloudTrail (cloudtrail:LookupEvents, grátis, só leitura) para "
+        "detectar Terraform/OpenTofu/Pulumi/CloudFormation pelo userAgent. Default: consulta.",
+    )
+    map_parser.add_argument(
+        "--orcamento-historico-cloudtrail",
+        type=float,
+        default=None,
+        help="Tempo máximo (s) gasto no histórico do CloudTrail (2 chamadas/s por região). "
+        "O que não couber fica 'nao_verificado'. Default: sem limite.",
+    )
+    map_parser.add_argument(
         "--regioes",
         default=None,
         help="Lista separada por vírgula (ex.: us-east-1,sa-east-1) para restringir a varredura. "
@@ -432,6 +476,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "velha que este limite, em horas (default: sem checagem)",
     )
     apply_parser.set_defaults(func=_run_apply)
+
+    assistente.parser(subparsers)
+
+    cli_parser = subparsers.add_parser(
+        "relatorio-cliente",
+        help="Gera de novo o relatório para o cliente (recursos de IaC + estado anterior) a partir da saída de 'apply'. "
+        "O 'apply' já gera esse relatório sozinho.",
+    )
+    cli_parser.add_argument("--input", required=True, help="Relatório JSON de 'apply'")
+    cli_parser.add_argument("--prefixo", default=None, help="Prefixo dos arquivos (default: <input>_cliente)")
+    cli_parser.set_defaults(func=_run_relatorio_cliente)
 
     rec_parser = subparsers.add_parser(
         "recomendar",

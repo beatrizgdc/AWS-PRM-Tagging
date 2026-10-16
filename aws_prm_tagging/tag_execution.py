@@ -220,7 +220,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Protocol
@@ -229,13 +229,12 @@ import boto3
 from botocore.exceptions import ClientError
 
 from .decision import (
-    DECISAO_CONFLITO,
     DECISAO_JA_OK,
     DECISAO_PULAR_IAC,
-    DECISAO_REVISAR_TAG_SIMILAR,
-    DECISAO_TAGUEAR,
+    DECISOES_LEGADAS,
+    DECISOES_QUE_TAGUEIAM,
 )
-from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO, detect_iac
+from .iac_detection import IAC_DESCONHECIDO, IAC_DETECTADO, detect_iac
 from .retry import with_backoff
 from .tag_reads import bedrock_list_tags, eks_list_tags, elb_describe_tags
 from .tag_status import TAG_KEY, find_similar_tag_keys, tags_list_to_dict
@@ -259,10 +258,10 @@ class ApiStrategy(str, Enum):
 _SERVICO_EKS = "Amazon EKS"
 _SERVICO_BEDROCK = "Amazon Bedrock"
 
-# Mesma regra de precedência de `decision.py`: só entra aqui quando a TAG
-# está ausente (verificado antes, na chamada) — IaC nunca tem precedência
-# sobre um valor de tag já presente (conflito), só sobre a ausência dela.
-_IAC_DETECTADO = frozenset({IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO})
+# Mesma regra de precedência de `decision.py` (MVP2): IaC detectado bloqueia
+# a escrita com a tag ausente OU com outro valor; só o valor já correto
+# vem antes.
+_IAC_DETECTADO = IAC_DETECTADO
 
 # (servico, tipo_recurso) -> estratégia dedicada. Qualquer combinação fora
 # desta tabela (inclui tipo_recurso=None, o caso comum) usa o caminho
@@ -278,9 +277,7 @@ _ESTRATEGIA_DEDICADA: dict[tuple[str, str], ApiStrategy] = {
 RESULTADO_SIMULADO_OK = "simulado_ok"
 RESULTADO_TAGUEADO_SUCESSO = "tagueado_sucesso"
 RESULTADO_JA_TAGUEADO = "ja_tagueado"
-RESULTADO_CONFLITO_NA_REVALIDACAO = "conflito_na_revalidacao"
 RESULTADO_IAC_DETECTADO_NA_REVALIDACAO = "iac_detectado_na_revalidacao"
-RESULTADO_TAG_SIMILAR_NA_REVALIDACAO = "tag_similar_encontrada_na_revalidacao"
 RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO = "recurso_nao_encontrado_na_revalidacao"
 RESULTADO_REVALIDACAO_FALHOU = "revalidacao_falhou"
 RESULTADO_ERRO_PERMISSAO = "erro_permissao"
@@ -300,8 +297,6 @@ CATEGORIA_TAGUEADO_SUCESSO = "tagueado_sucesso"
 CATEGORIA_SIMULADO_SUCESSO = "simulado_sucesso"
 CATEGORIA_FALHOU = "falhou"
 CATEGORIA_PULADO_IAC = "pulado_iac"
-CATEGORIA_REVISAR_TAG_SIMILAR = "revisar_tag_similar"
-CATEGORIA_CONFLITO = "conflito"
 CATEGORIA_JA_OK = "ja_ok"
 CATEGORIA_ERRO_CLASSIFICACAO = "erro_classificacao"
 _TODAS_AS_CATEGORIAS_FINAIS = (
@@ -309,8 +304,6 @@ _TODAS_AS_CATEGORIAS_FINAIS = (
     CATEGORIA_SIMULADO_SUCESSO,
     CATEGORIA_FALHOU,
     CATEGORIA_PULADO_IAC,
-    CATEGORIA_REVISAR_TAG_SIMILAR,
-    CATEGORIA_CONFLITO,
     CATEGORIA_JA_OK,
     CATEGORIA_ERRO_CLASSIFICACAO,
 )
@@ -374,6 +367,31 @@ class _RevalidatedState:
     valor_atual: str | None
     iac_tipo: str
     tag_similar_encontrada: bool
+    # MVP2: o estado lido aqui é o "antes" da escrita — vai para
+    # `estado_anterior` no relatório/SNS (sobrescrita e chave parecida) e
+    # `iac` alimenta a lista de recursos de IaC para o cliente.
+    tags_similares: tuple[tuple[str, str | None], ...] = ()
+    iac: dict | None = field(default=None, compare=False, hash=False)
+
+    def estado_anterior(self) -> dict | None:
+        if self.valor_atual is None and not self.tags_similares:
+            return None
+        return {TAG_KEY: self.valor_atual, "chaves_similares": dict(self.tags_similares)}
+
+
+_ESTADO_SEM_TAGS = _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO, tag_similar_encontrada=False)
+
+
+def _revalidated_state_from_tags(tags: dict[str, str], tag_key: str) -> _RevalidatedState:
+    similares = find_similar_tag_keys(tags, tag_key)
+    iac = detect_iac(tags)
+    return _RevalidatedState(
+        valor_atual=tags.get(tag_key),
+        iac_tipo=iac["tipo"],
+        tag_similar_encontrada=bool(similares),
+        tags_similares=tuple((k, tags.get(k)) for k in similares),
+        iac=iac,
+    )
 
 
 @dataclass(frozen=True)
@@ -400,13 +418,18 @@ class TaggableResource:
     servico: str
     regiao: str
     tipo_recurso: str | None
+    # Estado anterior visto na Etapa 2a — usado quando não há revalidação
+    # (dry-run com --no-revalidate). Com revalidação, vale o estado lido
+    # na hora da escrita.
+    estado_anterior: dict | None = field(default=None, compare=False, hash=False)
 
 
 def select_taggable(decision_report: dict) -> list[TaggableResource]:
     """Único ponto de entrada aceito pelo resto deste módulo. Filtra
     `decision_report["recursos"]` (saída de `decision.build_decision_report`)
-    para os recursos com `decisao == "taguear"` e descarta explicitamente o
-    campo `decisao` na conversão para `TaggableResource`."""
+    para os recursos cuja decisão gera escrita (`DECISOES_QUE_TAGUEIAM`:
+    `taguear`, `taguear_com_tag_similar`, `sobrescrever`) e descarta
+    explicitamente o campo `decisao` na conversão para `TaggableResource`."""
     resources = decision_report.get("recursos") or []
     return [
         TaggableResource(
@@ -414,9 +437,10 @@ def select_taggable(decision_report: dict) -> list[TaggableResource]:
             servico=r["servico"],
             regiao=r["regiao"],
             tipo_recurso=r.get("tipo_recurso"),
+            estado_anterior=r.get("estado_anterior"),
         )
         for r in resources
-        if r.get("decisao") == DECISAO_TAGUEAR
+        if r.get("decisao") in DECISOES_QUE_TAGUEIAM
     ]
 
 
@@ -489,20 +513,14 @@ def _revalidate_generic(
         for mapping in resp.get("ResourceTagMappingList", []):
             arn = mapping["ResourceARN"]
             tags = tags_list_to_dict(mapping.get("Tags", []))
-            resultado[arn] = _RevalidatedState(
-                valor_atual=tags.get(tag_key),
-                iac_tipo=detect_iac(tags)["tipo"],
-                tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
-            )
+            resultado[arn] = _revalidated_state_from_tags(tags, tag_key)
             encontrados.add(arn)
         for arn in lote:
             if arn not in encontrados:
                 # GetResources não devolve recurso sem NENHUMA tag (mesma
                 # limitação documentada em single_resource.py) — tratado
                 # como "sem tag", não como falha.
-                resultado[arn] = _RevalidatedState(
-                    valor_atual=None, iac_tipo=IAC_DESCONHECIDO, tag_similar_encontrada=False
-                )
+                resultado[arn] = _ESTADO_SEM_TAGS
     return resultado
 
 
@@ -517,11 +535,7 @@ def _revalidate_eks_or_bedrock(
         else:
             resp = bedrock_list_tags(client, resource.arn)
             tags = tags_list_to_dict(resp.get("tags", []))
-        return _RevalidatedState(
-            valor_atual=tags.get(tag_key),
-            iac_tipo=detect_iac(tags)["tipo"],
-            tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
-        )
+        return _revalidated_state_from_tags(tags, tag_key)
     except ClientError as exc:
         erro = exc.response.get("Error", {})
         logger.exception(
@@ -533,12 +547,6 @@ def _revalidate_eks_or_bedrock(
         return _RevalidationFailure(detalhe_erro={"codigo": erro.get("Code", ""), "mensagem": erro.get("Message", "")})
 
 
-def _revalidated_state_from_tags(tags: dict[str, str], tag_key: str) -> _RevalidatedState:
-    return _RevalidatedState(
-        valor_atual=tags.get(tag_key),
-        iac_tipo=detect_iac(tags)["tipo"],
-        tag_similar_encontrada=bool(find_similar_tag_keys(tags)),
-    )
 
 
 def _revalidate_elb(
@@ -546,7 +554,7 @@ def _revalidate_elb(
 ) -> dict[str, _RevalidatedState | _RevalidationFailure]:
     client = session.client("elbv2", region_name=regiao)
     resultado: dict[str, _RevalidatedState | _RevalidationFailure] = {
-        r.arn: _RevalidatedState(valor_atual=None, iac_tipo=IAC_DESCONHECIDO, tag_similar_encontrada=False)
+        r.arn: _ESTADO_SEM_TAGS
         for r in resources
     }
     for lote in _chunk([r.arn for r in resources], 20):  # describe_tags aceita até 20 ARNs
@@ -785,18 +793,28 @@ def _classificar_estado_revalidado(
         return ResourceOutcome(resultado=RESULTADO_REVALIDACAO_FALHOU, detalhe_erro=estado.detalhe_erro)
     if estado.valor_atual == tag_value:
         return ResourceOutcome(resultado=RESULTADO_JA_TAGUEADO)
-    if estado.valor_atual is not None:
-        return ResourceOutcome(resultado=RESULTADO_CONFLITO_NA_REVALIDACAO)
     if estado.iac_tipo in _IAC_DETECTADO:
         return ResourceOutcome(resultado=RESULTADO_IAC_DETECTADO_NA_REVALIDACAO)
-    if estado.tag_similar_encontrada:
-        return ResourceOutcome(resultado=RESULTADO_TAG_SIMILAR_NA_REVALIDACAO)
+    # MVP2: outro valor presente ou chave parecida não bloqueiam mais —
+    # seguem para a escrita, e o estado lido aqui vira `estado_anterior`.
     return None
 
 
 def _resultado_entry(
-    resource: TaggableResource, estrategia: ApiStrategy, resultado: str, detalhe_erro: dict | None = None
+    resource: TaggableResource,
+    estrategia: ApiStrategy,
+    resultado: str,
+    detalhe_erro: dict | None = None,
+    estado: "_RevalidatedState | _RevalidationFailure | None" = None,
 ) -> dict:
+    """`estado`: o lido na revalidação, quando houve — é a fonte mais atual
+    do "antes"; sem ele, vale o que a Etapa 2a viu."""
+    if isinstance(estado, _RevalidatedState):
+        estado_anterior = estado.estado_anterior()
+        iac = estado.iac
+    else:
+        estado_anterior = resource.estado_anterior
+        iac = None
     return {
         "arn": resource.arn,
         "servico": resource.servico,
@@ -805,6 +823,8 @@ def _resultado_entry(
         "estrategia_api": estrategia.value,
         "resultado": resultado,
         "detalhe_erro": detalhe_erro,
+        "estado_anterior": estado_anterior,
+        "iac": iac,
     }
 
 
@@ -832,7 +852,9 @@ def _processar_genericos(
             estado = estado_atual.get(r.arn)
             outcome = _classificar_estado_revalidado(estado, tag_value) if estado is not None else None
             if outcome is not None:
-                resultados.append(_resultado_entry(r, ApiStrategy.GENERICO, outcome.resultado, outcome.detalhe_erro))
+                resultados.append(
+                    _resultado_entry(r, ApiStrategy.GENERICO, outcome.resultado, outcome.detalhe_erro, estado)
+                )
             else:
                 pendentes.append(r)
 
@@ -841,7 +863,11 @@ def _processar_genericos(
             resultado_por_arn = executor.tag_generic_batch(session, regiao, arns, tag_key, tag_value)
             for r in lote:
                 outcome = resultado_por_arn.get(r.arn) or ResourceOutcome(resultado=RESULTADO_ERRO)
-                resultados.append(_resultado_entry(r, ApiStrategy.GENERICO, outcome.resultado, outcome.detalhe_erro))
+                resultados.append(
+                    _resultado_entry(
+                        r, ApiStrategy.GENERICO, outcome.resultado, outcome.detalhe_erro, estado_atual.get(r.arn)
+                    )
+                )
     return resultados
 
 
@@ -886,11 +912,13 @@ def _processar_dedicados(
             outcome_revalidacao = _classificar_estado_revalidado(estado, tag_value) if estado is not None else None
             if outcome_revalidacao is not None:
                 resultados.append(
-                    _resultado_entry(r, estrategia, outcome_revalidacao.resultado, outcome_revalidacao.detalhe_erro)
+                    _resultado_entry(
+                        r, estrategia, outcome_revalidacao.resultado, outcome_revalidacao.detalhe_erro, estado
+                    )
                 )
                 continue
             outcome = executor.tag_single(session, estrategia, r, tag_key, tag_value)
-            resultados.append(_resultado_entry(r, estrategia, outcome.resultado, outcome.detalhe_erro))
+            resultados.append(_resultado_entry(r, estrategia, outcome.resultado, outcome.detalhe_erro, estado))
     return resultados
 
 
@@ -949,9 +977,7 @@ def _checar_idade_do_relatorio(decision_report: dict, max_decision_age_hours: fl
 
 _CATEGORIA_POR_DECISAO_2A = {
     DECISAO_PULAR_IAC: CATEGORIA_PULADO_IAC,
-    DECISAO_REVISAR_TAG_SIMILAR: CATEGORIA_REVISAR_TAG_SIMILAR,
     DECISAO_JA_OK: CATEGORIA_JA_OK,
-    DECISAO_CONFLITO: CATEGORIA_CONFLITO,
 }
 
 # resultado (deste módulo) -> (categoria_final, origem) — ver docstring do
@@ -962,9 +988,7 @@ _CATEGORIA_POR_RESULTADO = {
     RESULTADO_SIMULADO_OK: (CATEGORIA_SIMULADO_SUCESSO, "execucao"),
     RESULTADO_TAGUEADO_SUCESSO: (CATEGORIA_TAGUEADO_SUCESSO, "execucao"),
     RESULTADO_JA_TAGUEADO: (CATEGORIA_JA_OK, "revalidacao"),
-    RESULTADO_CONFLITO_NA_REVALIDACAO: (CATEGORIA_CONFLITO, "revalidacao"),
     RESULTADO_IAC_DETECTADO_NA_REVALIDACAO: (CATEGORIA_PULADO_IAC, "revalidacao"),
-    RESULTADO_TAG_SIMILAR_NA_REVALIDACAO: (CATEGORIA_REVISAR_TAG_SIMILAR, "revalidacao"),
     RESULTADO_RECURSO_NAO_ENCONTRADO_NA_REVALIDACAO: (CATEGORIA_FALHOU, "revalidacao"),
     RESULTADO_REVALIDACAO_FALHOU: (CATEGORIA_FALHOU, "revalidacao"),
 }
@@ -976,6 +1000,41 @@ def _categoria_final_do_resultado(resultado: str) -> tuple[str, str]:
     mapeado explicitamente (`RESULTADO_ERRO_PERMISSAO`,
     `RESULTADO_RECURSO_NAO_ENCONTRADO`, `RESULTADO_ERRO`) é uma falha."""
     return _CATEGORIA_POR_RESULTADO.get(resultado, (CATEGORIA_FALHOU, "execucao"))
+
+
+ACAO_ADICIONADA = "adicionada"
+ACAO_ADICIONADA_COM_TAG_SIMILAR = "adicionada_com_tag_similar"
+ACAO_SOBRESCRITA = "sobrescrita"
+
+
+def _acao(categoria: str, estado_anterior: dict | None) -> str | None:
+    """O que a escrita fez (ou faria, em dry-run) com a tag. Só para
+    sucesso — numa falha nada mudou."""
+    if categoria not in (CATEGORIA_TAGUEADO_SUCESSO, CATEGORIA_SIMULADO_SUCESSO):
+        return None
+    if not estado_anterior:
+        return ACAO_ADICIONADA
+    if estado_anterior.get(TAG_KEY) is not None:
+        return ACAO_SOBRESCRITA
+    return ACAO_ADICIONADA_COM_TAG_SIMILAR
+
+
+def _entrada_erro_classificacao(arn, servico, mensagem) -> dict:
+    return {
+        "arn": arn,
+        "servico": servico,
+        "regiao": None,
+        "tipo_recurso": None,
+        "categoria_final": CATEGORIA_ERRO_CLASSIFICACAO,
+        "origem": "decisao",
+        "estrategia_api": None,
+        "resultado": None,
+        "detalhe_erro": {"codigo": None, "mensagem": mensagem},
+        "motivo": None,
+        "estado_anterior": None,
+        "acao": None,
+        "iac": None,
+    }
 
 
 def build_execution_report(
@@ -1002,8 +1061,11 @@ def build_execution_report(
     classificação, para quem quiser auditar."""
     recursos_finais: list[dict] = []
 
+    motivo_por_arn = {r.get("arn"): r.get("motivo") for r in decision_report.get("recursos") or []}
+    iac_por_arn = {r.get("arn"): r.get("iac") for r in decision_report.get("recursos") or []}
     for r in resultados_taguear:
         categoria, origem = _categoria_final_do_resultado(r["resultado"])
+        estado_anterior = r.get("estado_anterior")
         recursos_finais.append(
             {
                 "arn": r["arn"],
@@ -1015,14 +1077,30 @@ def build_execution_report(
                 "estrategia_api": r["estrategia_api"],
                 "resultado": r["resultado"],
                 "detalhe_erro": r["detalhe_erro"],
-                "motivo": None,
+                "motivo": motivo_por_arn.get(r["arn"]),
+                "estado_anterior": estado_anterior,
+                "acao": _acao(categoria, estado_anterior),
+                "iac": r.get("iac") or iac_por_arn.get(r["arn"]),
             }
         )
 
     for r in decision_report.get("recursos") or []:
-        categoria = _CATEGORIA_POR_DECISAO_2A.get(r.get("decisao"))
+        decisao = r.get("decisao")
+        if decisao in DECISOES_LEGADAS:
+            # Relatório de decisão do MVP1: a regra mudou (sobrescrever /
+            # adicionar sobre chave parecida). Nunca agir com base nele.
+            recursos_finais.append(
+                _entrada_erro_classificacao(
+                    r.get("arn"),
+                    r.get("servico"),
+                    f"decisão {decisao!r} é de um relatório de versão anterior — rode 'decide' "
+                    "de novo (a regra de negócio mudou no MVP2)",
+                )
+            )
+            continue
+        categoria = _CATEGORIA_POR_DECISAO_2A.get(decisao)
         if categoria is None:
-            continue  # decisao == "taguear" (já coberto acima) ou valor inesperado
+            continue  # decisão que tagueia (já coberta acima) ou valor inesperado
         recursos_finais.append(
             {
                 "arn": r["arn"],
@@ -1035,6 +1113,9 @@ def build_execution_report(
                 "resultado": None,
                 "detalhe_erro": None,
                 "motivo": r.get("motivo"),
+                "estado_anterior": r.get("estado_anterior"),
+                "acao": None,
+                "iac": r.get("iac"),
             }
         )
 
@@ -1044,20 +1125,7 @@ def build_execution_report(
     # Entram como categoria própria, não como "falhou" (essa é reservada
     # para falha de EXECUÇÃO, não de classificação).
     for r in decision_report.get("erros") or []:
-        recursos_finais.append(
-            {
-                "arn": r.get("arn"),
-                "servico": r.get("servico"),
-                "regiao": None,
-                "tipo_recurso": None,
-                "categoria_final": CATEGORIA_ERRO_CLASSIFICACAO,
-                "origem": "decisao",
-                "estrategia_api": None,
-                "resultado": None,
-                "detalhe_erro": {"codigo": None, "mensagem": r.get("erro")},
-                "motivo": None,
-            }
-        )
+        recursos_finais.append(_entrada_erro_classificacao(r.get("arn"), r.get("servico"), r.get("erro")))
 
     categoria_counts = Counter(r["categoria_final"] for r in recursos_finais)
     servico_counts = Counter(r["servico"] for r in recursos_finais)
@@ -1079,6 +1147,7 @@ def build_execution_report(
             "por_resultado": dict(sorted(resultado_counts.items())),
             "por_estrategia_api": dict(sorted(estrategia_counts.items())),
             "por_servico": dict(sorted(servico_counts.items())),
+            "por_acao": dict(sorted(Counter(r["acao"] for r in recursos_finais if r.get("acao")).items())),
         },
         "recursos": recursos_finais,
     }
@@ -1118,8 +1187,8 @@ def run_tagging_execution(
     if not dry_run and not revalidate:
         raise RevalidacaoObrigatoriaError(
             "revalidate=False não é permitido com dry_run=False — executar de "
-            "verdade sem revalidar arrisca sobrescrever um conflito que tenha "
-            "aparecido depois da Etapa 2a."
+            "verdade sem revalidar arrisca taguear um recurso que passou a ser de "
+            "IaC depois da Etapa 2a e perder o registro do estado anterior."
         )
     _checar_idade_do_relatorio(decision_report, max_decision_age_hours)
 

@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS PRM Resource Tagging - stack CENTRAL (MVP2, rollout por StackSets).
+  Implantada UMA vez na conta payer (gerenciamento) do cliente, numa região.
+  Recebe os resultados de todas as contas da organização: as stacks hub e
+  regionais das contas-membro publicam aqui quando o parâmetro
+  TopicoCentralArn está preenchido. Sem Lambda, sem código.
+
+Parameters:
+  OrgId:
+    Type: String
+    AllowedPattern: "^o-[a-z0-9]{10,32}$"
+    Description: >
+      ID da organização (aws organizations describe-organization). Só
+      principais desta organização podem publicar no tópico.
+
+  NomeTopico:
+    Type: String
+    Default: prm-compliance-central
+    AllowedPattern: "^[A-Za-z0-9_-]{1,256}$"
+
+  NotificationEmail:
+    Type: String
+    Default: ""
+    Description: "E-mail assinado no tópico central (vazio = sem e-mail)."
+
+  CriarFilaConsumidor:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Cria uma fila SQS assinada no tópico (entrega bruta) para um consumidor
+      ler os resultados no próprio ritmo — ex.: integração com o Zabbix ou
+      dashboard. Sem custo parado (SQS cobra por requisição).
+
+Conditions:
+  TemEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+  TemFila: !Equals [!Ref CriarFilaConsumidor, "true"]
+
+Resources:
+  # Criptografia em repouso com chave KMS gerenciada pelo cliente: a chave
+  # gerenciada pela AWS (alias/aws/sns) não aceita publicação de outras
+  # contas. Custo: ~US$ 1/mês pela chave + requisições (centavos).
+  ChaveTopico:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: PRM tagging - criptografia do topico central
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AdminDaConta
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          - Sid: PublicacaoPelasContasDaOrganizacao
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrgId
+                kms:ViaService: !Sub "sns.${AWS::Region}.amazonaws.com"
+          - Sid: EntregaDoSnsParaAFila
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  ChaveTopicoAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${NomeTopico}"
+      TargetKeyId: !Ref ChaveTopico
+
+  TopicoCentral:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref NomeTopico
+      DisplayName: "AWS PRM - compliance de tagging (organizacao)"
+      KmsMasterKeyId: !Ref ChaveTopico
+
+  TopicoCentralPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref TopicoCentral]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicarDaOrganizacao
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action: sns:Publish
+            Resource: !Ref TopicoCentral
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrgId
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: "*"
+            Action: sns:Publish
+            Resource: !Ref TopicoCentral
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  AssinaturaEmail:
+    Type: AWS::SNS::Subscription
+    Condition: TemEmail
+    Properties:
+      TopicArn: !Ref TopicoCentral
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  FilaConsumidorDlq:
+    Type: AWS::SQS::Queue
+    Condition: TemFila
+    Properties:
+      QueueName: !Sub "${NomeTopico}-consumo-dlq"
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref ChaveTopico
+
+  FilaConsumidor:
+    Type: AWS::SQS::Queue
+    Condition: TemFila
+    Properties:
+      QueueName: !Sub "${NomeTopico}-consumo"
+      MessageRetentionPeriod: 1209600
+      VisibilityTimeout: 60
+      KmsMasterKeyId: !Ref ChaveTopico
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FilaConsumidorDlq.Arn
+        maxReceiveCount: 5
+
+  FilaConsumidorPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: TemFila
+    Properties:
+      Queues: [!Ref FilaConsumidor]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SomenteDoTopicoCentral
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt FilaConsumidor.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TopicoCentral
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: "*"
+            Action: sqs:*
+            Resource: !GetAtt FilaConsumidor.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  AssinaturaFila:
+    Type: AWS::SNS::Subscription
+    Condition: TemFila
+    Properties:
+      TopicArn: !Ref TopicoCentral
+      Protocol: sqs
+      Endpoint: !GetAtt FilaConsumidor.Arn
+      RawMessageDelivery: true
+
+Outputs:
+  TopicoCentralArn:
+    Description: "Informar no parâmetro TopicoCentralArn dos StackSets hub e regional."
+    Value: !Ref TopicoCentral
+  ChaveTopicoArn:
+    Description: "Chave KMS do tópico (as roles das contas-membro precisam de kms:GenerateDataKey nela)."
+    Value: !GetAtt ChaveTopico.Arn
+  FilaConsumidorUrl:
+    Condition: TemFila
+    Description: "Fila para consumidores (ex.: Zabbix)."
+    Value: !Ref FilaConsumidor

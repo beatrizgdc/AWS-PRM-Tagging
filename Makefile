@@ -41,3 +41,21 @@ build-Etapa4DriftFunction:
 	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
 	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
 	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"
+
+# MVP2 (item 3) — Lambda Layer com boto3/botocore atuais e fixados por hash
+# (aws_prm_tagging/requirements-lambda.txt). Uma layer por stack, usada por
+# todas as funções da stack (Globals.Function.Layers nos templates). Só
+# wheels puros (sem compilação), para a plataforma do runtime python3.12.
+build-PrmSdkLayer:
+	python3 -m pip install --quiet --no-compile --disable-pip-version-check \
+	  --require-hashes --only-binary=:all: \
+	  --platform manylinux2014_aarch64 --platform manylinux2014_x86_64 \
+	  --python-version 3.12 --implementation cp \
+	  -r aws_prm_tagging/requirements-lambda.txt --target "$(ARTIFACTS_DIR)/python"
+	rm -rf "$(ARTIFACTS_DIR)/python/bin"
+
+# MVP2 (item 1) — encaminhador para o Zabbix (template-zabbix.yaml).
+build-ZabbixFunction:
+	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"
+	cp aws_prm_tagging/*.py "$(ARTIFACTS_DIR)/aws_prm_tagging/"
+	cp aws_prm_tagging/data/*.py aws_prm_tagging/data/*.csv "$(ARTIFACTS_DIR)/aws_prm_tagging/data/"

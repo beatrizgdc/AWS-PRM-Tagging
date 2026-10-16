@@ -1,0 +1,176 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+  - uuid: 8d649b7c319a492590ab128b8a618c70
+    name: Templates/Cloud
+  templates:
+  - uuid: 1285358bd62644a2a511b04d0e7a1edf
+    template: AWS PRM Tagging
+    name: AWS PRM Tagging
+    description: Itens trapper alimentados pela Lambda handler_zabbix (stack template-zabbix.yaml) a partir do tópico SNS
+      da automação AWS PRM (tag aws-apn-id). Importar e vincular a um host; o nome do host vai no parâmetro ZabbixHost da
+      stack.
+    groups:
+    - name: Templates/Cloud
+    items:
+    - uuid: faaf526ee8da40f295b72f43a957b2bd
+      name: 'PRM: última mensagem (JSON)'
+      type: TRAP
+      key: prm.evento
+      history: 30d
+      value_type: TEXT
+      trends: '0'
+      description: Toda mensagem publicada pela automação, em JSON (truncada em 60 KB).
+      tags:
+      - tag: component
+        value: prm-tagging
+    discovery_rules:
+    - uuid: 4abe2b305fd34e11b2b87ac8bbe206bd
+      name: 'PRM: contas AWS'
+      type: TRAP
+      key: prm.contas
+      lifetime_type: DELETE_AFTER
+      lifetime: 30d
+      description: Uma entrada por conta AWS que publicou no tópico ({#CONTA}).
+      item_prototypes:
+      - uuid: 3ba3c0fc0e94489ea14ea2f97c2cbc95
+        name: 'PRM {#CONTA}: Tagueados em tempo real (Etapa 3)'
+        type: TRAP
+        key: prm.sucesso[{#CONTA}]
+        history: 90d
+        description: Recurso novo tagueado (1 por evento).
+        tags:
+        - tag: component
+          value: prm-tagging
+      - uuid: efcd8f390e134caab2ccbaef8e233d39
+        name: 'PRM {#CONTA}: Falhas de tagueamento (Etapa 3)'
+        type: TRAP
+        key: prm.falha[{#CONTA}]
+        history: 90d
+        description: Falha ao taguear um recurso novo (1 por evento). Ver item prm.evento.
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: e319046353954009b36b2d624a0c4997
+          expression: count(/AWS PRM Tagging/prm.falha[{#CONTA}],1h)>0
+          name: 'PRM {{#CONTA}}: falha ao taguear recurso novo na última hora'
+          priority: WARNING
+          description: Falha ao taguear um recurso novo (1 por evento). Ver item prm.evento.
+      - uuid: e8acc604979c42ca98ae2bd4681275ae
+        name: 'PRM {#CONTA}: Recursos de IaC (lista para o cliente)'
+        type: TRAP
+        key: prm.iac[{#CONTA}]
+        history: 90d
+        description: 'Etapa 3: 1 por recurso novo de IaC. Varredura: total de recursos de IaC na região.'
+        tags:
+        - tag: component
+          value: prm-tagging
+      - uuid: b447945e93834f72ae450c8753e5f6ed
+        name: 'PRM {#CONTA}: Remoção/alteração da tag (drift)'
+        type: TRAP
+        key: prm.drift[{#CONTA}]
+        history: 90d
+        description: Alguém removeu ou trocou a aws-apn-id (1 por alerta).
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 5ee6f18913bf45a7a194e5ffd0a43088
+          expression: count(/AWS PRM Tagging/prm.drift[{#CONTA}],1d)>0
+          name: 'PRM {{#CONTA}}: tag aws-apn-id removida ou alterada nas últimas 24h'
+          priority: AVERAGE
+          description: Alguém removeu ou trocou a aws-apn-id (1 por alerta).
+      - uuid: 69e820faf28b4ab69360d88224565b10
+        name: 'PRM {#CONTA}: Recursos sem a tag (varredura dry-run)'
+        type: TRAP
+        key: prm.pendentes[{#CONTA}]
+        history: 90d
+        description: Quantos recursos a varredura em dry-run taguearia.
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 9487cc57f4874e3bb34d31a34810dac9
+          expression: last(/AWS PRM Tagging/prm.pendentes[{#CONTA}])>0
+          name: 'PRM {{#CONTA}}: há recursos sem a tag (varredura em dry-run)'
+          priority: INFO
+          description: Quantos recursos a varredura em dry-run taguearia.
+      - uuid: 9f67806fa1ab43efad8b99a8a618f766
+        name: 'PRM {#CONTA}: Falhas na varredura'
+        type: TRAP
+        key: prm.falhas_varredura[{#CONTA}]
+        history: 90d
+        description: Falhas de leitura/escrita da varredura recorrente (exclui região bloqueada por SCP).
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 6afa35112a2642de8a3ab853acb38394
+          expression: last(/AWS PRM Tagging/prm.falhas_varredura[{#CONTA}])>0
+          name: 'PRM {{#CONTA}}: falhas na varredura recorrente'
+          priority: WARNING
+          description: Falhas de leitura/escrita da varredura recorrente (exclui região bloqueada por SCP).
+      - uuid: 2959dc75fc4944fcb94e620d35785cb9
+        name: 'PRM {#CONTA}: Mensagens na DLQ da Etapa 3'
+        type: TRAP
+        key: prm.dlq[{#CONTA}]
+        history: 90d
+        description: Eventos que a Etapa 3 não conseguiu processar (fila prm-etapa3-dlq).
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 547b85d8787c48708cd4c48cc9906724
+          expression: last(/AWS PRM Tagging/prm.dlq[{#CONTA}])>0
+          name: 'PRM {{#CONTA}}: mensagens na DLQ da Etapa 3'
+          priority: HIGH
+          description: Eventos que a Etapa 3 não conseguiu processar (fila prm-etapa3-dlq).
+      - uuid: 55f167446a374773b4cf362ebbfa7424
+        name: 'PRM {#CONTA}: Região ativa sem stack regional'
+        type: TRAP
+        key: prm.regiao_sem_stack[{#CONTA}]
+        history: 90d
+        description: Região ativa sem a automação contínua implantada.
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 630772d25028445a8c0ea7e385c80514
+          expression: count(/AWS PRM Tagging/prm.regiao_sem_stack[{#CONTA}],1d)>0
+          name: 'PRM {{#CONTA}}: região ativa sem stack regional'
+          priority: WARNING
+          description: Região ativa sem a automação contínua implantada.
+      - uuid: 5347f6d26ebc4e3fbf294b612faffef4
+        name: 'PRM {#CONTA}: Falha da Lambda numa região (tagueamento inicial/varredura)'
+        type: TRAP
+        key: prm.falha_regiao[{#CONTA}]
+        history: 90d
+        description: A execução de uma região falhou por inteiro.
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 6b0780326e0746e6b191f565586eeebb
+          expression: count(/AWS PRM Tagging/prm.falha_regiao[{#CONTA}],1d)>0
+          name: 'PRM {{#CONTA}}: execução de uma região falhou'
+          priority: HIGH
+          description: A execução de uma região falhou por inteiro.
+      - uuid: ae46ae74e47e46259f512c7f22a947e9
+        name: 'PRM {#CONTA}: Mensagem recebida (heartbeat)'
+        type: TRAP
+        key: prm.heartbeat[{#CONTA}]
+        history: 90d
+        description: 1 a cada mensagem da conta. Para o gatilho de ausência funcionar, use PublicarVarreduraSemNovidade=true
+          no hub.
+        tags:
+        - tag: component
+          value: prm-tagging
+        trigger_prototypes:
+        - uuid: 408beb1710d84a34a1efee0132d6196e
+          expression: nodata(/AWS PRM Tagging/prm.heartbeat[{#CONTA}],2d)=1
+          name: 'PRM {{#CONTA}}: nenhuma mensagem há 2 dias'
+          priority: WARNING
+          description: '1 a cada mensagem da conta. Para o gatilho de ausência funcionar, use PublicarVarreduraSemNovidade=true
+            no hub. Desativado por padrão: habilite depois de ligar o heartbeat.'
+          status: DISABLED

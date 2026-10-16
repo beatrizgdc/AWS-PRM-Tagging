@@ -34,9 +34,10 @@ import os
 import boto3
 from botocore.exceptions import ClientError
 
-from . import decision, escopo_teste, event_parser, publish, resource_expansion, single_resource, tag_execution
+from . import cloudtrail_iac, decision, escopo_teste, event_parser, iac_detection, publish, resource_expansion, single_resource, tag_execution
 
 logger = logging.getLogger("aws_prm_tagging.etapa3")
+logger.info("boto3 %s (MVP2: deve ser a versão da PrmSdkLayer, ver requirements-lambda.txt)", boto3.__version__)
 
 _ETAPA = "3"
 
@@ -51,6 +52,7 @@ def _process_one_resource(
     event_id: str | None,
     event_name: str | None,
     event_source: str | None,
+    iac_evento: dict | None = None,
 ) -> None:
     try:
         resource = single_resource.build_resource_from_arn(
@@ -91,6 +93,13 @@ def _process_one_resource(
             ),
         )
         return
+
+    if iac_evento and resource.get("iac", {}).get("tipo") not in iac_detection.IAC_DETECTADO:
+        # MVP2: o recurso nasceu de uma chamada de IaC (Terraform/OpenTofu,
+        # Pulumi, CloudFormation/CDK) segundo o próprio CloudTrail — sinal
+        # bem mais forte que as tags (o Terraform não deixa tag nenhuma por
+        # padrão). Nunca tagueado; vai para a lista do cliente.
+        resource = {**resource, "iac": iac_evento}
 
     decisao_resultado = decision.classify_resource(resource, expected_tag_value)
     if decisao_resultado is None:
@@ -146,11 +155,38 @@ def _process_one_resource(
             resultado=resultado_final["resultado"],
             detalhe_erro=resultado_final["detalhe_erro"],
             motivo=resultado_final["motivo"],
+            estado_anterior=resultado_final.get("estado_anterior"),
+            acao=resultado_final.get("acao"),
+            iac=resultado_final.get("iac"),
             event_id=event_id,
             event_name=event_name,
             event_source=event_source,
         ),
     )
+
+
+def _eh_instancia(arn: str) -> bool:
+    return arn.startswith("arn:aws:ec2:") and ":instance/" in arn
+
+
+def _iac_das_instancias(session: boto3.Session, recursos: list[event_parser.ExtractedResource]) -> dict[str, dict]:
+    """Instância chega pelo evento NATIVO "running" (sem userAgent): o
+    RunInstances original está no histórico do CloudTrail (o debounce de
+    30 min dá tempo de ele aparecer). Falha aqui nunca bloqueia — cai na
+    heurística de tags, como antes."""
+    achados: dict[str, dict] = {}
+    for r in recursos:
+        if not _eh_instancia(r.arn):
+            continue
+        try:
+            client = session.client("cloudtrail", region_name=r.regiao)
+            iac = cloudtrail_iac.iac_por_historico(client, r.arn, rapido=True)
+        except Exception:  # noqa: BLE001 — sinal opcional
+            logger.warning("Não foi possível consultar o histórico do CloudTrail para %s", r.arn, exc_info=True)
+            continue
+        if iac:
+            achados[r.arn] = iac
+    return achados
 
 
 def _sns_client_for_topic(session: boto3.Session, topic_arn: str):
@@ -179,6 +215,9 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
     conta_id = detail.get("recipientAccountId") or event.get("account")
 
     extracted_resources = event_parser.parse_creation_event(event)
+    iac_evento = iac_detection.detect_iac_from_cloudtrail(detail)
+    if iac_evento:
+        logger.info("Evento %s veio de IaC (%s): %s", event_id, iac_evento["ferramenta"], iac_evento["evidencia"])
     # Conta compartilhada (sandbox): FiltroEscopoTeste restringe a reação
     # aos recursos/principais de teste. Vazio em produção = sem efeito.
     fora = [r.arn for r in extracted_resources if not escopo_teste.dentro_do_escopo(event, r.arn)]
@@ -227,8 +266,13 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
         except Exception:
             logger.exception("Falha ao publicar erro de expansão de volumes de %s", falha["arn"])
 
+    # IaC por recurso: o do evento (userAgent) vale para todos; senão, o da
+    # instância (histórico) vale para ela e para os volumes dela.
+    iac_instancias = {} if iac_evento else _iac_das_instancias(session, extracted_resources)
+
     falhas_inesperadas = 0
     for extracted in extracted_resources:
+        iac_recurso = iac_evento or iac_instancias.get(extracted.arn) or iac_instancias.get(extracted.origem_arn or "")
         try:
             _process_one_resource(
                 session,
@@ -240,6 +284,7 @@ def handler(event: dict, context=None, *, session: boto3.Session | None = None, 
                 event_id,
                 event_name,
                 event_source,
+                iac_recurso,
             )
         except Exception as exc:
             # Uma falha inesperada num recurso não deve impedir o

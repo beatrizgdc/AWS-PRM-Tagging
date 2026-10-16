@@ -10,14 +10,18 @@ set -uo pipefail
 
 uso() {
   cat <<'EOF'
-uso: deploy/implantar_conta.sh --profile P --valor pc:XXXX --email E [opções]
+uso: deploy/implantar_conta.sh --profile P --valor pc:XXXX [--email E] [opções]
 
 obrigatórios:
   --profile P               perfil AWS da conta do cliente
   --valor pc:XXXX           valor da tag aws-apn-id (product code do contrato)
-  --email E                 e-mail que recebe as notificações (confirmar a assinatura)
 
 opções:
+  --email E                 e-mail que recebe as notificações (confirmar a assinatura);
+                            sem ele, os resultados ficam só no tópico SNS (ex.: Zabbix)
+  --topico-central ARN      publica no tópico central da organização (template-central.yaml)
+  --kms-central ARN         chave KMS do tópico central (obrigatória com --topico-central)
+  --arquitetura A           arm64 (default) | x86_64
   --hub REGIAO              região da stack hub (default: us-east-1)
   --regioes a,b,c           regiões da stack regional (default: lista do preflight —
                             regiões ativas + us-east-1)
@@ -34,11 +38,15 @@ EOF
 
 PROFILE=""; VALOR=""; EMAIL=""; HUB="us-east-1"; REGIOES=""; MODO_INI="dry-run"; MODO_VAR="dry-run"
 REEXEC="1"; CONTRATO="false"; REG_VAR=""; SIM=0; MOSTRAR=0; PREFIXO="prm-tagging"
+CENTRAL=""; KMS_CENTRAL=""; ARQ="arm64"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2;;
     --valor) VALOR="$2"; shift 2;;
     --email) EMAIL="$2"; shift 2;;
+    --topico-central) CENTRAL="$2"; shift 2;;
+    --kms-central) KMS_CENTRAL="$2"; shift 2;;
+    --arquitetura) ARQ="$2"; shift 2;;
     --hub) HUB="$2"; shift 2;;
     --regioes) REGIOES="$2"; shift 2;;
     --modo-inicial) MODO_INI="$2"; shift 2;;
@@ -51,7 +59,9 @@ while [[ $# -gt 0 ]]; do
     *) echo "opção desconhecida: $1"; uso;;
   esac
 done
-[[ -n "$PROFILE" && -n "$VALOR" && -n "$EMAIL" ]] || uso
+[[ -n "$PROFILE" && -n "$VALOR" ]] || uso
+[[ -z "$CENTRAL" || -n "$KMS_CENTRAL" ]] || { echo "--topico-central exige --kms-central"; exit 1; }
+[[ "$ARQ" =~ ^(arm64|x86_64)$ ]] || { echo "--arquitetura: arm64 ou x86_64"; exit 1; }
 [[ "$VALOR" =~ ^pc:[A-Za-z0-9]+$ ]] || { echo "--valor precisa ser pc:<código alfanumérico>"; exit 1; }
 for m in "$MODO_INI" "$MODO_VAR"; do
   [[ "$m" =~ ^(dry-run|live|desligado)$ ]] || { echo "modo inválido: $m"; exit 1; }
@@ -82,7 +92,9 @@ echo
 echo "== Plano de implantação"
 echo "  conta ............... $CONTA (perfil $PROFILE)"
 echo "  valor da tag ........ aws-apn-id = $VALOR"
-echo "  e-mail .............. $EMAIL"
+echo "  e-mail .............. ${EMAIL:-(nenhum — resultados só no tópico)}"
+[[ -n "$CENTRAL" ]] && echo "  tópico central ...... $CENTRAL"
+echo "  arquitetura ......... $ARQ"
 echo "  stack hub ........... prm-hub em $HUB"
 echo "  stack regional ...... prm-regional em: $REGIOES"
 echo "  tagueamento inicial . $MODO_INI (reexecutar=$REEXEC)"
@@ -93,10 +105,15 @@ echo "  Etapa 3 ............. ESCREVE a tag em recursos NOVOS desde o deploy, em
 [[ "$MODO_INI" == "live" || "$MODO_VAR" == "live" ]] && echo "  !! modo LIVE: a tag será escrita também nos recursos EXISTENTES (exige consentimento do cliente)"
 echo
 
-HUB_PARAMS=(NotificationEmail="$EMAIL" ExpectedTagValue="$VALOR" ModoTagueamentoInicial="$MODO_INI"
+HUB_PARAMS=(ExpectedTagValue="$VALOR" ModoTagueamentoInicial="$MODO_INI" Arquitetura="$ARQ"
             ReexecutarTagueamentoInicial="$REEXEC" ModoVarreduraRecorrente="$MODO_VAR" ContratoConfirmado="$CONTRATO")
 [[ -n "$REG_VAR" ]] && HUB_PARAMS+=(RegioesVarredura="$REG_VAR")
-REG_PARAMS=(ExpectedTagValue="$VALOR" HubRegion="$HUB")
+[[ -n "$EMAIL" ]] && HUB_PARAMS+=(NotificationEmail="$EMAIL")
+REG_PARAMS=(ExpectedTagValue="$VALOR" HubRegion="$HUB" Arquitetura="$ARQ")
+if [[ -n "$CENTRAL" ]]; then
+  HUB_PARAMS+=(TopicoCentralArn="$CENTRAL" TopicoCentralKmsArn="$KMS_CENTRAL")
+  REG_PARAMS+=(TopicoCentralArn="$CENTRAL" TopicoCentralKmsArn="$KMS_CENTRAL")
+fi
 
 if [[ $MOSTRAR -eq 1 ]]; then
   echo "== Comandos (--somente-mostrar: nada foi executado)"
@@ -145,9 +162,9 @@ if [[ ${#FALHA[@]} -gt 0 ]]; then
 fi
 echo
 echo "Próximos passos:"
-echo "  1. Confirme a assinatura no e-mail que a AWS enviou para $EMAIL."
+[[ -n "$EMAIL" ]] && echo "  1. Confirme a assinatura no e-mail que a AWS enviou para $EMAIL."
 echo "  2. Leia os resumos do tagueamento inicial ($MODO_INI), um por região."
 echo "  3. Para aplicar a tag nos recursos existentes (com consentimento do cliente):"
-echo "     deploy/implantar_conta.sh --profile $PROFILE --valor $VALOR --email $EMAIL --hub $HUB \\"
+echo "     deploy/implantar_conta.sh --profile $PROFILE --valor $VALOR ${EMAIL:+--email $EMAIL }--hub $HUB \\"
 echo "       --regioes $REGIOES --modo-inicial live --reexecutar $((REEXEC + 1))"
 [[ ${#FALHA[@]} -eq 0 ]]

@@ -411,6 +411,7 @@ def _montar(arn: str, servico: str, regiao: str, tags: dict, expected: str) -> d
         "valor_tag_encontrado": valor,
         "tag_similar_encontrada": bool(similares),
         "tag_similar_chaves": similares,
+        "tag_similar_valores": {k: tags.get(k) for k in similares},
         "iac": detect_iac(tags),
         "servico_faturamento": servico,
         "cluster_eks": None,

@@ -2,8 +2,13 @@
 # Validação da Etapa 1 (descoberta nativa) + Etapa 2c (apply --live) numa
 # conta SANDBOX compartilhada — item 4 do plano. Ver README.md desta pasta.
 #
+# MVP2 (regra nova da AWS): o bucket "outro-parceiro" agora é SOBRESCRITO
+# (valor anterior registrado), a fila com chave parecida recebe aws-apn-id
+# ao lado da chave antiga, e os buckets de Terraform e Pulumi são pulados e
+# aparecem em resultado_live_cliente.md (lista para o cliente).
+#
 # O QUE CRIA (tudo gratuito enquanto vazio; prefixo único por execução):
-#   4 buckets S3, 2 filas SQS, 1 tópico SNS, 1 tabela DynamoDB on-demand,
+#   5 buckets S3, 2 filas SQS, 1 tópico SNS, 1 tabela DynamoDB on-demand,
 #   1 log group, 1 repositório ECR — e, só com --lambda-role-arn, 1 função Lambda.
 # Cada recurso é registrado em <saida>/manifest.tsv com o comando de remoção.
 # NÃO apaga nada: rode ./limpar.sh <saida>/manifest.tsv quando terminar.
@@ -13,8 +18,8 @@
 # A varredura (map) lê a região inteira, mas é somente leitura.
 set -euo pipefail
 
-uso() { echo "uso: $0 --profile P --valor pc:xxxx [--regiao us-east-1] [--lambda-role-arn ARN]"; exit 1; }
-PROFILE=""; VALOR=""; REGIAO="us-east-1"; LAMBDA_ROLE=""
+uso() { echo "uso: $0 --profile P --valor pc:xxxx [--regiao us-east-1] [--lambda-role-arn ARN] [--sem-s3]"; exit 1; }
+PROFILE=""; VALOR=""; REGIAO="us-east-1"; LAMBDA_ROLE=""; SEM_S3=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) PROFILE="$2"; shift 2;;
@@ -48,12 +53,13 @@ cria_bucket() {  # nome
 echo "== Conta $CONTA, região $REGIAO, prefixo $PREFIXO"
 echo "== 1/5 Criando recursos de teste"
 
+if [[ $SEM_S3 -eq 0 ]]; then
 B1="${PREFIXO}-sem-tag"; cria_bucket "$B1"
 registra "arn:aws:s3:::$B1" tagueado_sucesso "$remocao_prefixo s3api delete-bucket --bucket $B1"
 
-B2="${PREFIXO}-conflito"; cria_bucket "$B2"
+B2="${PREFIXO}-outro-parceiro"; cria_bucket "$B2"
 "${AWS[@]}" s3api put-bucket-tagging --bucket "$B2" --tagging 'TagSet=[{Key=aws-apn-id,Value=pc:outroparceiro}]'
-registra "arn:aws:s3:::$B2" conflito "$remocao_prefixo s3api delete-bucket --bucket $B2"
+registra "arn:aws:s3:::$B2" sobrescrito "$remocao_prefixo s3api delete-bucket --bucket $B2"
 
 B3="${PREFIXO}-ja-ok"; cria_bucket "$B3"
 "${AWS[@]}" s3api put-bucket-tagging --bucket "$B3" --tagging "TagSet=[{Key=aws-apn-id,Value=$VALOR}]"
@@ -63,11 +69,27 @@ B4="${PREFIXO}-terraform"; cria_bucket "$B4"
 "${AWS[@]}" s3api put-bucket-tagging --bucket "$B4" --tagging 'TagSet=[{Key=managed-by,Value=terraform}]'
 registra "arn:aws:s3:::$B4" pulado_iac "$remocao_prefixo s3api delete-bucket --bucket $B4"
 
+B5="${PREFIXO}-pulumi"; cria_bucket "$B5"
+"${AWS[@]}" s3api put-bucket-tagging --bucket "$B5" --tagging 'TagSet=[{Key=managed-by,Value=pulumi},{Key=aws-apn-id,Value=pc:outroparceiro}]'
+registra "arn:aws:s3:::$B5" pulado_iac "$remocao_prefixo s3api delete-bucket --bucket $B5"
+else
+  cria_fila() {  # sufixo categoria [tags]
+    local nome="${PREFIXO}-q-$1" url
+    if [[ -n "${3:-}" ]]; then url="$("${AWS[@]}" sqs create-queue --queue-name "$nome" --tags "$3" --query QueueUrl)"
+    else url="$("${AWS[@]}" sqs create-queue --queue-name "$nome" --query QueueUrl)"; fi
+    registra "arn:aws:sqs:$REGIAO:$CONTA:$nome" "$2" "$remocao_prefixo sqs delete-queue --queue-url $url"
+  }
+  cria_fila outro-parceiro sobrescrito "aws-apn-id=pc:outroparceiro"
+  cria_fila ja-ok ja_ok "aws-apn-id=$VALOR"
+  cria_fila terraform pulado_iac "managed-by=terraform"
+  cria_fila pulumi pulado_iac "managed-by=pulumi,aws-apn-id=pc:outroparceiro"
+fi
+
 Q1="${PREFIXO}-sem-tag"; URL1="$("${AWS[@]}" sqs create-queue --queue-name "$Q1" --query QueueUrl)"
 registra "arn:aws:sqs:$REGIAO:$CONTA:$Q1" tagueado_sucesso "$remocao_prefixo sqs delete-queue --queue-url $URL1"
 
 Q2="${PREFIXO}-similar"; URL2="$("${AWS[@]}" sqs create-queue --queue-name "$Q2" --tags AWS-APN-ID=digitado-errado --query QueueUrl)"
-registra "arn:aws:sqs:$REGIAO:$CONTA:$Q2" revisar_tag_similar "$remocao_prefixo sqs delete-queue --queue-url $URL2"
+registra "arn:aws:sqs:$REGIAO:$CONTA:$Q2" adicionado_com_similar "$remocao_prefixo sqs delete-queue --queue-url $URL2"
 
 T1="$("${AWS[@]}" sns create-topic --name "${PREFIXO}-sem-tag" --query TopicArn)"
 registra "$T1" tagueado_sucesso "$remocao_prefixo sns delete-topic --topic-arn $T1"
@@ -113,9 +135,11 @@ trap - ERR
 python3 "$RAIZ/aws_prm_tagging/test/manual-live-lote2/verificar_resultado.py" \
   --profile "$PROFILE" --regiao "$REGIAO" --manifest "$MANIFEST" \
   --mapa "$SAIDA/mapa.json" --resultado "$SAIDA/resultado_live.json" --valor "$VALOR" \
+  --cliente "$SAIDA/resultado_live_cliente.json" \
   && STATUS=0 || STATUS=$?
 
 echo
+echo "Relatório para o cliente (IaC + estado anterior): $SAIDA/resultado_live_cliente.md"
 echo "Saídas em: $SAIDA  (contêm ARNs da conta — não versionar)"
 echo "Para remover TUDO que este script criou:  $(dirname "$0")/limpar.sh $MANIFEST"
 exit $STATUS

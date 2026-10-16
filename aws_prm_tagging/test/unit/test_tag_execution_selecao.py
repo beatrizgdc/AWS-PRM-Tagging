@@ -2,10 +2,11 @@
 API (`tag_execution.route_strategy`) — Etapa 2b.
 
 `select_taggable` é o único ponto de entrada aceito pelo resto do módulo:
-cobre aqui que ele filtra estritamente por `decisao == "taguear"` e que o
+cobre aqui que ele filtra estritamente pelas decisões que tagueiam
+(`taguear`, `taguear_com_tag_similar`, `sobrescrever` — MVP2) e que o
 tipo devolvido (`TaggableResource`) não carrega o campo `decisao` — a
 garantia estrutural descrita no docstring de `tag_execution.py` (não dá
-para repassar um recurso `pular_iac`/`ja_ok`/`conflito` adiante por engano,
+para repassar um recurso `pular_iac`/`ja_ok` adiante por engano,
 porque o tipo nunca teve esse campo)."""
 from __future__ import annotations
 
@@ -13,10 +14,13 @@ import dataclasses
 
 from aws_prm_tagging import tag_execution
 from aws_prm_tagging.decision import (
-    DECISAO_CONFLITO,
     DECISAO_JA_OK,
+    DECISAO_LEGADA_CONFLITO,
+    DECISAO_LEGADA_REVISAR_TAG_SIMILAR,
     DECISAO_PULAR_IAC,
+    DECISAO_SOBRESCREVER,
     DECISAO_TAGUEAR,
+    DECISAO_TAGUEAR_COM_TAG_SIMILAR,
 )
 
 
@@ -28,18 +32,22 @@ def test_taggable_resource_nao_tem_campo_decisao():
     assert "decisao" not in campos
 
 
-def test_select_taggable_inclui_apenas_decisao_taguear(decisao_factory, relatorio_decisao_factory):
+def test_select_taggable_inclui_apenas_decisoes_que_tagueiam(decisao_factory, relatorio_decisao_factory):
     recursos = [
         decisao_factory(arn="arn:taguear", decisao=DECISAO_TAGUEAR),
+        decisao_factory(arn="arn:similar", decisao=DECISAO_TAGUEAR_COM_TAG_SIMILAR),
+        decisao_factory(arn="arn:sobrescrever", decisao=DECISAO_SOBRESCREVER),
         decisao_factory(arn="arn:pular-iac", decisao=DECISAO_PULAR_IAC),
         decisao_factory(arn="arn:ja-ok", decisao=DECISAO_JA_OK),
-        decisao_factory(arn="arn:conflito", decisao=DECISAO_CONFLITO),
+        # Decisões do MVP1 nunca são executadas (regra mudou).
+        decisao_factory(arn="arn:conflito-legado", decisao=DECISAO_LEGADA_CONFLITO),
+        decisao_factory(arn="arn:similar-legado", decisao=DECISAO_LEGADA_REVISAR_TAG_SIMILAR),
     ]
     relatorio = relatorio_decisao_factory(recursos)
 
     selecionados = tag_execution.select_taggable(relatorio)
 
-    assert [r.arn for r in selecionados] == ["arn:taguear"]
+    assert [r.arn for r in selecionados] == ["arn:taguear", "arn:similar", "arn:sobrescrever"]
 
 
 def test_select_taggable_relatorio_vazio(relatorio_decisao_factory):

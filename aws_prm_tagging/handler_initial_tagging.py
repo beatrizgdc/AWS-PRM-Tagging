@@ -59,10 +59,15 @@ def _responder(event: dict, context, status: str, dados: dict | None = None, mot
             "Data": dados or {},
         }
     ).encode()
+    url = event["ResponseURL"]
+    # MVP2 (segurança): o CloudFormation sempre manda uma URL pré-assinada
+    # HTTPS do S3. Qualquer outra coisa (file://, http://) é recusada.
+    if not str(url).startswith("https://"):
+        raise ValueError("ResponseURL precisa ser https://")
     req = urllib.request.Request(
-        event["ResponseURL"], data=corpo, method="PUT", headers={"Content-Type": "", "Content-Length": str(len(corpo))}
+        url, data=corpo, method="PUT", headers={"Content-Type": "", "Content-Length": str(len(corpo))}
     )
-    opener(req, timeout=30)
+    opener(req, timeout=30)  # nosec B310 — esquema validado acima
 
 
 def custom_resource(event: dict, context=None, *, sfn_client=None, opener=urllib.request.urlopen) -> None:
@@ -172,6 +177,8 @@ def processar_regiao(event: dict, context=None, *, session: boto3.Session | None
     # us-east-1 (dry-run)") — ASCII, como o SNS exige no Subject.
     resumo["categoria_final"] = f"resumo {regiao} ({modo})"
     resumo.update(_saude_regional(session, regiao))
+    # MVP2 (item 3): confirma que a Lambda usa o SDK da layer, não o do runtime.
+    resumo["versao_boto3"] = boto3.__version__
     # Conta que herdou o contrato pelo default da OU (auto-deployment do
     # StackSet) não é considerada validada até alguém confirmar —
     # docs/arquitetura-multicliente.md. Parâmetro ContratoConfirmado do hub.

@@ -16,7 +16,13 @@ from aws_prm_tagging import iac_detection
 
 def test_sem_nenhum_sinal_e_desconhecido():
     resultado = iac_detection.detect_iac({"Nome": "recurso-qualquer"})
-    assert resultado == {"tipo": iac_detection.IAC_DESCONHECIDO, "stack_name": None, "gerenciado_por_ferramenta_aws": None}
+    assert resultado == {
+        "tipo": iac_detection.IAC_DESCONHECIDO,
+        "stack_name": None,
+        "gerenciado_por_ferramenta_aws": None,
+        "ferramenta": None,
+        "evidencia": None,
+    }
 
 
 def test_cloudformation_detectado_sem_ferramenta_aws_conhecida():
@@ -60,7 +66,13 @@ def test_cloudformation_tem_precedencia_sobre_terraform():
 
 def test_terraform_por_chave_propria():
     resultado = iac_detection.detect_iac({"terraform": "true"})
-    assert resultado == {"tipo": iac_detection.IAC_TERRAFORM_HEURISTICO, "stack_name": None, "gerenciado_por_ferramenta_aws": None}
+    assert resultado == {
+        "tipo": iac_detection.IAC_TERRAFORM_HEURISTICO,
+        "stack_name": None,
+        "gerenciado_por_ferramenta_aws": None,
+        "ferramenta": "Terraform",
+        "evidencia": "tag terraform=true",
+    }
 
 
 def test_terraform_por_managed_by():

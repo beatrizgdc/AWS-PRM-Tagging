@@ -8,41 +8,40 @@ disco é responsabilidade do chamador (o mesmo padrão que `report.py` já usa:
 `main.py` é quem faz I/O de arquivo, não os módulos de lógica).
 
 Cada recurso do relatório da Etapa 1 é classificado em exatamente uma
-categoria:
+categoria. **Regra de negócio do MVP2** (orientação da AWS repassada pelo
+DevOps em 13/10/2026):
 
-- `taguear`   — tag ausente, recurso não gerenciado por IaC, e nenhuma tag
-  de grafia parecida encontrada. Candidato a tagueamento via API nas
-  Etapas 2b/2c.
-- `pular_iac` — recurso gerenciado por IaC (heurística da Etapa 1),
-  independente de ter ou não a tag hoje. Nunca tagueado via API/CLI/Console
-  — só identificado e sinalizado para tagueamento pelo próprio IaC.
-- `revisar_tag_similar` — tag `aws-apn-id` ausente, mas encontrada uma tag
-  com grafia parecida (ex.: `AWS-APN-ID`, case diferente —
-  `tag_status.find_similar_tag_keys`), quase certamente um erro de
-  digitação humano. Nunca tagueado via API automaticamente: aplicar
-  `aws-apn-id` por cima criaria uma segunda chave quase-duplicada em vez de
-  corrigir o erro original — precisa de revisão humana antes.
-- `ja_ok`     — tag já presente com o valor esperado (comparação exata,
-  case-sensitive, herdada de `tag_status.get_tag_status`). Nada a fazer.
-- `conflito`  — tag presente com um valor diferente do esperado. Nunca
-  sobrescrita automaticamente, gerenciado por IaC ou não — um conflito é
-  sempre reportado para revisão humana, nunca resolvido nesta etapa.
+- `taguear` — tag ausente, recurso não gerenciado por IaC. Candidato a
+  tagueamento via API nas Etapas 2b/2c.
+- `taguear_com_tag_similar` — como `taguear`, mas o recurso tem uma chave
+  de grafia parecida (ex.: `AWS-APN-ID`). A AWS só reconhece `aws-apn-id`
+  minúsculo, então a nossa é ADICIONADA por cima; a chave parecida não é
+  removida nem alterada, e o estado anterior fica registrado em
+  `estado_anterior` (aparece no relatório para o cliente).
+- `sobrescrever` — tag `aws-apn-id` presente com OUTRO valor (ex.: de outro
+  parceiro). A AWS passou a permitir sobrescrever com o nosso valor; o
+  valor anterior fica registrado em `estado_anterior` (relatório e SNS).
+- `pular_iac` — recurso gerenciado por QUALQUER IaC (Terraform/OpenTofu,
+  CloudFormation, CDK, Pulumi — `iac_detection.IAC_DETECTADO`), com a tag
+  ausente OU com outro valor. Nunca tagueado via API/CLI/Console — listado
+  no relatório para o cliente adicionar a tag no próprio código (o apply
+  seguinte do IaC desfaria uma tag colocada por fora).
+- `ja_ok` — tag já presente com o valor esperado (comparação exata,
+  case-sensitive, herdada de `tag_status.get_tag_status`). Nada a fazer,
+  com ou sem IaC.
 
 Precedência (aplicada nesta ordem):
 
-1. Tag ausente:
-   a. IaC detectado (`cloudformation` ou `terraform_heuristico`) -> `pular_iac`.
-      Tem precedência sobre o item seguinte: se o recurso já não seria
-      tagueado via API de qualquer forma, o risco de criar uma chave
-      quase-duplicada não existe — o alerta de tag similar continua visível
-      no relatório, só não muda a decisão.
-   b. Tag de grafia parecida encontrada -> `revisar_tag_similar`.
-   c. Caso contrário (incluindo `iac.tipo == "desconhecido"`) -> `taguear`.
-2. Tag presente:
-   a. Valor bate com o esperado -> `ja_ok`.
-   b. Valor diferente -> `conflito` (aqui o IaC é só metadado informativo no
-      relatório — nunca muda a decisão; tag similar também não se aplica,
-      já existe uma `aws-apn-id` de fato).
+1. Valor bate com o esperado -> `ja_ok`.
+2. IaC detectado -> `pular_iac` (mesmo com outro valor presente).
+3. Outro valor presente -> `sobrescrever`.
+4. Chave de grafia parecida -> `taguear_com_tag_similar`.
+5. Caso contrário (incluindo `iac.tipo == "desconhecido"`) -> `taguear`.
+
+As decisões `conflito` e `revisar_tag_similar` do MVP1 não são mais
+produzidas. Um relatório de decisão antigo que ainda as contenha não é
+executado por `tag_execution` (vira `erro_classificacao` com a orientação
+de rodar `decide` de novo) — nunca sobrescreve com base em decisão velha.
 
 **Importante:** "tag ausente"/"valor bate com o esperado" acima NÃO são lidos
 do `status_tag` já calculado pela Etapa 1 — são recalculados aqui via
@@ -85,24 +84,33 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from .iac_detection import IAC_CLOUDFORMATION, IAC_DESCONHECIDO, IAC_TERRAFORM_HEURISTICO
+from .iac_detection import IAC_DETECTADO, TODOS_OS_TIPOS_IAC
 from .tag_status import TAG_KEY, STATUS_CONFLITO, STATUS_OK, STATUS_SEM_TAG, get_tag_status
 
 DECISAO_TAGUEAR = "taguear"
+DECISAO_TAGUEAR_COM_TAG_SIMILAR = "taguear_com_tag_similar"
+DECISAO_SOBRESCREVER = "sobrescrever"
 DECISAO_PULAR_IAC = "pular_iac"
-DECISAO_REVISAR_TAG_SIMILAR = "revisar_tag_similar"
 DECISAO_JA_OK = "ja_ok"
-DECISAO_CONFLITO = "conflito"
+
+# Decisões que geram chamada de escrita (Etapas 2b/2c).
+DECISOES_QUE_TAGUEIAM = frozenset({DECISAO_TAGUEAR, DECISAO_TAGUEAR_COM_TAG_SIMILAR, DECISAO_SOBRESCREVER})
+
+# Decisões do MVP1 que não existem mais (ver docstring). Mantidas só para
+# `tag_execution` reconhecer um relatório antigo e recusá-lo.
+DECISAO_LEGADA_CONFLITO = "conflito"
+DECISAO_LEGADA_REVISAR_TAG_SIMILAR = "revisar_tag_similar"
+DECISOES_LEGADAS = frozenset({DECISAO_LEGADA_CONFLITO, DECISAO_LEGADA_REVISAR_TAG_SIMILAR})
 
 _TODAS_AS_DECISOES = (
     DECISAO_TAGUEAR,
+    DECISAO_TAGUEAR_COM_TAG_SIMILAR,
+    DECISAO_SOBRESCREVER,
     DECISAO_PULAR_IAC,
-    DECISAO_REVISAR_TAG_SIMILAR,
     DECISAO_JA_OK,
-    DECISAO_CONFLITO,
 )
-_TODOS_OS_STATUS_IAC = (IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO, IAC_DESCONHECIDO)
-_IAC_DETECTADO = (IAC_CLOUDFORMATION, IAC_TERRAFORM_HEURISTICO)
+_TODOS_OS_STATUS_IAC = TODOS_OS_TIPOS_IAC
+_IAC_DETECTADO = IAC_DETECTADO
 
 # Nomes de serviço exatamente como aparecem no CSV oficial (mesma string já
 # hardcoded em `resource_discovery.py` para o nome de exibição de EKS/Bedrock
@@ -155,62 +163,79 @@ def _decidir(
     iac_tipo: str,
     tag_similar_encontrada: bool,
     ferramenta_aws: str | None = None,
+    ferramenta_iac: str | None = None,
 ) -> tuple[str, str]:
     """Aplica a regra de precedência (ver docstring do módulo) e devolve
     `(decisao, motivo)`.
 
     Recalcula o status da tag via `tag_status.get_tag_status` a partir do
-    valor bruto já extraído pela Etapa 1 (`valor_tag_atual`), reconstruindo
-    um dict de uma chave só — em vez de confiar no `status_tag` já congelado
-    do relatório da Etapa 1 (ver docstring do módulo para o porquê).
+    valor bruto já extraído pela Etapa 1 (`valor_tag_atual`), em vez de
+    confiar no `status_tag` já congelado do relatório da Etapa 1 (ver
+    docstring do módulo para o porquê).
 
-    `ferramenta_aws` (de `iac_detection.detect_iac`, via
-    `resource["iac"]["gerenciado_por_ferramenta_aws"]`): quando a stack de
-    CloudFormation detectada é gerada internamente por uma automação da AWS
-    (Elastic Beanstalk, Control Tower, Service Catalog) ou por `eksctl`, não
-    pelo cliente diretamente, o `motivo` de `pular_iac` aponta a ação real
-    (configurar a tag na própria ferramenta) em vez do texto genérico
-    "taguear via IaC" — que não tem nenhuma ação por trás nesses casos,
-    porque não existe template do cliente para editar. **A decisão
-    continua `pular_iac`, nunca tagueada via API** — isso nunca muda."""
+    `ferramenta_aws`: quando a stack de CloudFormation detectada é gerada
+    internamente por uma automação da AWS (Elastic Beanstalk, Control
+    Tower, Service Catalog) ou por `eksctl`, o `motivo` aponta a ação real
+    (configurar a tag na própria ferramenta). A decisão continua
+    `pular_iac`."""
     tags_reconstruidas = {} if valor_tag_atual is None else {TAG_KEY: valor_tag_atual}
     status_tag, _ = get_tag_status(tags_reconstruidas, expected_tag_value)
 
-    if status_tag == STATUS_SEM_TAG:
-        if iac_tipo in _IAC_DETECTADO:
-            if ferramenta_aws:
-                return (
-                    DECISAO_PULAR_IAC,
-                    f"tag aws-apn-id ausente; recurso gerenciado internamente por "
-                    f"{ferramenta_aws} via CloudFormation — não existe IaC do cliente "
-                    f"para editar aqui; configure a tag diretamente nas opções/config do "
-                    f"{ferramenta_aws}, nunca via API/CLI/Console",
-                )
-            return (
-                DECISAO_PULAR_IAC,
-                f"tag aws-apn-id ausente; recurso gerenciado por IaC ({iac_tipo}) "
-                "— taguear via IaC, não via API/CLI/Console",
-            )
-        if tag_similar_encontrada:
-            return (
-                DECISAO_REVISAR_TAG_SIMILAR,
-                "tag aws-apn-id ausente, mas encontrada uma tag de grafia parecida "
-                "(case diferente) — provável erro de digitação; precisa de revisão "
-                "humana antes de taguear via API, para não criar uma chave "
-                "quase-duplicada por engano",
-            )
-        return (
-            DECISAO_TAGUEAR,
-            "tag aws-apn-id ausente; recurso não gerenciado por IaC "
-            "— elegível para tagueamento via API",
-        )
     if status_tag == STATUS_OK:
         return DECISAO_JA_OK, "tag aws-apn-id já presente com o valor esperado"
+
+    if iac_tipo in _IAC_DETECTADO:
+        situacao = (
+            "tag aws-apn-id ausente"
+            if status_tag == STATUS_SEM_TAG
+            else f"tag aws-apn-id com outro valor ({valor_tag_atual!r})"
+        )
+        if ferramenta_aws:
+            return (
+                DECISAO_PULAR_IAC,
+                f"{situacao}; recurso gerenciado internamente por {ferramenta_aws} via "
+                f"CloudFormation — configure a tag nas opções/config do {ferramenta_aws}; "
+                "a automação não tagueia recurso de IaC",
+            )
+        ferramenta = ferramenta_iac or iac_tipo
+        return (
+            DECISAO_PULAR_IAC,
+            f"{situacao}; recurso gerenciado por IaC ({ferramenta}) — o cliente deve "
+            f"adicionar aws-apn-id={expected_tag_value} no código do IaC; a automação "
+            "não tagueia recurso de IaC",
+        )
+
+    if status_tag == STATUS_CONFLITO:
+        return (
+            DECISAO_SOBRESCREVER,
+            f"tag aws-apn-id com outro valor ({valor_tag_atual!r}) — sobrescrita com o "
+            "valor esperado (permitido pela AWS); valor anterior registrado",
+        )
+    if tag_similar_encontrada:
+        return (
+            DECISAO_TAGUEAR_COM_TAG_SIMILAR,
+            "tag aws-apn-id ausente, mas há chave de grafia parecida (a AWS só reconhece "
+            "aws-apn-id minúsculo) — aws-apn-id adicionada; a chave parecida fica como "
+            "estava e é listada no relatório",
+        )
     return (
-        DECISAO_CONFLITO,
-        "tag aws-apn-id presente com valor diferente do esperado "
-        "— nunca sobrescrever automaticamente",
+        DECISAO_TAGUEAR,
+        "tag aws-apn-id ausente; recurso não gerenciado por IaC — elegível para tagueamento via API",
     )
+
+
+def estado_anterior_do_recurso(resource: dict) -> dict | None:
+    """Estado da tag antes da nossa escrita, para o relatório do cliente e
+    o SNS. `None` quando não havia nada (nem aws-apn-id nem chave parecida)."""
+    valor = resource.get("valor_tag_encontrado")
+    chaves = list(resource.get("tag_similar_chaves") or [])
+    valores = resource.get("tag_similar_valores") or {}
+    if valor is None and not chaves:
+        return None
+    return {
+        TAG_KEY: valor,
+        "chaves_similares": {k: valores.get(k) for k in chaves},
+    }
 
 
 def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
@@ -246,7 +271,12 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
     tag_similar_encontrada = bool(resource.get("tag_similar_encontrada", False))
     ferramenta_aws = iac.get("gerenciado_por_ferramenta_aws")
     decisao, motivo = _decidir(
-        valor_tag_atual, expected_tag_value, iac["tipo"], tag_similar_encontrada, ferramenta_aws
+        valor_tag_atual,
+        expected_tag_value,
+        iac["tipo"],
+        tag_similar_encontrada,
+        ferramenta_aws,
+        iac.get("ferramenta"),
     )
 
     return {
@@ -259,6 +289,7 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
         "motivo": motivo,
         "tag_similar_encontrada": tag_similar_encontrada,
         "tag_similar_chaves": list(resource.get("tag_similar_chaves", [])),
+        "estado_anterior": None if decisao == DECISAO_JA_OK else estado_anterior_do_recurso(resource),
         # Campos opcionais da Etapa 1 (item 13) — repassados sem afetar a
         # decisão; ausentes em relatórios antigos.
         "servico_faturamento": resource.get("servico_faturamento") or servico,
@@ -268,6 +299,8 @@ def classify_resource(resource: Any, expected_tag_value: str) -> dict | None:
             "detectado": iac["tipo"] in _IAC_DETECTADO,
             "stack_name": iac.get("stack_name"),
             "gerenciado_por_ferramenta_aws": ferramenta_aws,
+            "ferramenta": iac.get("ferramenta"),
+            "evidencia": iac.get("evidencia"),
         },
     }
 

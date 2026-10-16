@@ -5,6 +5,8 @@ import logging
 from collections import Counter
 from datetime import datetime, timezone
 
+from .iac_detection import TODOS_OS_TIPOS_IAC
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,11 +66,7 @@ def build_report(
                 "ok": status_tag_counts.get("ok", 0),
                 "conflito": status_tag_counts.get("conflito", 0),
             },
-            "por_status_iac": {
-                "cloudformation": status_iac_counts.get("cloudformation", 0),
-                "terraform_heuristico": status_iac_counts.get("terraform_heuristico", 0),
-                "desconhecido": status_iac_counts.get("desconhecido", 0),
-            },
+            "por_status_iac": {t: status_iac_counts.get(t, 0) for t in TODOS_OS_TIPOS_IAC},
             "por_servico": dict(sorted(service_counts.items())),
             "por_servico_faturamento": dict(sorted(faturamento_counts.items())),
             "total_tag_similar_encontrada": total_tag_similar,

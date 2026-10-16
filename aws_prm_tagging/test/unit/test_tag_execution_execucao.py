@@ -260,14 +260,11 @@ def test_falha_na_revalidacao_bloqueia_a_tentativa_de_tagueamento(fake_session_f
     assert spy.arns_chamados == []
 
 
-def test_revalidacao_generica_detecta_conflito_e_nunca_tenta_escrever(fake_session_factory):
-    """Regressão do bug corrigido: antes, a revalidação só checava se o
-    valor batia com o esperado — um valor DIFERENTE encontrado na
-    revalidação caía no mesmo balaio de "sem tag" e disparava uma tentativa
-    de escrita, que teria sobrescrito um conflito automaticamente (proibido
-    pela regra de negócio). Agora precisa virar `conflito_na_revalidacao`
-    e nunca chamar o executor."""
-    arn = "arn:aws:s3:::bucket-conflito-surgiu-depois"
+def test_revalidacao_generica_outro_valor_sobrescreve_e_registra_anterior(fake_session_factory):
+    """MVP2: valor de outro parceiro encontrado na revalidação NÃO bloqueia
+    mais — segue para a escrita, e o valor lido na hora vira
+    `estado_anterior` (vale o estado mais recente, não o da Etapa 2a)."""
+    arn = "arn:aws:s3:::bucket-outro-parceiro"
     session = fake_session_factory(
         {"resourcegroupstaggingapi": _FakeTaggingClient(tagged={arn: "pc:outro-parceiro"})}
     )
@@ -277,8 +274,12 @@ def test_revalidacao_generica_detecta_conflito_e_nunca_tenta_escrever(fake_sessi
         _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
     )
 
-    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
-    assert spy.arns_chamados == []
+    entrada = resultado["recursos"][0]
+    assert spy.arns_chamados == [arn]
+    assert entrada["categoria_final"] == tag_execution.CATEGORIA_SIMULADO_SUCESSO
+    assert entrada["estado_anterior"] == {"aws-apn-id": "pc:outro-parceiro", "chaves_similares": {}}
+    assert entrada["acao"] == tag_execution.ACAO_SOBRESCRITA
+    assert resultado["resumo"]["por_acao"] == {tag_execution.ACAO_SOBRESCRITA: 1}
 
 
 def test_revalidacao_generica_detecta_iac_e_nunca_tenta_escrever(fake_session_factory):
@@ -300,12 +301,10 @@ def test_revalidacao_generica_detecta_iac_e_nunca_tenta_escrever(fake_session_fa
     assert spy.arns_chamados == []
 
 
-def test_revalidacao_generica_conflito_tem_precedencia_sobre_iac(fake_session_factory):
-    """Mesma regra de precedência de `decision.py`: quando a tag está
-    PRESENTE com valor diferente, IaC é só metadado — nunca muda o
-    resultado para `pulado_iac`. Só entra como IaC quando a tag está
-    ausente."""
-    arn = "arn:aws:s3:::bucket-conflito-e-iac"
+def test_revalidacao_generica_iac_com_outro_valor_e_pulado(fake_session_factory):
+    """MVP2: IaC bloqueia a escrita mesmo com outro valor presente — o
+    apply seguinte do IaC desfaria a sobrescrita."""
+    arn = "arn:aws:s3:::bucket-outro-valor-e-iac"
     session = fake_session_factory(
         {
             "resourcegroupstaggingapi": _FakeTaggingClient(
@@ -319,19 +318,20 @@ def test_revalidacao_generica_conflito_tem_precedencia_sobre_iac(fake_session_fa
         _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
     )
 
-    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
+    entrada = resultado["recursos"][0]
+    assert entrada["resultado"] == tag_execution.RESULTADO_IAC_DETECTADO_NA_REVALIDACAO
+    assert entrada["categoria_final"] == tag_execution.CATEGORIA_PULADO_IAC
+    assert entrada["iac"]["stack_name"] == "minha-stack"
+    assert entrada["estado_anterior"]["aws-apn-id"] == "pc:outro-parceiro"
     assert spy.arns_chamados == []
 
 
-def test_revalidacao_generica_detecta_tag_similar_e_nunca_tenta_escrever(fake_session_factory):
-    """Regressão do bug corrigido: a revalidação já conferia IaC, mas nunca
-    checava tag similar — um `AWS-APN-ID` (case diferente) criado entre a
-    Etapa 2a e esta execução passava despercebido, e o `--live` aplicaria
-    `aws-apn-id` por cima, gerando uma segunda chave quase-duplicada no
-    recurso."""
-    arn = "arn:aws:s3:::bucket-tag-similar-surgiu-depois"
+def test_revalidacao_generica_tag_similar_adiciona_e_registra(fake_session_factory):
+    """MVP2: `AWS-APN-ID` (grafia parecida) não bloqueia — a nossa chave é
+    adicionada e a parecida fica registrada no estado anterior."""
+    arn = "arn:aws:s3:::bucket-tag-similar"
     session = fake_session_factory(
-        {"resourcegroupstaggingapi": _FakeTaggingClient(tags_completos={arn: {"AWS-APN-ID": "pc:outro-parceiro"}})}
+        {"resourcegroupstaggingapi": _FakeTaggingClient(tags_completos={arn: {"AWS-APN-ID": "pc:digitado"}})}
     )
     spy = _SpyExecutor()
 
@@ -339,9 +339,10 @@ def test_revalidacao_generica_detecta_tag_similar_e_nunca_tenta_escrever(fake_se
         _relatorio_um_recurso_generico(arn), session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
     )
 
-    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_TAG_SIMILAR_NA_REVALIDACAO
-    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR
-    assert spy.arns_chamados == []
+    entrada = resultado["recursos"][0]
+    assert spy.arns_chamados == [arn]
+    assert entrada["estado_anterior"] == {"aws-apn-id": None, "chaves_similares": {"AWS-APN-ID": "pc:digitado"}}
+    assert entrada["acao"] == tag_execution.ACAO_ADICIONADA_COM_TAG_SIMILAR
 
 
 def test_revalidacao_generica_iac_tem_precedencia_sobre_tag_similar(fake_session_factory):
@@ -403,10 +404,10 @@ def test_revalidacao_elb_lote_falha_isola_arn_invalido_dos_demais(
     assert client.chamadas == [[arn_ok, arn_apagado], [arn_ok], [arn_apagado]]
 
 
-def test_revalidacao_dedicada_eks_detecta_conflito_e_nunca_tenta_escrever(
+def test_revalidacao_dedicada_eks_outro_valor_sobrescreve(
     fake_session_factory, decisao_factory, relatorio_decisao_factory
 ):
-    arn = "arn:eks:cluster-conflito-surgiu-depois"
+    arn = "arn:eks:cluster-outro-parceiro"
     session = fake_session_factory({"eks": _FakeEksClient(tagged={arn: "pc:outro-parceiro"})})
     spy = _SpyExecutor()
     relatorio = relatorio_decisao_factory(
@@ -417,8 +418,21 @@ def test_revalidacao_dedicada_eks_detecta_conflito_e_nunca_tenta_escrever(
         relatorio, session=session, expected_tag_value=TAG_VALUE, revalidate=True, executor=spy
     )
 
-    assert resultado["recursos"][0]["resultado"] == tag_execution.RESULTADO_CONFLITO_NA_REVALIDACAO
-    assert spy.arns_chamados == []
+    assert spy.arns_chamados == [arn]
+    assert resultado["recursos"][0]["estado_anterior"]["aws-apn-id"] == "pc:outro-parceiro"
+    assert resultado["recursos"][0]["acao"] == tag_execution.ACAO_SOBRESCRITA
+
+
+def test_sem_revalidacao_usa_estado_anterior_da_etapa_2a(decisao_factory, relatorio_decisao_factory):
+    anterior = {"aws-apn-id": "pc:outro", "chaves_similares": {}}
+    recurso = decisao_factory(arn="arn:aws:s3:::b", decisao="sobrescrever")
+    recurso["estado_anterior"] = anterior
+    resultado = tag_execution.run_tagging_execution(
+        relatorio_decisao_factory([recurso]), session=None, expected_tag_value=TAG_VALUE, revalidate=False,
+        executor=_SpyExecutor(),
+    )
+    assert resultado["recursos"][0]["estado_anterior"] == anterior
+    assert resultado["recursos"][0]["acao"] == tag_execution.ACAO_SOBRESCRITA
 
 
 def test_revalidacao_dedicada_eks_pula_recurso_ja_tagueado(fake_session_factory, decisao_factory, relatorio_decisao_factory):
@@ -501,33 +515,28 @@ def test_flag_execucao_inicial_repassada_ao_relatorio():
     assert resultado["execucao_inicial"] is True
 
 
-def test_relatorio_final_mescla_recursos_pular_iac_ja_ok_e_conflito_da_etapa_2a(
+def test_relatorio_final_mescla_recursos_pular_iac_e_ja_ok_da_etapa_2a(
     relatorio_decisao_factory, decisao_factory
 ):
-    """O relatório final não é só o subconjunto `taguear` — cobre as 5
-    categorias esperadas pela Etapa 2c, carregando direto os recursos que a
-    Etapa 2a já classificou como `pular_iac`/`ja_ok`/`conflito` (nunca
-    passam por `select_taggable`, nunca geram chamada nenhuma)."""
+    """O relatório final não é só o subconjunto que tagueia — carrega direto
+    os recursos que a Etapa 2a já classificou como `pular_iac`/`ja_ok`
+    (nunca passam por `select_taggable`, nunca geram chamada nenhuma)."""
     relatorio = relatorio_decisao_factory(
         [
             decisao_factory(arn="arn:pular-iac", decisao="pular_iac", servico="Amazon EC2"),
             decisao_factory(arn="arn:ja-ok", decisao="ja_ok", servico="Amazon S3"),
-            decisao_factory(arn="arn:conflito", decisao="conflito", servico="Amazon RDS"),
         ]
     )
     resultado = tag_execution.run_tagging_execution(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False)
 
-    assert resultado["resumo"]["total_recursos"] == 3
+    assert resultado["resumo"]["total_recursos"] == 2
     por_arn = {r["arn"]: r for r in resultado["recursos"]}
     assert por_arn["arn:pular-iac"]["categoria_final"] == tag_execution.CATEGORIA_PULADO_IAC
     assert por_arn["arn:ja-ok"]["categoria_final"] == tag_execution.CATEGORIA_JA_OK
-    assert por_arn["arn:conflito"]["categoria_final"] == tag_execution.CATEGORIA_CONFLITO
     for entrada in por_arn.values():
         assert entrada["origem"] == "decisao"
         assert entrada["resultado"] is None  # nunca passou por este módulo
         assert entrada["estrategia_api"] is None
-    # por_resultado/por_estrategia_api (granularidade fina) não contam
-    # entradas de origem "decisao" — elas nunca tiveram resultado/estratégia.
     assert resultado["resumo"]["por_resultado"] == {}
     assert resultado["resumo"]["por_estrategia_api"] == {}
     assert resultado["resumo"]["por_categoria_final"] == {
@@ -535,8 +544,6 @@ def test_relatorio_final_mescla_recursos_pular_iac_ja_ok_e_conflito_da_etapa_2a(
         tag_execution.CATEGORIA_SIMULADO_SUCESSO: 0,
         tag_execution.CATEGORIA_FALHOU: 0,
         tag_execution.CATEGORIA_PULADO_IAC: 1,
-        tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR: 0,
-        tag_execution.CATEGORIA_CONFLITO: 1,
         tag_execution.CATEGORIA_JA_OK: 1,
         tag_execution.CATEGORIA_ERRO_CLASSIFICACAO: 0,
     }
@@ -760,15 +767,24 @@ def test_live_sem_revalidacao_e_recusado(fake_session_factory):
         pass
 
 
-def test_relatorio_final_inclui_recisao_tag_similar_da_etapa_2a(relatorio_decisao_factory, decisao_factory):
+def test_relatorio_de_decisao_legado_nunca_e_executado(relatorio_decisao_factory, decisao_factory):
+    """Relatório do MVP1 (`conflito`/`revisar_tag_similar`): vira
+    `erro_classificacao` pedindo para rodar `decide` de novo — nunca
+    sobrescreve com base em decisão tomada sob a regra antiga."""
+    spy = _SpyExecutor()
     relatorio = relatorio_decisao_factory(
-        [decisao_factory(arn="arn:tag-similar", decisao="revisar_tag_similar")]
+        [
+            decisao_factory(arn="arn:tag-similar", decisao="revisar_tag_similar"),
+            decisao_factory(arn="arn:conflito", decisao="conflito"),
+        ]
     )
-    resultado = tag_execution.run_tagging_execution(relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False)
-    assert resultado["recursos"][0]["categoria_final"] == tag_execution.CATEGORIA_REVISAR_TAG_SIMILAR
-    assert resultado["recursos"][0]["origem"] == "decisao"
-
-
+    resultado = tag_execution.run_tagging_execution(
+        relatorio, session=None, expected_tag_value=TAG_VALUE, revalidate=False, executor=spy
+    )
+    assert spy.arns_chamados == []
+    for entrada in resultado["recursos"]:
+        assert entrada["categoria_final"] == tag_execution.CATEGORIA_ERRO_CLASSIFICACAO
+        assert "decide" in entrada["detalhe_erro"]["mensagem"]
 def test_relatorio_final_inclui_erros_de_classificacao_da_etapa_2a(relatorio_decisao_factory):
     """Antes, `decision_report["erros"]` (recursos malformados que a Etapa
     2a nem chegou a classificar) simplesmente sumiam do relatório desta

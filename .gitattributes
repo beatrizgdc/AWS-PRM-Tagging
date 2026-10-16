@@ -1,3 +1,7 @@
 # Scripts bash precisam de LF — com CRLF falham em Linux/macOS/WSL.
 *.sh text eol=lf
 Makefile text eol=lf
+# MVP2: continuação de linha do pip e shebang precisam de LF.
+aws_prm_tagging/requirements-lambda.txt text eol=lf
+iniciar.py text eol=lf
+deploy/stacksets/*.py text eol=lf

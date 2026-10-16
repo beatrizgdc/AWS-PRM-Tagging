@@ -15,7 +15,9 @@ cfnlint_api = pytest.importorskip("cfnlint.api")
 _INFRA = Path(__file__).parent.parent.parent / "infra"
 
 
-@pytest.mark.parametrize("nome", ["template-regional.yaml", "template-hub.yaml"])
+@pytest.mark.parametrize(
+    "nome", ["template-regional.yaml", "template-hub.yaml", "template-central.yaml", "template-zabbix.yaml"]
+)
 def test_template_nao_tem_findings_do_cfn_lint(nome):
     conteudo = (_INFRA / nome).read_text(encoding="utf-8")
     # Só erros (E*) e avisos (W*) contam. Achados informativos (I*) — ex.:

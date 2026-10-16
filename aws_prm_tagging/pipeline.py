@@ -11,8 +11,11 @@ from collections import Counter
 
 import boto3
 
-from . import decision, native_discovery, report, resource_discovery, tag_execution
+from . import cloudtrail_iac, decision, native_discovery, relatorio_cliente, report, resource_discovery, tag_execution
 from .services import Service
+
+# Itens de IaC / estado anterior por região no resumo SNS (limite de 256 KB).
+_AMOSTRA_CLIENTE = 25
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,8 @@ def descobrir_regioes(
     service_list: list[Service],
     expected_tag_value: str,
     descoberta_nativa: bool = True,
+    historico_cloudtrail: bool = True,
+    orcamento_cloudtrail_s: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Etapa 1 para as regiões dadas. Devolve `(recursos, falhas_descoberta)`
     — recursos já com a descoberta nativa mesclada (só o que o passo
@@ -104,6 +109,13 @@ def descobrir_regioes(
     if novos:
         logger.info("Descoberta nativa: %d recurso(s) sem nenhuma tag acrescentados", len(novos))
     todos.extend(novos)
+
+    # MVP2: Terraform/OpenTofu/Pulumi quase nunca deixam tag — o histórico
+    # do CloudTrail (userAgent das chamadas de escrita) pega os recursos
+    # que a heurística de tags perde. Só para candidatos a tagueamento.
+    if historico_cloudtrail and todos:
+        stats = cloudtrail_iac.enriquecer_iac(session, todos, orcamento_cloudtrail_s)
+        falhas.extend(stats["falhas"])
     return todos, falhas
 
 
@@ -115,6 +127,7 @@ def executar_regiao(
     expected_tag_value: str,
     live: bool,
     execucao_inicial: bool = False,
+    orcamento_cloudtrail_s: float | None = 300,
 ) -> dict:
     """Etapa 1 -> 2a -> 2b (live=False) ou 2c (live=True) para UMA região.
     Devolve um resumo pequeno (cabe numa mensagem SNS), não o relatório
@@ -123,7 +136,10 @@ def executar_regiao(
     S3: cada região trata só os buckets cuja região real é ela
     (`discover_s3_buckets_por_regiao`). CloudFront/Route 53 (globais) são
     tratados na execução de us-east-1."""
-    recursos, falhas = descobrir_regioes(session, account_id, [regiao], service_list, expected_tag_value)
+    # Orçamento de 300 s no histórico do CloudTrail: a Lambda tem 900 s.
+    recursos, falhas = descobrir_regioes(
+        session, account_id, [regiao], service_list, expected_tag_value, orcamento_cloudtrail_s=orcamento_cloudtrail_s
+    )
     etapa1 = report.build_report(
         account_id=account_id,
         expected_tag_value=expected_tag_value,
@@ -146,6 +162,7 @@ def executar_regiao(
         for r in execucao.get("recursos", [])
         if r["categoria_final"] == "falhou"
     ]
+    rel_cliente = relatorio_cliente.build_relatorio_cliente(execucao)
     return {
         "conta_id": account_id,
         "regiao": regiao,
@@ -161,4 +178,16 @@ def executar_regiao(
         # Região inteira negada por SCP: estado conhecido da organização, não
         # novidade (a varredura recorrente não publica por isso).
         "regiao_bloqueada_por_scp": any(f.get("etapa") == ETAPA_REGIAO_NEGADA_SCP for f in falhas),
+        # MVP2: relatório do cliente resumido (lista completa: CLI 'apply' /
+        # 'iniciar', que grava o relatório inteiro em arquivo).
+        "por_acao": execucao.get("resumo", {}).get("por_acao", {}),
+        "cliente_resumo": rel_cliente["resumo"],
+        "iac_amostra": [
+            {k: i[k] for k in ("arn", "ferramenta", "stack_cloudformation", "evidencia", "valor_atual_aws_apn_id")}
+            for i in rel_cliente["recursos_iac"][:_AMOSTRA_CLIENTE]
+        ],
+        "estado_anterior_amostra": [
+            {k: a[k] for k in ("arn", "acao", "valor_anterior_aws_apn_id", "chaves_similares_anteriores")}
+            for a in rel_cliente["estado_anterior"][:_AMOSTRA_CLIENTE]
+        ],
     }
