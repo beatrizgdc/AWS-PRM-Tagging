@@ -26,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --valor) VALOR="$2"; shift 2;;
     --regiao) REGIAO="$2"; shift 2;;
     --lambda-role-arn) LAMBDA_ROLE="$2"; shift 2;;
+    --sem-s3) SEM_S3=1; shift;;
     *) uso;;
   esac
 done
