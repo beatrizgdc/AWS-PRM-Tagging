@@ -5,7 +5,8 @@
 
 FUNCOES := build-Etapa3Function build-Etapa4DriftFunction \
 	build-ListarRegioesFunction build-ProcessarRegiaoFunction \
-	build-TagueamentoInicialCRFunction build-ZabbixFunction
+	build-TagueamentoInicialCRFunction build-ZabbixFunction \
+	build-ResumoDiarioFunction
 
 $(FUNCOES):
 	mkdir -p "$(ARTIFACTS_DIR)/aws_prm_tagging/data"

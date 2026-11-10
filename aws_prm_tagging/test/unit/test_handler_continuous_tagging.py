@@ -52,7 +52,7 @@ class _FakeSnsClient:
     def __init__(self):
         self.published: list[dict] = []
 
-    def publish(self, TopicArn, Message, Subject):
+    def publish(self, TopicArn, Message, Subject, MessageAttributes=None):
         self.published.append({"TopicArn": TopicArn, "Message": Message, "Subject": Subject})
 
 

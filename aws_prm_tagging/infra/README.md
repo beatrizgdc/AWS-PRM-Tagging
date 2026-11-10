@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | `template-hub.yaml` (SAM) | 1 vez por conta, na região hub | Tópico SNS `prm-compliance` (+ e-mail opcional), tagueamento inicial (Custom Resource → Step Functions → uma Lambda por região), varredura recorrente (Scheduler) |
 | `template-regional.yaml` (SAM) | Toda região ativa + `us-east-1` sempre | Etapa 3 (EventBridge → Step Functions com debounce → Lambda), drift (Etapa 4), DLQ `prm-etapa3-dlq` |
-| `template-central.yaml` | Payer, opcional | Tópico SNS da organização (KMS próprio) e fila para consumidores |
+| `template-central.yaml` (SAM) | Payer, recomendada | Tópico SNS da organização (KMS próprio), e-mail do time com só alertas + resumo diário (fila + Lambda agendada), fila para consumidores |
 | `template-zabbix.yaml` (SAM) | Onde estiver o tópico | Lambda que envia as mensagens ao Zabbix (`zabbix/template-prm-tagging.yaml` é o template para importar no Zabbix) |
 
 `us-east-1` sempre: é a única região onde o EventBridge recebe eventos de

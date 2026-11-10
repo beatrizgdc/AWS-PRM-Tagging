@@ -11,7 +11,7 @@ class _FakeSnsClient:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def publish(self, TopicArn, Message, Subject):
+    def publish(self, TopicArn, Message, Subject, MessageAttributes=None):
         self.calls.append({"TopicArn": TopicArn, "Message": Message, "Subject": Subject})
 
 

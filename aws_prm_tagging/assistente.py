@@ -419,6 +419,18 @@ def _organizacao(ui: Interface, sessao, conta: str) -> tuple[str, list[tuple[str
     return call_as, alvos
 
 
+def _stack_central(sessao, regiao: str, nome: str = "prm-central") -> tuple[str, str] | None:
+    """(TopicoCentralArn, ChaveTopicoArn) da stack central na payer, se existir."""
+    try:
+        stack = sessao.client("cloudformation", region_name=regiao).describe_stacks(StackName=nome)["Stacks"][0]
+    except (ClientError, BotoCoreError):
+        return None
+    saidas = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    if saidas.get("TopicoCentralArn") and saidas.get("ChaveTopicoArn"):
+        return saidas["TopicoCentralArn"], saidas["ChaveTopicoArn"]
+    return None
+
+
 def passo_organizacao(ui: Interface, args, fabrica_sessao=boto3.Session, executor=subprocess.run) -> int:
     ui.mostrar("Várias contas: a automação é instalada em todas as contas de uma OU por CloudFormation")
     ui.mostrar("StackSets, a partir da conta payer. Cada conta tagueia os próprios recursos.")
@@ -507,7 +519,15 @@ def passo_organizacao(ui: Interface, args, fabrica_sessao=boto3.Session, executo
         ui.mostrar(f"  modo inválido: {varredura}")
         return 1
     cmd += ["--modo-varredura", varredura]
-    email = args.email or ui.perguntar("email", "E-mail por conta (vazio = sem; em OU grande, 1 confirmação por conta)", "")
+    central = _stack_central(sessao, hub)
+    if central and ui.sim_ou_nao("usar_central", f"Stack central encontrada ({central[0]}). Publicar nela?", padrao=True):
+        cmd += ["--topico-central-arn", central[0], "--kms-central-arn", central[1]]
+        ui.mostrar("  E-mails: só alertas na hora e um resumo diário, pelo e-mail da stack central.")
+        email = args.email or ""
+    else:
+        ui.mostrar("  Sem stack central, cada conta manda os próprios e-mails (1 confirmação por conta).")
+        ui.mostrar("  Para alertas + um resumo diário num e-mail só, implante antes a stack central (TUTORIAL.md).")
+        email = args.email or ui.perguntar("email", "E-mail por conta (vazio = sem e-mail)", "")
     if email:
         cmd += ["--email", email]
     if ui.sim_ou_nao("ativar_acesso", "Ativar o acesso confiável StackSets/Organizations se estiver desligado?",
@@ -601,6 +621,7 @@ def _respostas(args) -> dict:
         "implantar": bool(args.implantar),
         "regioes": args.regioes or "",
         "ativar_acesso": True,
+        "usar_central": True,
         "reusar_pacote": True,
     }
 

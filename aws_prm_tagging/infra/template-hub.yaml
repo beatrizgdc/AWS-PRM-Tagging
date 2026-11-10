@@ -178,6 +178,10 @@ Resources:
       TopicArn: !Ref PrmComplianceTopic
       Protocol: email
       Endpoint: !Ref NotificationEmail
+      # Sem os resultados individuais (recurso tagueado, já ok, IaC): só
+      # alertas e resumos de execução. Ver publish.py.
+      FilterPolicy:
+        prm_tipo: [alerta, resumo, resumo_diario]
 
   # ---------------------------------------------------------------------
   # Tagueamento inicial

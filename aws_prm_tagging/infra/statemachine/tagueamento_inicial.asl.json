@@ -64,8 +64,11 @@
             "Resource": "arn:aws:states:::sns:publish",
             "Parameters": {
               "TopicArn": "${TopicArn}",
-              "Subject": "PRM tagueamento inicial - FALHA em uma regiao",
-              "Message.$": "States.JsonToString($)"
+              "Subject": "PRM ALERTA tagueamento inicial - FALHA em uma regiao",
+              "Message.$": "States.JsonToString($)",
+              "MessageAttributes": {
+                "prm_tipo": {"DataType": "String", "StringValue": "alerta"}
+              }
             },
             "ResultPath": null,
             "End": true

@@ -1,6 +1,17 @@
-"""Publicação de resultados individuais no tópico SNS (reporte por push).
+"""Publicação de resultados no tópico SNS (reporte por push).
 
-Núcleo compartilhado pelas Etapas 3 e 4 e pela varredura recorrente.
+Núcleo compartilhado pelas Etapas 3 e 4 e pelo tagueamento inicial/varredura.
+Toda mensagem leva o atributo `prm_tipo`, que as assinaturas de e-mail usam
+como filtro:
+
+- `alerta`: pede ação agora (falha, conflito com outro parceiro, execução
+  com falhas). Sempre vai para o e-mail.
+- `resumo`: resumo de uma execução (tagueamento inicial ou varredura).
+- `resultado`: um recurso tratado sem problema (tagueado, já ok, IaC).
+- `resumo_diario`: o consolidado do dia (stack central).
+
+Com a stack central, o e-mail recebe só `alerta` e `resumo_diario`; o resto
+entra no resumo diário.
 """
 from __future__ import annotations
 
@@ -14,9 +25,42 @@ from .retry import with_backoff
 logger = logging.getLogger(__name__)
 
 
+TIPO_ALERTA = "alerta"
+TIPO_RESUMO = "resumo"
+TIPO_RESULTADO = "resultado"
+TIPO_RESUMO_DIARIO = "resumo_diario"
+ATRIBUTO_TIPO = "prm_tipo"
+
+_CATEGORIAS_ALERTA = frozenset({"falhou", "erro_classificacao"})
+
+
+def tipo_mensagem(payload: dict[str, Any]) -> str:
+    """Classifica a mensagem para o filtro das assinaturas de e-mail."""
+    if "por_categoria" in payload:  # resumo de execução por região
+        falhas_descoberta = payload.get("total_falhas_descoberta") and not payload.get("regiao_bloqueada_por_scp")
+        problema = (
+            falhas_descoberta
+            or payload.get("total_falhas_escrita")
+            or payload.get("dlq_mensagens")
+            or payload.get("stack_regional_detectada") is False
+        )
+        return TIPO_ALERTA if problema else TIPO_RESUMO
+    categoria = str(payload.get("categoria_final") or "")
+    if categoria in _CATEGORIAS_ALERTA:
+        return TIPO_ALERTA
+    if categoria.startswith("drift_"):
+        return TIPO_ALERTA if payload.get("possivel_disputa_com_outro_parceiro") else TIPO_RESULTADO
+    if payload.get("acao") == "sobrescrita":  # havia valor de outro parceiro
+        return TIPO_ALERTA
+    return TIPO_RESULTADO
+
+
 @with_backoff()
-def _sns_publish(sns_client, topic_arn: str, message: str, subject: str) -> None:
-    sns_client.publish(TopicArn=topic_arn, Message=message, Subject=subject[:100])
+def _sns_publish(sns_client, topic_arn: str, message: str, subject: str, tipo: str | None = None) -> None:
+    kwargs = {}
+    if tipo:
+        kwargs["MessageAttributes"] = {ATRIBUTO_TIPO: {"DataType": "String", "StringValue": tipo}}
+    sns_client.publish(TopicArn=topic_arn, Message=message, Subject=subject[:100], **kwargs)
 
 
 def build_outcome_payload(
@@ -81,5 +125,7 @@ def publish_outcome(sns_client, topic_arn: str, payload: dict[str, Any]) -> None
     o resultado de compliance não é opcional, então uma falha aqui deve
     ficar visível (log de erro da Lambda / execução do Step Functions
     marcada como falha), nunca engolida silenciosamente."""
-    subject = f"PRM Etapa {payload.get('etapa', '?')} - {payload.get('categoria_final', 'resultado')}"
-    _sns_publish(sns_client, topic_arn, json.dumps(payload, ensure_ascii=False), subject)
+    tipo = tipo_mensagem(payload)
+    prefixo = "PRM ALERTA" if tipo == TIPO_ALERTA else "PRM"
+    subject = f"{prefixo} Etapa {payload.get('etapa', '?')} - {payload.get('categoria_final', 'resultado')}"
+    _sns_publish(sns_client, topic_arn, json.dumps(payload, ensure_ascii=False), subject, tipo)

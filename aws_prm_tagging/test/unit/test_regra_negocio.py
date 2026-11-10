@@ -312,7 +312,7 @@ class _FakeSns:
     def __init__(self):
         self.msgs = []
 
-    def publish(self, TopicArn, Message, Subject):
+    def publish(self, TopicArn, Message, Subject, MessageAttributes=None):
         self.msgs.append(json.loads(Message))
 
 

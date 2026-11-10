@@ -230,3 +230,16 @@ def test_organizacao_sem_organizacao_para(conta, tmp_path, monkeypatch):
     rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, ["", "s", VALOR])
     assert rc == 1 and chamadas == []
     assert "não está numa organização" in texto
+
+
+def test_organizacao_usa_a_stack_central_quando_existe(payer, tmp_path, monkeypatch):
+    monkeypatch.setattr(assistente, "_stack_central", lambda sessao, regiao: (
+        "arn:aws:sns:us-east-1:123456789012:prm-compliance-central", "arn:aws:kms:us-east-1:123456789012:key/k"))
+    #          perfil conta valor  acao ou    regioes      hub          varredura central ativar
+    respostas = ["", "s", VALOR, "1", payer, "us-east-1", "us-east-1", "dry-run", "s", "s"]
+    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas)
+    impl = chamadas[-1]
+    assert rc == 0
+    assert impl[impl.index("--topico-central-arn") + 1].endswith(":prm-compliance-central")
+    assert "--kms-central-arn" in impl and "--email" not in impl
+    assert "resumo diário" in texto

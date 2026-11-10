@@ -41,7 +41,14 @@ inventário e aparece em `falhas_descoberta`. Isso acrescentou 31 ações de
 leitura (`List*Tags*`, `GetBucketTagging` etc.) à role do hub e ao
 `politica-iam`.
 
-Testes automatizados: **633**, todos passando.
+**Menos e-mails (10/11/2026):** toda mensagem sai com o atributo
+`prm_tipo` (`alerta`, `resumo`, `resultado`, `resumo_diario`) e as
+assinaturas de e-mail filtram por ele. No hub, o e-mail deixa de receber um
+aviso por recurso tagueado; na central, recebe só alertas e o resumo
+diário. O modo interativo (várias contas) acha a stack central sozinho e
+liga as contas a ela. A fila do Zabbix continua recebendo tudo.
+
+Testes automatizados: **653**, todos passando.
 
 ## 1. Regra de negócio nova
 
@@ -178,10 +185,11 @@ Na **conta payer do cliente** (gerenciamento da organização):
 - um **bucket de artefatos por região** (`prm-tagging-<conta>-<região>`), porque a Lambda só lê código de um bucket da mesma região;
   - privado, SSE-S3, versionado, leitura só por contas da organização (`aws:PrincipalOrgID`) e só por TLS;
 - os StackSets `prm-hub` (uma região por conta) e `prm-regional` (todas as regiões escolhidas), service-managed, com **auto-deployment**: conta que entra na OU recebe as stacks sozinha;
-- opcional, mas recomendado com muitas contas: a stack **central** (`infra/template-central.yaml`) com um tópico SNS da organização.
-  - Sem ela, cada conta manda um e-mail de confirmação de assinatura.
+- recomendada: a stack **central** (`infra/template-central.yaml`) com um tópico SNS da organização e um e-mail só para o time.
+  - O e-mail recebe só os **alertas** na hora (falha, conflito com outro parceiro, execução com falhas) e um **resumo diário** às 8h com o consolidado de todas as contas. Os resultados individuais (recurso tagueado, já ok, IaC) entram só no resumo.
+  - Sem ela, cada conta manda os próprios e-mails e pede a própria confirmação de assinatura.
   - O tópico é criptografado com chave KMS própria, porque a gerenciada pela AWS não aceita publicação de outra conta.
-  - Ele aceita publicação só da organização e cria uma fila para consumidores, como o Zabbix.
+  - Ele aceita publicação só da organização e tem uma fila para consumidores, como o Zabbix.
 
 Os templates do StackSet são CloudFormation puro, gerados do SAM pelo
 `samtranslator` (o mesmo motor do transform). Não dependem de transform
@@ -197,7 +205,7 @@ são implantações separadas.
 | Passo | Comando | Cria | Custo | Remove |
 | --- | --- | --- | --- | --- |
 | 1. Empacotar (local) | `python3 deploy/stacksets/empacotar.py --versao 2.0.0` | `dist/stacksets/2.0.0/` no computador | — | apagar a pasta |
-| 2. Tópico central (opcional) | `aws cloudformation deploy --template-file aws_prm_tagging/infra/template-central.yaml --stack-name prm-central --parameter-overrides OrgId=o-... NotificationEmail=...` | tópico, chave KMS, fila e DLQ | ~US$ 1/mês (chave KMS) + uso | `aws cloudformation delete-stack --stack-name prm-central` |
+| 2. Stack central (recomendada) | `sam build --template-file aws_prm_tagging/infra/template-central.yaml` e `sam deploy --stack-name prm-central --region us-east-1 --resolve-s3 --capabilities CAPABILITY_IAM --parameter-overrides OrgId=o-... NotificationEmail=<email do time>` | tópico, chave KMS, filas e a Lambda do resumo diário | ~US$ 1/mês (chave KMS) + centavos | `aws cloudformation delete-stack --stack-name prm-central` |
 | 3. Publicar artefatos | `python3 deploy/stacksets/stackset.py publicar --profile payer --dist dist/stacksets/2.0.0 --regioes us-east-1,sa-east-1,...` | 1 bucket por região (~17 MB cada) | centavos/mês | `stackset.py remover --somente-artefatos ...` |
 | 4. Implantar numa OU | `python3 deploy/stacksets/stackset.py implantar --profile payer --dist dist/stacksets/2.0.0 --ou ou-xxxx-yyyyyyyy --hub-regiao us-east-1 [--topico-central-arn ... --kms-central-arn ...]` | StackSets e uma stack por conta e região | por uso (ver Custos) | `stackset.py remover --ou ... --regioes ... --hub-regiao ...` |
 | 5. Acompanhar | `python3 deploy/stacksets/stackset.py status --profile payer` | — | — | — |

@@ -50,6 +50,21 @@ dele, e o estado anterior dos que tinham outro valor ou chave parecida.
 
 ### Opção 2 — várias contas
 
+**Antes, uma vez por cliente:** implante na payer a stack central com o
+e-mail do time. Ela concentra as mensagens de todas as contas: o e-mail
+recebe só os alertas (falhas e conflitos com outro parceiro) na hora e um
+resumo diário às 8h. O assistente a encontra sozinho e liga as contas a ela.
+
+```bash
+sam build --template-file aws_prm_tagging/infra/template-central.yaml
+sam deploy --stack-name prm-central --region us-east-1 --resolve-s3 --capabilities CAPABILITY_IAM \
+  --parameter-overrides OrgId=$(aws organizations describe-organization --query Organization.Id --output text) \
+  NotificationEmail=<email-do-time>
+```
+
+Confirme a assinatura no e-mail "AWS Notification - Subscription Confirmation".
+Custo: ~US$ 1/mês (chave KMS) mais centavos.
+
 O assistente confere que a conta é a payer, lista as OUs e pergunta o que fazer:
 
 | Ação | O que acontece |

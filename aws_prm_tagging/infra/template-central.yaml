@@ -1,10 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
 Description: >
   AWS PRM Resource Tagging - stack CENTRAL (rollout por StackSets).
   Implantada UMA vez na conta payer (gerenciamento) do cliente, numa região.
   Recebe os resultados de todas as contas da organização: as stacks hub e
   regionais das contas-membro publicam aqui quando o parâmetro
-  TopicoCentralArn está preenchido. Sem Lambda, sem código.
+  TopicoCentralArn está preenchido. O e-mail recebe só os alertas, na hora,
+  e um resumo diário com o consolidado de todas as contas.
 
 Parameters:
   OrgId:
@@ -22,7 +24,33 @@ Parameters:
   NotificationEmail:
     Type: String
     Default: ""
-    Description: "E-mail assinado no tópico central (vazio = sem e-mail)."
+    Description: >
+      E-mail do time assinado no tópico central (vazio = sem e-mail). Recebe
+      os alertas na hora e o resumo diário; os resultados individuais entram
+      só no resumo.
+
+  ResumoDiario:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Cria a fila e a Lambda do resumo diário. Com "false", o e-mail recebe
+      só os alertas. Custo: centavos/mês (uma execução por dia).
+
+  HorarioResumo:
+    Type: String
+    Default: "cron(0 8 * * ? *)"
+    Description: "Quando o resumo diário sai (expressão do EventBridge Scheduler)."
+
+  FusoResumo:
+    Type: String
+    Default: America/Sao_Paulo
+    Description: "Fuso horário de HorarioResumo (IANA)."
+
+  RetencaoLogsDias:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365]
 
   CriarFilaConsumidor:
     Type: String
@@ -36,6 +64,7 @@ Parameters:
 Conditions:
   TemEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
   TemFila: !Equals [!Ref CriarFilaConsumidor, "true"]
+  TemResumo: !Equals [!Ref ResumoDiario, "true"]
 
 Resources:
   # Criptografia em repouso com chave KMS gerenciada pelo cliente: a chave
@@ -124,6 +153,13 @@ Resources:
       TopicArn: !Ref TopicoCentral
       Protocol: email
       Endpoint: !Ref NotificationEmail
+      # Só alertas e o resumo diário (sem ele, também os resumos de execução).
+      # Os demais tipos entram no resumo. Ver aws_prm_tagging/publish.py.
+      FilterPolicy:
+        prm_tipo: !If
+          - TemResumo
+          - [alerta, resumo_diario]
+          - [alerta, resumo]
 
   FilaConsumidorDlq:
     Type: AWS::SQS::Queue
@@ -179,6 +215,104 @@ Resources:
       Protocol: sqs
       Endpoint: !GetAtt FilaConsumidor.Arn
       RawMessageDelivery: true
+
+  # ---------------------------------------------------------------------
+  # Resumo diário: fila que acumula o dia + Lambda agendada que monta um
+  # e-mail só e publica no tópico com prm_tipo=resumo_diario.
+  # ---------------------------------------------------------------------
+  FilaResumo:
+    Type: AWS::SQS::Queue
+    Condition: TemResumo
+    Properties:
+      QueueName: !Sub "${NomeTopico}-resumo"
+      MessageRetentionPeriod: 345600
+      VisibilityTimeout: 900
+      KmsMasterKeyId: !Ref ChaveTopico
+
+  FilaResumoPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: TemResumo
+    Properties:
+      Queues: [!Ref FilaResumo]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SomenteDoTopicoCentral
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt FilaResumo.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref TopicoCentral
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: "*"
+            Action: sqs:*
+            Resource: !GetAtt FilaResumo.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  AssinaturaFilaResumo:
+    Type: AWS::SNS::Subscription
+    Condition: TemResumo
+    Properties:
+      TopicArn: !Ref TopicoCentral
+      Protocol: sqs
+      Endpoint: !GetAtt FilaResumo.Arn
+      RawMessageDelivery: true
+      FilterPolicy:
+        prm_tipo: [alerta, resumo, resultado]
+
+  ResumoDiarioLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: TemResumo
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-resumo-diario"
+      RetentionInDays: !Ref RetencaoLogsDias
+
+  ResumoDiarioFunction:
+    Type: AWS::Serverless::Function
+    Condition: TemResumo
+    Metadata:
+      BuildMethod: makefile
+    DependsOn: ResumoDiarioLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-resumo-diario"
+      CodeUri: ../../
+      Handler: aws_prm_tagging.handler_resumo_diario.handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      Timeout: 600
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          FILA_RESUMO_URL: !Ref FilaResumo
+          SNS_TOPIC_ARN: !Ref TopicoCentral
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+              Resource: !GetAtt FilaResumo.Arn
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref TopicoCentral
+            - Effect: Allow
+              Action: [kms:Decrypt, kms:GenerateDataKey]
+              Resource: !GetAtt ChaveTopico.Arn
+      Events:
+        Diario:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: !Ref HorarioResumo
+            ScheduleExpressionTimezone: !Ref FusoResumo
+            RetryPolicy:
+              MaximumRetryAttempts: 2
 
 Outputs:
   TopicoCentralArn:
