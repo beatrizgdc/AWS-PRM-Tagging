@@ -169,8 +169,10 @@ def payer(conta):
     return ou
 
 
-def _rodar_org(tmp_path, monkeypatch, respostas, retorno=_Ok):
+def _rodar_org(tmp_path, monkeypatch, respostas, retorno=_Ok, central=None):
     monkeypatch.setattr(assistente.shutil, "which", lambda c: "/usr/bin/" + c)
+    # Sem o backend de CloudFormation do moto (exige dependências extras).
+    monkeypatch.setattr(assistente, "_stack_central", lambda sessao, regiao: central)
     chamadas = []
 
     def executor(cmd, cwd=None):
@@ -233,13 +235,38 @@ def test_organizacao_sem_organizacao_para(conta, tmp_path, monkeypatch):
 
 
 def test_organizacao_usa_a_stack_central_quando_existe(payer, tmp_path, monkeypatch):
-    monkeypatch.setattr(assistente, "_stack_central", lambda sessao, regiao: (
-        "arn:aws:sns:us-east-1:123456789012:prm-compliance-central", "arn:aws:kms:us-east-1:123456789012:key/k"))
+    central = ("arn:aws:sns:us-east-1:123456789012:prm-compliance-central", "arn:aws:kms:us-east-1:123456789012:key/k")
     #          perfil conta valor  acao ou    regioes      hub          varredura central ativar
     respostas = ["", "s", VALOR, "1", payer, "us-east-1", "us-east-1", "dry-run", "s", "s"]
-    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas)
+    rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas, central=central)
     impl = chamadas[-1]
     assert rc == 0
     assert impl[impl.index("--topico-central-arn") + 1].endswith(":prm-compliance-central")
     assert "--kms-central-arn" in impl and "--email" not in impl
     assert "resumo diário" in texto
+
+
+def test_stack_central_ausente_ou_sem_saidas_devolve_none():
+    from botocore.exceptions import ClientError
+
+    class Cfn:
+        def __init__(self, resp):
+            self.resp = resp
+
+        def describe_stacks(self, StackName):
+            if self.resp is None:
+                raise ClientError({"Error": {"Code": "ValidationError", "Message": "does not exist"}}, "DescribeStacks")
+            return self.resp
+
+    class Sessao:
+        def __init__(self, resp):
+            self.resp = resp
+
+        def client(self, nome, region_name=None):
+            return Cfn(self.resp)
+
+    assert assistente._stack_central(Sessao(None), "us-east-1") is None
+    assert assistente._stack_central(Sessao({"Stacks": [{"Outputs": []}]}), "us-east-1") is None
+    ok = {"Stacks": [{"Outputs": [{"OutputKey": "TopicoCentralArn", "OutputValue": "t"},
+                                  {"OutputKey": "ChaveTopicoArn", "OutputValue": "k"}]}]}
+    assert assistente._stack_central(Sessao(ok), "us-east-1") == ("t", "k")
