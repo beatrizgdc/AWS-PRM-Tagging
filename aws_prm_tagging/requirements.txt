@@ -1,2 +1,3 @@
 boto3[crt]>=1.43
 pyyaml>=6.0
+aws-sam-translator>=1.90  # empacotar.py (StackSets) expande o SAM

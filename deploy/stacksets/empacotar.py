@@ -97,7 +97,12 @@ class _SemPoliticasGerenciadas:
 
 
 def expandir(template_sam: dict) -> dict:
-    from samtranslator.translator.transform import transform
+    try:
+        from samtranslator.translator.transform import transform
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "falta o pacote aws-sam-translator: pip install -r aws_prm_tagging/requirements.txt"
+        ) from exc
 
     # O samtranslator só usa a região para descobrir a partição ("aws");
     # nada de região fica gravado no template (conferido em teste).

@@ -3,3 +3,4 @@ pytest>=8.0
 pyyaml>=6.0
 cfn-lint>=1.0
 moto>=5.0
+aws-sam-translator>=1.90  # empacotar.py (StackSets) expande o SAM
