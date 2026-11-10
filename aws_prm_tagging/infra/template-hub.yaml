@@ -205,20 +205,27 @@ Resources:
               - Effect: Allow
                 Action:
                   - acm:ListCertificates
+                  - acm:ListTagsForCertificate
                   - apigateway:GET
                   - autoscaling:DescribeAutoScalingGroups
                   - backup:ListBackupVaults
+                  - backup:ListTags
                   - bedrock:ListInferenceProfiles
                   - bedrock:ListTagsForResource
                   - cloudfront:ListDistributions
+                  - cloudfront:ListTagsForResource
                   - cloudtrail:DescribeTrails
                   - cloudtrail:GetEventSelectors
                   - cloudtrail:GetTrailStatus
+                  - codebuild:BatchGetProjects
                   - codebuild:ListProjects
                   - codepipeline:ListPipelines
+                  - codepipeline:ListTagsForResource
                   - dax:DescribeClusters
+                  - dax:ListTags
                   - drs:DescribeReplicationConfigurationTemplates
                   - dynamodb:ListTables
+                  - dynamodb:ListTagsOfResource
                   - ec2:DescribeAddresses
                   - ec2:DescribeInstances
                   - ec2:DescribeLaunchTemplateVersions
@@ -230,9 +237,11 @@ Resources:
                   - ec2:DescribeVpcEndpoints
                   - ec2:DescribeVpnConnections
                   - ecr:DescribeRepositories
+                  - ecr:ListTagsForResource
                   - ecs:DescribeServices
                   - ecs:ListClusters
                   - ecs:ListServices
+                  - ecs:ListTagsForResource
                   - ecs:ListTasks
                   - eks:DescribeCluster
                   - eks:DescribeNodegroup
@@ -241,42 +250,64 @@ Resources:
                   - elasticache:DescribeCacheClusters
                   - elasticache:DescribeReplicationGroups
                   - elasticache:DescribeServerlessCaches
+                  - elasticache:ListTagsForResource
                   - elasticbeanstalk:DescribeEnvironments
+                  - elasticbeanstalk:ListTagsForResource
                   - elasticfilesystem:DescribeFileSystems
                   - elasticloadbalancing:DescribeLoadBalancers
                   - elasticloadbalancing:DescribeTags
+                  - elasticmapreduce:DescribeCluster
                   - elasticmapreduce:ListClusters
                   - es:ListDomainNames
+                  - es:ListTags
                   - firehose:ListDeliveryStreams
+                  - firehose:ListTagsForDeliveryStream
                   - fsx:DescribeFileSystems
+                  - glue:GetTags
                   - glue:ListJobs
                   - iot:ListBillingGroups
                   - iot:ListTagsForResource
                   - iot:ListThings
                   - kafka:ListClustersV2
                   - kinesis:ListStreams
+                  - kinesis:ListTagsForStream
                   - kms:DescribeKey
                   - kms:ListKeys
+                  - kms:ListResourceTags
                   - lambda:ListFunctions
+                  - lambda:ListTags
                   - logs:DescribeLogGroups
+                  - logs:ListTagsForResource
                   - memorydb:DescribeClusters
+                  - memorydb:ListTags
                   - mq:ListBrokers
+                  - mq:ListTags
                   - network-firewall:ListFirewalls
+                  - network-firewall:ListTagsForResource
                   - rds:DescribeDBClusters
                   - rds:DescribeDBInstances
                   - redshift:DescribeClusters
                   - route53:ListHostedZones
+                  - route53:ListTagsForResource
                   - s3:GetBucketLocation
+                  - s3:GetBucketTagging
                   - s3:ListAllMyBuckets
                   - sagemaker:ListEndpoints
                   - sagemaker:ListNotebookInstances
+                  - sagemaker:ListTags
                   - secretsmanager:ListSecrets
+                  - sns:ListTagsForResource
                   - sns:ListTopics
+                  - sqs:GetQueueUrl
+                  - sqs:ListQueueTags
                   - sqs:ListQueues
                   - states:ListStateMachines
+                  - states:ListTagsForResource
                   - sts:GetCallerIdentity
                   - tag:GetResources
                   - transfer:ListServers
+                  - transfer:ListTagsForResource
+                  - workspaces:DescribeTags
                   - workspaces:DescribeWorkspaces
                 Resource: "*"
         # Escrita: MESMAS ações da Lambda da Etapa 3 (template-regional.yaml),

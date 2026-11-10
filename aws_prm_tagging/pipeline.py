@@ -103,6 +103,8 @@ def descobrir_regioes(
     # Só depois de TODAS as regiões pedidas: bucket S3/serviço global pode
     # ter aparecido no passo genérico de outra região.
     novos = native_discovery.merge_native_resources(todos, nativos)
+    novos, f = native_discovery.confirmar_tags(session, novos, expected_tag_value)
+    falhas.extend(f)
     if novos:
         logger.info("Descoberta nativa: %d recurso(s) sem nenhuma tag acrescentados", len(novos))
     todos.extend(novos)

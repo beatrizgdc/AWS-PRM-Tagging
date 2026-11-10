@@ -31,7 +31,17 @@ A política IAM mínima para rodar o CLI ou o modo interativo sai de
 `python3 -m aws_prm_tagging.main politica-iam` (`--com-escrita` inclui o
 `apply --live`), gerada do próprio template do hub.
 
-Testes automatizados: **609**, todos passando.
+**Leitura das tags na descoberta nativa (10/11/2026):** recurso achado só
+pela listagem do serviço (não devolvido pelo `GetResources`) tem as tags
+lidas na API do próprio serviço antes da decisão. Antes, ele entrava como
+"sem tag" sem conferir: se o `GetResources` falhasse ou não listasse o
+recurso, um bucket de Terraform ou de outro parceiro pareceria livre para
+taguear. Sem conseguir ler (ex.: falta de permissão), o recurso fica fora do
+inventário e aparece em `falhas_descoberta`. Isso acrescentou 31 ações de
+leitura (`List*Tags*`, `GetBucketTagging` etc.) à role do hub e ao
+`politica-iam`.
+
+Testes automatizados: **633**, todos passando.
 
 ## 1. Regra de negócio nova
 

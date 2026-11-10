@@ -151,7 +151,7 @@ def test_enumerador_quebrado_nao_derruba_os_demais(aws, monkeypatch):
 def test_iam_actions_de_leitura_sao_so_leitura():
     for acao in native_discovery.required_iam_actions():
         verbo = acao.split(":", 1)[1]
-        assert verbo.startswith(("Describe", "List", "Get", "GET")), acao
+        assert verbo.startswith(("Describe", "List", "Get", "GET", "BatchGet")), acao
 
 
 def test_cli_ponta_a_ponta_map_decide_apply_live(aws, tmp_path, monkeypatch):

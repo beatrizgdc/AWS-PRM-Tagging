@@ -13,8 +13,13 @@ VALOR = "pc:abc123"
 
 
 @pytest.fixture
-def conta(monkeypatch):
-    for k, v in dict(AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="x", AWS_DEFAULT_REGION="us-east-1").items():
+def conta(monkeypatch, tmp_path):
+    # Isola da configuração AWS da máquina (perfil, aws login, região padrão).
+    for k in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SESSION_TOKEN", "AWS_REGION"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in dict(AWS_ACCESS_KEY_ID="x", AWS_SECRET_ACCESS_KEY="x", AWS_DEFAULT_REGION="us-east-1",
+                     AWS_CONFIG_FILE=str(tmp_path / "sem-config"),
+                     AWS_SHARED_CREDENTIALS_FILE=str(tmp_path / "sem-credenciais")).items():
         monkeypatch.setenv(k, v)
     with mock_aws():
         s3 = boto3.client("s3")
@@ -115,7 +120,7 @@ def test_implantar_chama_script_sem_tagueamento_inicial(conta, tmp_path, monkeyp
     rc, texto = _rodar(tmp_path, respostas, executor=executor)
     assert rc == 0
     cmd = chamadas[0]
-    assert cmd[1].endswith("deploy/implantar_conta.sh")
+    assert cmd[1].replace("\\", "/").endswith("deploy/implantar_conta.sh")
     i = cmd.index("--modo-inicial")
     assert cmd[i + 1] == "desligado"
     assert cmd[cmd.index("--email") + 1] == "eu@exemplo.com"
@@ -182,7 +187,7 @@ def test_organizacao_implantar_roda_empacotar_publicar_e_implantar_em_dry_run(pa
     respostas = ["", "s", VALOR, "1", payer, "us-east-1", "us-east-1", "dry-run", "", "s"]
     rc, texto, chamadas = _rodar_org(tmp_path, monkeypatch, respostas)
     assert rc == 0
-    assert [c[1].rsplit("/", 1)[-1] for c in chamadas] == ["empacotar.py", "stackset.py", "stackset.py"]
+    assert [c[1].replace("\\", "/").rsplit("/", 1)[-1] for c in chamadas] == ["empacotar.py", "stackset.py", "stackset.py"]
     assert chamadas[1][2] == "publicar" and chamadas[2][2] == "implantar"
     impl = chamadas[2]
     assert impl[impl.index("--ou") + 1] == payer

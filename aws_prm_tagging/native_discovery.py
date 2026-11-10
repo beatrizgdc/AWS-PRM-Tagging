@@ -11,9 +11,11 @@ onde está a lista, como montar o ARN e, se houver, como ler as tags). O ARN
 passa por `services.classify_arn`, o mesmo classificador do passo genérico:
 serviço fora do CSV é descartado e o rótulo `servico` é o mesmo.
 
-Sem tags na listagem, o recurso entra com `tags={}` (se tivesse tag, o
-`GetResources` o teria devolvido). A revalidação da Etapa 2c relê o estado
-antes de qualquer escrita.
+Quando a listagem não traz as tags, elas são lidas na API do próprio serviço
+(`confirmar_tags`) antes de qualquer decisão: o `GetResources` pode ter
+falhado ou não indexado o recurso, e assumir "sem tag" faria um recurso de
+IaC ou de outro parceiro parecer livre. Sem conseguir ler, o recurso sai do
+inventário e vira falha de descoberta (não é tagueado).
 
 A cobertura prioriza gasto típico (compute, storage, bancos, rede paga,
 mensageria). `required_iam_actions()` lista as permissões de leitura e
@@ -332,6 +334,7 @@ _IAM_ESPECIAIS = {"kms:ListKeys", "kms:DescribeKey", "ecs:ListServices", "ecs:Li
 def required_iam_actions() -> list[str]:
     """Permissões de LEITURA exigidas pelos enumeradores (inclui KMS e ECS)."""
     acoes = {a for e in _ENUMERADORES for a in e.iam} | _IAM_ESPECIAIS
+    acoes |= {a for _, _, iam in _LEITORES_TAGS.values() for a in iam}
     return sorted(acoes)
 
 
@@ -377,7 +380,7 @@ def _kms_chaves_cliente(session: boto3.Session, regiao: str) -> list[str]:
     return arns
 
 
-def _montar(arn: str, servico: str, regiao: str, tags: dict, expected: str) -> dict:
+def _montar(arn: str, servico: str, regiao: str, tags: dict, expected: str, confirmadas: bool = False) -> dict:
     status_tag, valor = get_tag_status(tags, expected)
     similares = find_similar_tag_keys(tags)
     return {
@@ -396,6 +399,8 @@ def _montar(arn: str, servico: str, regiao: str, tags: dict, expected: str) -> d
         # Rastro de como o recurso foi encontrado — permite medir no
         # relatório quanto a descoberta nativa acrescentou.
         "origem_descoberta": "nativa",
+        # False = a listagem não trouxe tags; `confirmar_tags` lê antes de decidir.
+        "tags_confirmadas": confirmadas,
     }
 
 
@@ -460,9 +465,9 @@ def discover_native_resources(
             svc = classify_arn(arn, services)
             if svc is None:
                 continue
-            tags = (enum.tags(item) if enum.tags else None) or {}
+            tags = enum.tags(item) if enum.tags else None
             regiao_real = (enum.regiao_item(item) if enum.regiao_item else None) or regiao
-            recursos.append(_montar(arn, svc.name, regiao_real, tags, expected_tag_value))
+            recursos.append(_montar(arn, svc.name, regiao_real, tags or {}, expected_tag_value, tags is not None))
 
     try:
         for arn in _kms_chaves_cliente(session, regiao):
@@ -557,6 +562,173 @@ def discover_s3_buckets_por_regiao(
             }
         )
     return recursos, falhas
+
+
+# ---------------------------------------------------------------------------
+# Confirmação das tags de recursos achados só pela listagem nativa
+# ---------------------------------------------------------------------------
+
+
+def _norm(tags) -> dict[str, str]:
+    """Lista Key/Value, key/value ou TagKey/TagValue, ou dict -> dict."""
+    if not tags:
+        return {}
+    if isinstance(tags, dict):
+        return {str(k): str(v) for k, v in tags.items()}
+    saida: dict[str, str] = {}
+    for t in tags:
+        k = t.get("Key", t.get("key", t.get("TagKey")))
+        v = t.get("Value", t.get("value", t.get("TagValue", "")))
+        if k is not None:
+            saida[k] = v
+    return saida
+
+
+def _ultimo(arn: str, sep: str = "/") -> str:
+    return arn.rsplit(sep, 1)[-1]
+
+
+def _s3(c, arn):
+    try:
+        return c.get_bucket_tagging(Bucket=arn.split(":::", 1)[1])["TagSet"]
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("NoSuchTagSet", "NoSuchTagSetError"):
+            return []
+        raise
+
+
+def _sqs(c, arn):
+    _, _, _, _, conta, nome = arn.split(":", 5)
+    url = c.get_queue_url(QueueName=nome, QueueOwnerAWSAccountId=conta)["QueueUrl"]
+    return c.list_queue_tags(QueueUrl=url).get("Tags")
+
+
+def _elb(c_v2, c_classico, arn):
+    if any(f"loadbalancer/{t}/" in arn for t in ("app", "net", "gwy")):
+        return c_v2.describe_tags(ResourceArns=[arn])["TagDescriptions"][0].get("Tags")
+    return c_classico.describe_tags(LoadBalancerNames=[_ultimo(arn)])["TagDescriptions"][0].get("Tags")
+
+
+def _dynamodb(c, arn):
+    tags, kw = [], {"ResourceArn": arn}
+    while True:
+        r = c.list_tags_of_resource(**kw)
+        tags += r.get("Tags", [])
+        if not r.get("NextToken"):
+            return tags
+        kw["NextToken"] = r["NextToken"]
+
+
+# namespace do ARN -> (client boto3, leitor(client, arn), ação IAM)
+_LEITORES_TAGS: dict[str, tuple[str, Callable, tuple[str, ...]]] = {
+    "s3": ("s3", _s3, ("s3:GetBucketTagging",)),
+    "backup": ("backup", lambda c, a: c.list_tags(ResourceArn=a).get("Tags"), ("backup:ListTags",)),
+    "dynamodb": ("dynamodb", _dynamodb, ("dynamodb:ListTagsOfResource",)),
+    "dax": ("dax", lambda c, a: c.list_tags(ResourceName=a).get("Tags"), ("dax:ListTags",)),
+    "elasticache": ("elasticache", lambda c, a: c.list_tags_for_resource(ResourceName=a).get("TagList"),
+                    ("elasticache:ListTagsForResource",)),
+    "memorydb": ("memorydb", lambda c, a: c.list_tags(ResourceArn=a).get("TagList"), ("memorydb:ListTags",)),
+    "es": ("opensearch", lambda c, a: c.list_tags(ARN=a).get("TagList"), ("es:ListTags",)),
+    "lambda": ("lambda", lambda c, a: c.list_tags(Resource=a).get("Tags"), ("lambda:ListTags",)),
+    "ecs": ("ecs", lambda c, a: c.list_tags_for_resource(resourceArn=a).get("tags"), ("ecs:ListTagsForResource",)),
+    "ecr": ("ecr", lambda c, a: c.list_tags_for_resource(resourceArn=a).get("tags"), ("ecr:ListTagsForResource",)),
+    "elasticmapreduce": ("emr", lambda c, a: c.describe_cluster(ClusterId=_ultimo(a))["Cluster"].get("Tags"),
+                         ("elasticmapreduce:DescribeCluster",)),
+    "elasticbeanstalk": ("elasticbeanstalk",
+                         lambda c, a: c.list_tags_for_resource(ResourceArn=a).get("ResourceTags"),
+                         ("elasticbeanstalk:ListTagsForResource",)),
+    "sagemaker": ("sagemaker", lambda c, a: c.list_tags(ResourceArn=a).get("Tags"), ("sagemaker:ListTags",)),
+    "workspaces": ("workspaces", lambda c, a: c.describe_tags(ResourceId=_ultimo(a)).get("TagList"),
+                   ("workspaces:DescribeTags",)),
+    "glue": ("glue", lambda c, a: c.get_tags(ResourceArn=a).get("Tags"), ("glue:GetTags",)),
+    "codebuild": ("codebuild", lambda c, a: (c.batch_get_projects(names=[_ultimo(a)]).get("projects") or [{}])[0].get("tags"),
+                  ("codebuild:BatchGetProjects",)),
+    "codepipeline": ("codepipeline", lambda c, a: c.list_tags_for_resource(resourceArn=a).get("tags"),
+                     ("codepipeline:ListTagsForResource",)),
+    "network-firewall": ("network-firewall", lambda c, a: c.list_tags_for_resource(ResourceArn=a).get("Tags"),
+                         ("network-firewall:ListTagsForResource",)),
+    "cloudfront": ("cloudfront", lambda c, a: c.list_tags_for_resource(Resource=a)["Tags"].get("Items"),
+                   ("cloudfront:ListTagsForResource",)),
+    "route53": ("route53", lambda c, a: c.list_tags_for_resource(ResourceType="hostedzone", ResourceId=_ultimo(a))
+                ["ResourceTagSet"].get("Tags"), ("route53:ListTagsForResource",)),
+    "sqs": ("sqs", _sqs, ("sqs:GetQueueUrl", "sqs:ListQueueTags")),
+    "sns": ("sns", lambda c, a: c.list_tags_for_resource(ResourceArn=a).get("Tags"), ("sns:ListTagsForResource",)),
+    "kinesis": ("kinesis", lambda c, a: c.list_tags_for_stream(StreamName=_ultimo(a)).get("Tags"),
+                ("kinesis:ListTagsForStream",)),
+    "firehose": ("firehose", lambda c, a: c.list_tags_for_delivery_stream(DeliveryStreamName=_ultimo(a)).get("Tags"),
+                 ("firehose:ListTagsForDeliveryStream",)),
+    "mq": ("mq", lambda c, a: c.list_tags(ResourceArn=a).get("Tags"), ("mq:ListTags",)),
+    "states": ("stepfunctions", lambda c, a: c.list_tags_for_resource(resourceArn=a).get("tags"),
+               ("states:ListTagsForResource",)),
+    "logs": ("logs", lambda c, a: c.list_tags_for_resource(resourceArn=a.removesuffix(":*")).get("tags"),
+             ("logs:ListTagsForResource",)),
+    "acm": ("acm", lambda c, a: c.list_tags_for_certificate(CertificateArn=a).get("Tags"),
+            ("acm:ListTagsForCertificate",)),
+    "transfer": ("transfer", lambda c, a: c.list_tags_for_resource(Arn=a).get("Tags"), ("transfer:ListTagsForResource",)),
+    "kms": ("kms", lambda c, a: c.list_resource_tags(KeyId=a).get("Tags"), ("kms:ListResourceTags",)),
+    "elasticloadbalancing": ("elbv2", None, ("elasticloadbalancing:DescribeTags",)),
+}
+
+# Recurso apagado entre a listagem e a leitura: some do inventário sem falha.
+_CODIGOS_NAO_EXISTE = ("NotFound", "NoSuch", "NonExistent", "DoesNotExist", "QueueDoesNotExist")
+
+
+def confirmar_tags(session: boto3.Session, recursos: list[dict], expected_tag_value: str) -> tuple[list[dict], list[dict]]:
+    """Lê na API do serviço as tags dos recursos com `tags_confirmadas=False`.
+
+    Devolve `(recursos, falhas)`. Recurso cuja leitura falha sai da lista e
+    entra numa falha agregada por serviço e código de erro (amostra de até 5
+    ARNs): sem saber as tags, não há decisão segura."""
+    clients: dict[tuple[str, str], object] = {}
+
+    def client(nome: str, regiao: str):
+        if (nome, regiao) not in clients:
+            clients[(nome, regiao)] = session.client(nome, region_name=regiao, config=_CLIENT_CONFIG)
+        return clients[(nome, regiao)]
+
+    saida: list[dict] = []
+    erros: dict[tuple[str, str, str], list[str]] = {}
+    for r in recursos:
+        if r.get("tags_confirmadas", True):
+            saida.append(r)
+            continue
+        arn = r["arn"]
+        ns = arn.split(":", 3)[2]
+        regiao = REGIAO_SERVICOS_GLOBAIS if ns in ("cloudfront", "route53") else r["regiao"]
+        leitor = _LEITORES_TAGS.get(ns)
+        try:
+            if leitor is None:
+                raise RuntimeError(f"sem leitor de tags para o namespace {ns!r}")
+            if ns == "elasticloadbalancing":
+                bruto = _elb(client("elbv2", regiao), client("elb", regiao), arn)
+            else:
+                bruto = leitor[1](client(leitor[0], regiao), arn)
+            tags = _norm(bruto)
+        except ClientError as exc:
+            codigo = exc.response.get("Error", {}).get("Code", "")
+            if any(m in codigo for m in _CODIGOS_NAO_EXISTE):
+                logger.info("Recurso sumiu antes da leitura das tags: %s", arn)
+                continue
+            erros.setdefault((r["regiao"], r["servico"], codigo or "ClientError"), []).append(arn)
+            continue
+        except Exception as exc:  # noqa: BLE001 — isolamento por recurso
+            erros.setdefault((r["regiao"], r["servico"], type(exc).__name__), []).append(arn)
+            logger.warning("Falha ao ler as tags de %s: %s", arn, exc)
+            continue
+        novo = _montar(arn, r["servico"], r["regiao"], tags, expected_tag_value, confirmadas=True)
+        novo["tipo_recurso"] = r.get("tipo_recurso")
+        saida.append(novo)
+
+    falhas = [
+        {
+            "regiao": regiao,
+            "etapa": "nativo:confirmar_tags",
+            "erro": f"{servico}: {len(arns)} recurso(s) sem leitura das tags ({codigo}); fora do inventário, "
+            f"não serão tagueados: {', '.join(arns[:5])}{' ...' if len(arns) > 5 else ''}",
+        }
+        for (regiao, servico, codigo), arns in erros.items()
+    ]
+    return saida, falhas
 
 
 def merge_native_resources(genericos: list[dict], nativos: list[dict]) -> list[dict]:
