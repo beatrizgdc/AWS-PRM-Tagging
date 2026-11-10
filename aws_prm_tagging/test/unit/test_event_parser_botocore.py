@@ -25,6 +25,7 @@ evitar o problema de capitalização, nos outros).
 from __future__ import annotations
 
 import pytest
+from botocore.exceptions import UnknownServiceError
 
 botocore_session = pytest.importorskip("botocore.session")
 
@@ -116,7 +117,12 @@ def _dedicated_path_specs():
 def test_caminho_do_extractor_existe_no_shape_real_da_operacao(key, spec, builder):
     event_source, event_name = key
     session = botocore_session.get_session()
-    model = _service_model(session, event_source, event_name)
+    try:
+        model = _service_model(session, event_source, event_name)
+    except UnknownServiceError:
+        # Serviço descontinuado pela AWS e já fora do botocore instalado (ex.:
+        # FinSpace). O mapeamento continua inofensivo: sem API, não há evento.
+        pytest.skip(f"{event_source} não existe no botocore instalado (serviço removido do SDK)")
     assert event_name in model.operation_names, (
         f"'{event_name}' não existe mais em '{event_source}' segundo o botocore instalado — "
         "operação renomeada/removida? Ver event_mapping.py."

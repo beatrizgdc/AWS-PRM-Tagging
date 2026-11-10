@@ -2,5 +2,5 @@ boto3[crt]>=1.43
 pytest>=8.0
 pyyaml>=6.0
 cfn-lint>=1.0
-moto>=5.0
+moto[glue]>=5.0  # [glue] traz o pyparsing que o moto exige para simular o Glue
 aws-sam-translator>=1.90  # empacotar.py (StackSets) expande o SAM
