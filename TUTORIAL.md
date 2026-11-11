@@ -33,6 +33,14 @@ A primeira pergunta é o escopo:
 Num cliente com organização, use a opção 2 para as contas-membro e, se a payer
 tiver recursos, a opção 1 nela (o StackSet não implanta na payer).
 
+> **Zabbix:** a integração já está pronta, mas ainda não há nenhum ambiente
+> Zabbix conectado. Por enquanto, os avisos chegam por e-mail (tópico SNS):
+> alertas na hora (falhas e conflitos com outro parceiro) e resumos. Com a
+> stack central, um resumo diário de todas as contas. O e-mail é o informado
+> na interação (opção 1) ou o da stack central (opção 2). Os relatórios
+> completos, inclusive a lista de IaC para o cliente, ficam na pasta
+> `saida-prm-<conta>-<data>/` de quem rodou.
+
 ### Opção 1 — uma conta
 
 O assistente faz tudo, com resumo e confirmação em cada passo:
@@ -84,8 +92,6 @@ deploy/remover_conta.sh --profile <perfil>
 ```
 
 As tags já aplicadas continuam nos recursos.
-
-OBS: Apesar de já ter a estrutura pronta, ainda não há conexão com nenhum ambiente zabbix,. Todas as métricas e relatórios estão sendo enviados via tópico SNS ao e-mail que for fornecido durante a interação e processo.
 
 ## Outro valor de tag?
 
